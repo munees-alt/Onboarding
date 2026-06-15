@@ -977,6 +977,14 @@ function AiTextModal({
         </div>
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          {["mom", "ai", "welcome_email", "agenda", "deck"].includes(actType) && (
+            <button className="btn-ai" disabled={saving || phase !== "ready" || !text.trim()} onClick={() => startSave(async () => {
+              const s = await sendClientEmail(runId, title, text);
+              if (s.error) { setError(s.error); setPhase("ready"); return; }
+              await saveStepText(runId, stepId, text);
+              onDone();
+            })}><Icon name="send" size={13} /> Send to client</button>
+          )}
           <button className="btn-primary" disabled={saving || phase !== "ready" || !text.trim()} onClick={() => startSave(async () => { const r = await saveStepText(runId, stepId, text); if (!r.error) onDone(); })}>{saving ? "Saving…" : "Save & confirm"}</button>
         </div>
       </div>

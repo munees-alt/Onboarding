@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { confirmCoa, commentCoa, uploadDoc, submitIntake } from "./actions";
+import { confirmCoa, commentCoa, uploadDocFile, submitIntake } from "./actions";
 
 export interface PortalData {
   token: string;
@@ -65,6 +65,18 @@ export function PortalView({ data }: { data: PortalData }) {
 
   const run = (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) =>
     start(async () => { const r = await fn(); if (r.error) note(r.error); else { note(ok); router.refresh(); } });
+
+  const [uploading, setUploading] = useState<string | null>(null);
+  const onFile = (docId: string, file: File) => {
+    setUploading(docId);
+    const fd = new FormData();
+    fd.append("file", file);
+    uploadDocFile(data.token, docId, fd).then((r) => {
+      setUploading(null);
+      if (r.error) note(r.error);
+      else { note("Document received — your team has been notified"); router.refresh(); }
+    });
+  };
 
   return (
     <div style={{ minHeight: "100vh", background: "var(--bg)" }}>
@@ -237,9 +249,10 @@ export function PortalView({ data }: { data: PortalData }) {
               {d.status === "uploaded" ? (
                 <span className="pill green" style={{ fontSize: 10 }}>Uploaded</span>
               ) : (
-                <button className="btn-ghost" disabled={busy} onClick={() => run(() => uploadDoc(data.token, d.id), "Document received — your team has been notified")}>
-                  <Icon name="upload" size={13} /> Upload
-                </button>
+                <label className="btn-ghost" style={{ cursor: uploading ? "default" : "pointer" }}>
+                  <Icon name="upload" size={13} /> {uploading === d.id ? "Uploading…" : "Upload"}
+                  <input type="file" hidden disabled={!!uploading} onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(d.id, f); e.target.value = ""; }} />
+                </label>
               )}
             </div>
           ))}

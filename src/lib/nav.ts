@@ -7,6 +7,7 @@ export const NAV: NavItem[] = [
   { id: "onboarding", label: "Onboarding", icon: "user-plus", href: "/onboarding", group: "primary",
     roles: ["admin", "ops_head", "am", "team_lead", "senior", "junior"] },
   { id: "clients", label: "Clients", icon: "users", href: "/clients", group: "primary" },
+  { id: "connections", label: "My Connections", icon: "plug", href: "/connections", group: "primary" },
 
   { id: "all-runs", label: "All Runs", icon: "radar", href: "/all-runs", group: "more", stub: true, roles: ["admin"] },
   { id: "process-intel", label: "Process Intel", icon: "brain-circuit", href: "/process-intel", group: "more", stub: true, badge: "AI", badgeKind: "ai" },

@@ -75,6 +75,36 @@ export async function submitIntake(token: string, data: Record<string, string>):
   return { ok: true };
 }
 
+/** Real file upload from the client portal → Supabase Storage → marks the document received. */
+export async function uploadDocFile(token: string, docId: string, formData: FormData): Promise<{ error?: string; ok?: boolean }> {
+  const link = await resolve(token);
+  if (!link?.client_id) return { error: "Link invalid or expired." };
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "No file selected." };
+  if (file.size > 25 * 1024 * 1024) return { error: "File is larger than 25 MB." };
+  const admin = createAdminClient();
+  const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `${link.client_id}/${docId}-${Date.now()}-${safe}`;
+  const buf = Buffer.from(await file.arrayBuffer());
+  const { error: upErr } = await admin.storage.from("client-docs").upload(path, buf, {
+    contentType: file.type || "application/octet-stream",
+    upsert: true,
+  });
+  if (upErr) return { error: upErr.message };
+  const { error } = await admin
+    .from("documents")
+    .update({ status: "uploaded", uploaded_at: new Date().toISOString(), storage_path: path })
+    .eq("id", docId)
+    .eq("client_id", link.client_id);
+  if (error) return { error: error.message };
+  await admin.from("notifications").insert({
+    org_id: link.org_id, run_id: link.run_id, kind: "info",
+    title: "Client uploaded a document", body: file.name,
+  });
+  revalidatePath(`/portal/${token}`);
+  return { ok: true };
+}
+
 export async function uploadDoc(token: string, docId: string): Promise<{ error?: string; ok?: boolean }> {
   const link = await resolve(token);
   if (!link?.client_id) return { error: "Link invalid or expired." };

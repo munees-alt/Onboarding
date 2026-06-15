@@ -43,12 +43,12 @@ function parseJson(text: string): { rationale?: string; accounts?: CoaLine[] } |
 import type { AiFeature } from "@/lib/ai-config";
 
 const TEXT_FEATURE_PROMPT: Record<string, { feature: AiFeature; instruction: string }> = {
-  agenda: { feature: "agenda", instruction: "Draft a concise, professional kickoff-call agenda (5-7 bullet points) for the client's onboarding. UAE accounting context." },
-  ai: { feature: "mom", instruction: "Draft minutes of meeting for the onboarding kickoff call. Sections: Attendees, Decisions, Action items (owner + due), Open questions. Keep it tight." },
-  mom: { feature: "mom", instruction: "Draft the client email that delivers the minutes of meeting — friendly, signed off by Finanshels, with the MoM summary inline." },
-  welcome_email: { feature: "welcome_email", instruction: "Draft a warm, professional welcome email from the Finanshels account manager to the client after the kickoff call. Mention next steps and the COA review." },
-  deck: { feature: "handover_summary", instruction: "Outline a short, branded client onboarding deck (slide titles + 1-2 bullets each): welcome, scope, team, timeline, what we need from you." },
-  brief: { feature: "brief", instruction: "Write a pre-call brief: business overview, UAE regulatory points (VAT/CT/WPS), key questions for the call, risk flags, and a COA template recommendation." },
+  agenda: { feature: "agenda", instruction: "Write a polished, client-ready kickoff-call agenda as a short email with a greeting and 5-7 clear agenda points. Ready to send as-is." },
+  ai: { feature: "mom", instruction: "Write professional minutes of meeting as a ready-to-send client email: warm greeting to the client by name, a short paragraph on what was covered, a 'Decisions' list, an 'Action items' list (each with owner and due date), 'Next steps', and a Finanshels sign-off. Complete and polished." },
+  mom: { feature: "mom", instruction: "Write the minutes-of-meeting email to send to the client now: greeting by name, summary, decisions, action items (owner + due), next steps, signed off by the Finanshels team. Ready to send." },
+  welcome_email: { feature: "welcome_email", instruction: "Write a warm, professional welcome email from the Finanshels account manager to the client after the kickoff call: thank them, confirm scope and timeline, note the COA review and next steps, sign off. Ready to send." },
+  deck: { feature: "handover_summary", instruction: "Write a short, branded client onboarding deck as slide-by-slide content (Slide title + 1-2 lines each): Welcome, Scope of service, Your team, Timeline & milestones, What we need from you, How we work. Client-ready." },
+  brief: { feature: "brief", instruction: "Write a sharp internal pre-call brief: business overview, UAE regulatory points (VAT/CT/WPS), the 4-5 best questions to ask on the call, risk/complexity flags, and a COA template recommendation. Concise and specific." },
 };
 
 /** Generates AI text for a run step (agenda, MoM, welcome email, deck, brief). */
@@ -74,8 +74,8 @@ export async function generateStepText(
   try {
     const text = await runAi(session.profile.org_id, cfg.feature, {
       runId,
-      system: "You write for a UAE accounting firm (Finanshels). Be concise, professional and client-ready.",
-      prompt: `${cfg.instruction}\n\n${ctx}`,
+      system: "You write for a UAE accounting firm (Finanshels). Output must be polished and ready to send AS-IS — never use [placeholders], brackets, or 'insert X here'. Fill every detail from the context provided. Professional, warm, concise.",
+      prompt: `${cfg.instruction}\n\nUse these details (do not invent beyond them):\n${ctx}`,
     });
     return { text };
   } catch (e) {
