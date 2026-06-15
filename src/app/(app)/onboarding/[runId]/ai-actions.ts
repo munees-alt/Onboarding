@@ -1,0 +1,309 @@
+"use server";
+
+import coaDataRaw from "@/lib/coa-templates.json";
+import { runAi } from "@/lib/ai";
+import { getSession } from "@/lib/auth";
+import { createClient } from "@/lib/supabase/server";
+import { completeStep } from "./actions";
+
+type CoaAccount = { code: string; account: string; description: string; tag: string; category: string; subcategory: string };
+const coaData = coaDataRaw as unknown as Record<string, CoaAccount[]>;
+
+export interface CoaLine { code: string; account: string; section: string; note?: string; include: boolean }
+
+const INDUSTRY_MAP: Record<string, string> = {
+  Retail: "Retail", "E-commerce": "E-commerce", SaaS: "SaaS", Technology: "SaaS",
+  Restaurant: "Restaurant", Hospitality: "Hospitality", Trading: "Import export",
+  "Import export": "Import export", Fintech: "Fintech",
+  "Professional Services": "General COA", "Holding Company": "General COA", Other: "General COA",
+};
+
+function sectionOf(a: CoaAccount): string {
+  const c = (a.category || "").toLowerCase();
+  if (c.includes("asset")) return "Assets";
+  if (c.includes("liabilit")) return "Liabilities";
+  if (c.includes("equity")) return "Equity";
+  if (c.includes("income") || c.includes("revenue")) return "Income";
+  if (c.includes("cost of") || c.includes("cogs")) return "Cost of Goods";
+  if (c.includes("expense")) return "Expenses";
+  return "Other";
+}
+
+function parseJson(text: string): { rationale?: string; accounts?: CoaLine[] } | null {
+  try {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end < 0) return null;
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+import type { AiFeature } from "@/lib/ai-config";
+
+const TEXT_FEATURE_PROMPT: Record<string, { feature: AiFeature; instruction: string }> = {
+  agenda: { feature: "agenda", instruction: "Draft a concise, professional kickoff-call agenda (5-7 bullet points) for the client's onboarding. UAE accounting context." },
+  ai: { feature: "mom", instruction: "Draft minutes of meeting for the onboarding kickoff call. Sections: Attendees, Decisions, Action items (owner + due), Open questions. Keep it tight." },
+  mom: { feature: "mom", instruction: "Draft the client email that delivers the minutes of meeting — friendly, signed off by Finanshels, with the MoM summary inline." },
+  welcome_email: { feature: "welcome_email", instruction: "Draft a warm, professional welcome email from the Finanshels account manager to the client after the kickoff call. Mention next steps and the COA review." },
+  deck: { feature: "handover_summary", instruction: "Outline a short, branded client onboarding deck (slide titles + 1-2 bullets each): welcome, scope, team, timeline, what we need from you." },
+  brief: { feature: "brief", instruction: "Write a pre-call brief: business overview, UAE regulatory points (VAT/CT/WPS), key questions for the call, risk flags, and a COA template recommendation." },
+};
+
+/** Generates AI text for a run step (agenda, MoM, welcome email, deck, brief). */
+export async function generateStepText(
+  runId: string,
+  actType: string,
+): Promise<{ error?: string; text?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const cfg = TEXT_FEATURE_PROMPT[actType] ?? TEXT_FEATURE_PROMPT.agenda;
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: client } = await supabase.from("clients").select("*").eq("id", run.client_id).maybeSingle();
+  if (!client) return { error: "Client not found." };
+
+  const ctx =
+    `Client: ${client.name}; industry ${client.industry}; entity ${client.entity_type}; ` +
+    `VAT ${client.vat_registered}; CT ${client.ct_registered}; ` +
+    `revenue channels ${(client.revenue_channels ?? []).join(", ") || "n/a"}; ` +
+    `accounting software ${client.accounting_software ?? "n/a"}.`;
+
+  try {
+    const text = await runAi(session.profile.org_id, cfg.feature, {
+      runId,
+      system: "You write for a UAE accounting firm (Finanshels). Be concise, professional and client-ready.",
+      prompt: `${cfg.instruction}\n\n${ctx}`,
+    });
+    return { text };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "AI failed" };
+  }
+}
+
+/** AI-generates a workflow diagram (nodes) from a plain-language description. */
+export async function generateDiagram(runId: string, brief: string): Promise<{ error?: string; nodes?: { id: string; label: string; type: string }[] }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  if (!brief.trim()) return { error: "Describe the workflow first." };
+  try {
+    const out = await runAi(session.profile.org_id, "handover_summary", {
+      runId,
+      system: "You convert a described process into a linear workflow. Output ONLY a JSON array.",
+      prompt: `Turn this process into a JSON array of nodes [{"label":"","type":"start|step|decision|end"}] in order. First node start, last node end, decisions where a yes/no branch occurs. Process: ${brief}`,
+    });
+    const s = out.indexOf("["), e = out.lastIndexOf("]");
+    const arr = s >= 0 ? (JSON.parse(out.slice(s, e + 1)) as { label: string; type: string }[]) : [];
+    return { nodes: arr.map((n, i) => ({ id: `n${i}_${Math.random().toString(36).slice(2, 6)}`, label: n.label, type: n.type || "step" })) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "AI failed" };
+  }
+}
+
+function parseArray<T>(text: string): T[] {
+  try {
+    const s = text.indexOf("["), e = text.lastIndexOf("]");
+    return s >= 0 ? (JSON.parse(text.slice(s, e + 1)) as T[]) : [];
+  } catch { return []; }
+}
+
+/** AI-generates a UAE compliance calendar from the client's VAT/CT/WPS + entity. */
+export async function generateCompliance(runId: string): Promise<{ error?: string; items?: { label: string; type: string; date: string }[] }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: c } = await supabase.from("clients").select("name,vat_registered,ct_registered,entity_type,established_year").eq("id", run.client_id).maybeSingle();
+  try {
+    const out = await runAi(session.profile.org_id, "handover_summary", {
+      runId,
+      system: "You are a UAE compliance expert. Output ONLY a JSON array.",
+      prompt:
+        `Generate a 12-month UAE compliance calendar as JSON array [{"label":"","type":"VAT|CT|WPS|Doc expiry|Other","date":"YYYY-MM-DD"}]. ` +
+        `Rules: VAT quarterly returns due 28 days after each quarter-end; Corporate Tax return due 9 months after financial year-end; WPS monthly salary transfer; trade licence + establishment card annual renewals. ` +
+        `Client: VAT ${c?.vat_registered ?? "?"}, CT ${c?.ct_registered ?? "?"}, entity ${c?.entity_type ?? "?"}, established ${c?.established_year ?? "?"}. Today is 2026-06. Return 6-10 upcoming items.`,
+    });
+    return { items: parseArray(out) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "AI failed" };
+  }
+}
+
+/** AI-generates internal projects + tasks from a plain-language brief over a period. */
+export async function generateProjects(
+  runId: string, instructions: string, periodStart: string, periodEnd: string, cadence: string,
+): Promise<{ error?: string; items?: { name: string; month: string; tasks: string }[] }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: c } = await supabase.from("clients").select("industry").eq("id", run.client_id).maybeSingle();
+  try {
+    const out = await runAi(session.profile.org_id, "handover_summary", {
+      runId,
+      system: "You plan recurring accounting delivery work. Output ONLY a JSON array.",
+      prompt:
+        `Create internal delivery projects with tasks as JSON array [{"name":"","month":"YYYY-MM","tasks":"task1; task2; task3"}] ` +
+        `for the period ${periodStart} to ${periodEnd}, ${cadence} cadence. Industry: ${c?.industry ?? "general"}. ` +
+        `Instruction: ${instructions || "standard monthly bookkeeping, VAT, payroll, reporting"}. One project per period with its tasks.`,
+    });
+    return { items: parseArray(out) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "AI failed" };
+  }
+}
+
+export interface ContractAnalysis {
+  periodStart?: string; // YYYY-MM
+  periodEnd?: string;
+  scope?: string;
+  inclusions?: string[];
+  exclusions?: string[];
+  paymentTerms?: string;
+}
+
+/** AI-extracts scope / period / inclusions / exclusions / payment terms from a pasted engagement contract. */
+export async function analyzeContract(runId: string, text: string): Promise<{ error?: string; result?: ContractAnalysis }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  if (!text.trim()) return { error: "Paste the contract text first." };
+  try {
+    const out = await runAi(session.profile.org_id, "handover_summary", {
+      runId,
+      system: "You extract structured data from UAE accounting engagement contracts. Output ONLY JSON.",
+      prompt:
+        `From this engagement contract, return ONLY JSON: {"periodStart":"YYYY-MM","periodEnd":"YYYY-MM","scope":"1-2 sentence summary","inclusions":["..."],"exclusions":["..."],"paymentTerms":"..."}. ` +
+        `periodStart/periodEnd are the service period. If a field is unknown use null/empty.\n\nContract:\n${text.slice(0, 8000)}`,
+    });
+    const start = out.indexOf("{"), end = out.lastIndexOf("}");
+    const parsed = start >= 0 ? (JSON.parse(out.slice(start, end + 1)) as ContractAnalysis) : {};
+    return { result: parsed };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "AI failed" };
+  }
+}
+
+/** AI-researches the client from email domain + industry → client-facing description. */
+export async function generateBusinessDescription(runId: string): Promise<{ error?: string; text?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: client } = await supabase.from("clients").select("name,industry,entity_type,primary_contact_email").eq("id", run.client_id).maybeSingle();
+  if (!client) return { error: "Client not found." };
+  const domain = (client.primary_contact_email ?? "").split("@")[1] ?? "";
+  try {
+    const text = await runAi(session.profile.org_id, "brief", {
+      runId,
+      system: "You research UAE businesses for an accounting firm. Write a concise, confident, client-facing description (4-5 sentences) of what the business does — as if confirming back to the client 'here's what we understood about your business'. No preamble.",
+      prompt: `Company: ${client.name}. Industry: ${client.industry ?? "n/a"}. Entity: ${client.entity_type ?? "n/a"}. Website/email domain: ${domain || "n/a"}. Based on the domain and industry, describe what this business most likely does, its likely revenue model, and customer base in the UAE context.`,
+    });
+    return { text };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "AI failed" };
+  }
+}
+
+/** Saves AI text into the step payload and completes the step. */
+export async function saveStepText(runId: string, stepId: string, text: string): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  await supabase.from("run_steps").upsert(
+    { run_id: runId, step_no: stepId, status: "complete", payload: { text }, completed_at: new Date().toISOString(), title: stepId, type: "ai" },
+    { onConflict: "run_id,step_no" },
+  );
+  await completeStep(runId, stepId);
+  return {};
+}
+
+/** AI-tailors the industry chart of accounts to this client. */
+export async function generateCoa(
+  runId: string,
+): Promise<{ error?: string; accounts?: CoaLine[]; rationale?: string; industry?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: client } = await supabase.from("clients").select("*").eq("id", run.client_id).maybeSingle();
+  if (!client) return { error: "Client not found." };
+
+  const tplIndustry = INDUSTRY_MAP[client.industry as string] ?? "General COA";
+  const accounts = coaData[tplIndustry] ?? coaData["General COA"];
+  const mandatoryLines: CoaLine[] = accounts
+    .filter((a) => /mandatory/i.test(a.tag))
+    .map((a) => ({ code: a.code, account: a.account, section: sectionOf(a), include: true }));
+
+  const prompt =
+    `Client: ${client.name}; industry ${client.industry}; entity ${client.entity_type}; ` +
+    `VAT ${client.vat_registered}; CT ${client.ct_registered}; ` +
+    `revenue channels ${(client.revenue_channels ?? []).join(", ") || "n/a"}; ` +
+    `payment gateways ${(client.payment_gateways ?? []).join(", ") || "n/a"}; ` +
+    `accounting software ${client.accounting_software ?? "n/a"}.\n\n` +
+    `Base "${tplIndustry}" chart of accounts (code | account | tag):\n` +
+    accounts.map((a) => `${a.code} | ${a.account} | ${a.tag}`).join("\n") +
+    `\n\nReturn ONLY a JSON object: {"rationale":"2-3 sentences on why this COA fits the client",` +
+    `"accounts":[{"code":"","account":"","section":"","note":""}]}. ` +
+    `Include every Mandatory account plus the optional ones relevant to this client's channels, gateways and VAT status. ` +
+    `Add any client-specific accounts needed (e.g. payment-gateway clearing). ` +
+    `"section" must be one of: Assets, Liabilities, Equity, Income, Cost of Goods, Expenses.`;
+
+  let aiText: string;
+  try {
+    aiText = await runAi(session.profile.org_id, "coa", {
+      runId,
+      system: "You are a UAE chart-of-accounts expert for an accounting firm. Be precise and FTA-compliant.",
+      prompt,
+    });
+  } catch (e) {
+    return {
+      error: e instanceof Error ? e.message : "AI failed",
+      accounts: mandatoryLines,
+      industry: tplIndustry,
+      rationale: "AI unavailable — showing the mandatory accounts from the industry template.",
+    };
+  }
+
+  const parsed = parseJson(aiText);
+  if (!parsed?.accounts?.length) {
+    return { accounts: mandatoryLines, rationale: aiText.slice(0, 500), industry: tplIndustry };
+  }
+  return {
+    accounts: parsed.accounts.map((a) => ({ ...a, include: a.include !== false })),
+    rationale: parsed.rationale ?? "",
+    industry: tplIndustry,
+  };
+}
+
+/** Saves the tailored COA to the run and completes the COA step. */
+export async function saveCoa(
+  runId: string,
+  stepId: string,
+  accounts: CoaLine[],
+  rationale: string,
+  industry: string,
+): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+
+  const { error } = await supabase.from("coa_instances").upsert(
+    {
+      run_id: runId, client_id: run.client_id, base_industry: industry,
+      accounts: accounts.filter((a) => a.include), ai_rationale: rationale, status: "sa_adjusted",
+    },
+    { onConflict: "run_id" },
+  );
+  if (error) return { error: error.message };
+
+  await completeStep(runId, stepId);
+  return {};
+}

@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/* Cadence design system — ported verbatim from the approved prototype so the
+   look is pixel-faithful. Imported after Tailwind so these rules win. */
+@import "../styles/cadence-base.css";
+@import "../styles/onboarding-v3.css";
+@import "../styles/onboarding-deck.css";
+@import "../styles/orgchart.css";
+
+/* App Router renders children directly inside <body> (no #root wrapper). */
+html,
+body {
+  height: 100%;
+}

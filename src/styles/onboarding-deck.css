@@ -1,0 +1,208 @@
+/* ════════════════════════════════════════════════════════════════════
+   Branded onboarding deck (Micro · step 2.1) — Finanshels orange/cream.
+   Fixed 1200×675 slide canvas, scaled to fit (CSS in edit, JS in present).
+   ════════════════════════════════════════════════════════════════════ */
+:root {
+  --fsd-navy: #082032;
+  --fsd-orange: #f97316;
+  --fsd-orange-600: #ea580c;
+  --fsd-cream: #fff7e9;
+  --fsd-peach: #ffdfb7;
+  --fsd-ink: #1b2733;
+  --fsd-ink2: #51606e;
+  --fsd-line: #ece3d2;
+}
+
+.fsdeck-overlay {
+  position: fixed; inset: 0; z-index: 6000;
+  background: #0c151d; color: var(--fsd-ink);
+  display: flex; flex-direction: column;
+  font-family: var(--font);
+}
+
+/* ---------- toolbar ---------- */
+.fsdeck-bar {
+  flex-shrink: 0; height: 56px; padding: 0 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  background: #0c151d; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.fsdeck-bar-left { display: flex; align-items: center; gap: 12px; }
+.fsdeck-bar-title { display: inline-flex; align-items: center; gap: 8px; color: #fff; font-weight: 700; font-size: 14px; }
+.fsdeck-bar-badge {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700;
+  color: var(--fsd-orange); background: rgba(249,115,22,0.14); border: 1px solid rgba(249,115,22,0.3);
+  padding: 3px 9px; border-radius: 999px;
+}
+.fsdeck-bar-right { display: flex; align-items: center; gap: 10px; }
+.fsdeck-modeseg { display: inline-flex; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); border-radius: 9px; padding: 3px; gap: 2px; }
+.fsdeck-modeseg button {
+  display: inline-flex; align-items: center; gap: 5px; border: none; background: transparent;
+  color: rgba(255,255,255,0.65); font-family: var(--font); font-size: 12px; font-weight: 600;
+  padding: 5px 12px; border-radius: 7px; cursor: pointer;
+}
+.fsdeck-modeseg button.on { background: var(--fsd-orange); color: #fff; }
+.fsdeck-btn {
+  display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; cursor: pointer;
+  font-family: var(--font); font-size: 12.5px; font-weight: 600; padding: 7px 13px; border: 1px solid transparent;
+}
+.fsdeck-btn.primary { background: var(--fsd-orange); color: #fff; }
+.fsdeck-btn.primary:hover { background: var(--fsd-orange-600); }
+.fsdeck-btn.ghost { background: transparent; color: rgba(255,255,255,0.8); border-color: rgba(255,255,255,0.18); }
+.fsdeck-btn.ghost:hover { background: rgba(255,255,255,0.08); }
+
+/* ---------- edit scroll ---------- */
+.fsdeck-editscroll { flex: 1; overflow-y: auto; padding: 22px 24px 60px; background: #11202b; }
+.fsdeck-legend {
+  max-width: 808px; margin: 0 auto 18px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 10px 14px;
+}
+.fsdeck-legend-h { color: rgba(255,255,255,0.8); font-size: 12px; font-weight: 600; margin-right: 4px; }
+.fsdeck-editcard { max-width: 808px; margin: 0 auto 22px; }
+.fsdeck-editcard-h {
+  display: flex; align-items: center; gap: 9px; color: rgba(255,255,255,0.55);
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 9px;
+}
+.fsdeck-editcard-n {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 7px;
+  background: rgba(249,115,22,0.16); color: var(--fsd-orange); font-size: 11px; font-weight: 800;
+}
+.fsdeck-editfoot {
+  max-width: 808px; margin: 8px auto 0; display: flex; gap: 10px; align-items: flex-start;
+  color: rgba(255,255,255,0.7); font-size: 12.5px; line-height: 1.5;
+  background: rgba(249,115,22,0.08); border: 1px solid rgba(249,115,22,0.22); border-radius: 10px; padding: 12px 14px;
+}
+.fsdeck-editfoot svg { color: var(--fsd-orange); flex-shrink: 0; margin-top: 1px; }
+
+/* ---------- scale-to-fit wrappers ---------- */
+.fsdeck-stage-fit { position: relative; overflow: hidden; border-radius: 14px; box-shadow: 0 16px 50px rgba(0,0,0,0.4); }
+.fsdeck-stage-fit.edit { width: 808px; height: 454.5px; }
+.fsdeck-stage-fit.edit .fsdeck-stage { transform: scale(0.6733); transform-origin: top left; }
+.fsdeck-stage { width: 1200px; height: 675px; transform-origin: top left; position: relative; overflow: hidden; }
+
+/* ---------- present ---------- */
+.fsdeck-present { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; }
+.fsdeck-present-stage { flex: 1; display: grid; place-items: center; width: 100%; }
+.fsdeck-nav {
+  flex-shrink: 0; margin-bottom: 26px; display: flex; align-items: center; gap: 14px;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 40px; padding: 8px 14px;
+}
+.fsdeck-nav-btn { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 999px; border: none; background: rgba(255,255,255,0.1); color: #fff; cursor: pointer; }
+.fsdeck-nav-btn:hover:not(:disabled) { background: var(--fsd-orange); }
+.fsdeck-nav-btn:disabled { opacity: 0.3; cursor: default; }
+.fsdeck-dots { display: flex; gap: 7px; align-items: center; }
+.fsdeck-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.28); cursor: pointer; transition: all .2s; }
+.fsdeck-dot.active { background: var(--fsd-orange); width: 22px; border-radius: 4px; }
+.fsdeck-counter { color: rgba(255,255,255,0.5); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
+
+/* ════════════ SLIDE LAYOUTS (drawn at 1200×675) ════════════ */
+.fsdeck-slide { width: 1200px; height: 675px; position: absolute; inset: 0; }
+
+/* cover */
+.fsdeck-cover { background: var(--fsd-navy); color: #fff; padding: 78px 90px; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+.fsdeck-cover-glow { position: absolute; top: -160px; right: -120px; width: 620px; height: 620px; border-radius: 50%; background: radial-gradient(circle, rgba(249,115,22,0.28) 0%, transparent 70%); }
+.fsdeck-cover-logo { position: absolute; top: 56px; left: 90px; height: 34px; width: auto; }
+.fsdeck-cover-body { position: relative; z-index: 1; max-width: 880px; }
+.fsdeck-eyebrow { font-size: 14px; letter-spacing: 0.22em; text-transform: uppercase; font-weight: 700; margin-bottom: 22px; }
+.fsdeck-eyebrow.orange { color: var(--fsd-orange); }
+.fsdeck-cover-title { font-size: 76px; font-weight: 800; letter-spacing: -0.025em; line-height: 1.02; margin: 0 0 26px; }
+.fsdeck-cover-title .o { color: var(--fsd-orange); }
+.fsdeck-cover-mission { font-size: 24px; line-height: 1.5; color: rgba(255,255,255,0.82); max-width: 760px; }
+.fsdeck-cover-mission .fsdeck-val { color: rgba(255,255,255,0.82); }
+.fsdeck-cover-foot { position: absolute; bottom: 56px; left: 90px; right: 90px; z-index: 1; font-size: 14px; color: rgba(255,255,255,0.5); border-top: 1px solid rgba(255,255,255,0.12); padding-top: 18px; }
+
+/* content slides */
+.fsdeck-content { background: var(--fsd-cream); padding: 64px 84px; display: flex; flex-direction: column; }
+.fsdeck-slidehead { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 34px; }
+.fsdeck-phasepill { display: inline-block; font-size: 13px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fsd-orange); background: #fff; border: 1px solid var(--fsd-peach); padding: 5px 13px; border-radius: 999px; margin-bottom: 14px; }
+.fsdeck-h2 { font-size: 46px; font-weight: 800; letter-spacing: -0.025em; color: var(--fsd-navy); margin: 0; line-height: 1.05; }
+.fsdeck-sub { font-size: 19px; color: var(--fsd-ink2); margin-top: 10px; }
+.fsdeck-mark { height: 30px; width: auto; flex-shrink: 0; margin-top: 6px; opacity: 0.92; }
+
+/* roadmap */
+.fsdeck-roadmap { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; flex: 1; align-content: center; }
+.fsdeck-phase { background: #fff; border: 1px solid var(--fsd-line); border-radius: 18px; padding: 26px 20px; display: flex; flex-direction: column; }
+.fsdeck-phase-n { font-size: 34px; font-weight: 800; color: var(--fsd-orange); letter-spacing: -0.02em; margin-bottom: 16px; }
+.fsdeck-phase-t { font-size: 18px; font-weight: 800; color: var(--fsd-navy); line-height: 1.2; margin-bottom: 9px; }
+.fsdeck-phase-d { font-size: 14.5px; color: var(--fsd-ink2); line-height: 1.5; }
+
+/* generic grids/cards */
+.fsdeck-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.fsdeck-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; flex: 1; align-content: center; }
+.fsdeck-card { background: #fff; border: 1px solid var(--fsd-line); border-radius: 14px; padding: 18px 20px; }
+.fsdeck-card-label { font-size: 12.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fsd-orange); margin-bottom: 7px; }
+.fsdeck-card-val { font-size: 17px; color: var(--fsd-ink); line-height: 1.45; }
+.fsdeck-understood { margin-top: 18px; background: var(--fsd-navy); border-radius: 14px; padding: 20px 24px; display: flex; flex-direction: column; gap: 6px; }
+.fsdeck-understood-k { font-size: 12.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fsd-orange); }
+.fsdeck-understood-v { font-size: 19px; color: #fff; line-height: 1.45; }
+.fsdeck-understood-v .fsdeck-val { color: #fff; }
+
+/* compliance */
+.fsdeck-compliance { background: #fff; border: 1px solid var(--fsd-line); border-radius: 18px; padding: 28px 24px; display: flex; flex-direction: column; }
+.fsdeck-compliance-badge { display: inline-grid; place-items: center; align-self: flex-start; min-width: 56px; height: 40px; padding: 0 14px; border-radius: 10px; background: var(--fsd-orange); color: #fff; font-weight: 800; font-size: 18px; margin-bottom: 16px; }
+.fsdeck-compliance-t { font-size: 21px; font-weight: 800; color: var(--fsd-navy); margin-bottom: 10px; }
+.fsdeck-compliance-d { font-size: 15.5px; color: var(--fsd-ink2); line-height: 1.5; }
+
+/* two-column (software / data) */
+.fsdeck-twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; flex: 1; }
+.fsdeck-softcol { background: #fff; border: 1px solid var(--fsd-line); border-radius: 18px; padding: 28px; display: flex; flex-direction: column; }
+.fsdeck-softcol.rec { background: var(--fsd-navy); }
+.fsdeck-softcol.rec .fsdeck-softcol-h { color: var(--fsd-orange); }
+.fsdeck-softcol.rec p, .fsdeck-softcol.rec .fsdeck-val { color: rgba(255,255,255,0.88); }
+.fsdeck-softcol-h { font-size: 14px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fsd-orange); margin-bottom: 14px; }
+.fsdeck-softcol p { font-size: 18px; color: var(--fsd-ink); line-height: 1.55; margin: 0; }
+.fsdeck-doclist { background: #fff; border: 1px solid var(--fsd-line); border-radius: 18px; padding: 28px; }
+.fsdeck-doclist ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 11px; }
+.fsdeck-doclist li { display: flex; align-items: center; gap: 11px; font-size: 16.5px; color: var(--fsd-ink); }
+.fsdeck-doclist .tick, .fsdeck-recap .tick { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--fsd-orange); color: #fff; font-size: 12px; font-weight: 800; flex-shrink: 0; }
+
+/* channels */
+.fsdeck-channel { background: #fff; border: 1px solid var(--fsd-line); border-radius: 18px; padding: 30px 26px; display: flex; flex-direction: column; }
+.fsdeck-channel-ic { display: inline-grid; place-items: center; width: 52px; height: 52px; border-radius: 14px; background: var(--fsd-cream); color: var(--fsd-orange); margin-bottom: 18px; }
+.fsdeck-channel-t { font-size: 22px; font-weight: 800; color: var(--fsd-navy); margin-bottom: 7px; }
+.fsdeck-channel-v { font-size: 16px; font-weight: 700; color: var(--fsd-orange); margin-bottom: 7px; }
+.fsdeck-channel-d { font-size: 14.5px; color: var(--fsd-ink2); line-height: 1.45; }
+
+/* contract */
+.fsdeck-contract { display: grid; grid-template-columns: 1.55fr 1fr; gap: 18px; flex: 1; }
+.fsdeck-contract-main { background: #fff; border: 1px solid var(--fsd-line); border-radius: 18px; padding: 26px 28px; }
+.fsdeck-services { display: flex; flex-wrap: wrap; gap: 9px; }
+.fsdeck-svc { display: inline-flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 700; color: var(--fsd-navy); background: var(--fsd-cream); border: 1px solid var(--fsd-peach); padding: 7px 14px; border-radius: 999px; }
+.fsdeck-svc .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fsd-orange); }
+.fsdeck-contract-side { background: var(--fsd-navy); border-radius: 18px; padding: 24px 26px; display: flex; flex-direction: column; justify-content: center; gap: 16px; }
+.fsdeck-side-row { display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 14px; }
+.fsdeck-side-row:last-child { border-bottom: none; padding-bottom: 0; }
+.fsdeck-side-row span { font-size: 12.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fsd-orange); }
+.fsdeck-side-row b { font-size: 17px; color: #fff; font-weight: 700; }
+.fsdeck-side-row b .fsdeck-val { color: #fff; }
+
+/* next steps */
+.fsdeck-steps { display: flex; flex-direction: column; gap: 16px; flex: 1; justify-content: center; }
+.fsdeck-step { display: flex; align-items: center; gap: 18px; background: #fff; border: 1px solid var(--fsd-line); border-radius: 16px; padding: 22px 26px; }
+.fsdeck-step-n { display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: var(--fsd-navy); color: #fff; font-weight: 800; font-size: 17px; flex-shrink: 0; }
+.fsdeck-step-ic { display: inline-grid; place-items: center; width: 46px; height: 46px; border-radius: 12px; background: var(--fsd-cream); color: var(--fsd-orange); flex-shrink: 0; }
+.fsdeck-step-t { font-size: 20px; font-weight: 800; color: var(--fsd-navy); }
+.fsdeck-step-d { font-size: 15px; color: var(--fsd-ink2); margin-top: 3px; }
+
+/* thanks recap */
+.fsdeck-thanks .fsdeck-recap { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 28px; }
+.fsdeck-recap-item { display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 600; color: #fff; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14); padding: 9px 16px; border-radius: 999px; }
+
+/* ---------- editable fields + confidence pills ---------- */
+.fsdeck-val { display: inline; }
+.fsdeck-editwrap { display: inline-flex; flex-direction: column; gap: 6px; align-items: flex-start; width: 100%; }
+.fsdeck-edit {
+  font-family: var(--font); font-size: inherit; color: inherit; line-height: 1.4;
+  background: rgba(249,115,22,0.06); border: 1px dashed rgba(249,115,22,0.5); border-radius: 8px;
+  padding: 6px 9px; width: 100%; resize: none; outline: none;
+}
+.fsdeck-edit:focus { background: #fff; border-style: solid; border-color: var(--fsd-orange); box-shadow: 0 0 0 3px rgba(249,115,22,0.14); }
+.fsdeck-softcol.rec .fsdeck-edit, .fsdeck-understood .fsdeck-edit, .fsdeck-contract-side .fsdeck-edit, .fsdeck-cover .fsdeck-edit { color: #fff; background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.35); }
+.fsdeck-conf {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700;
+  padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+}
+.fsdeck-conf .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.fsdeck-conf.crm { color: #1c7a4a; background: #e3f5ea; }
+.fsdeck-conf.inferred { color: #9a6a12; background: #fdf0d8; }
+.fsdeck-conf.ai { color: #6a48c9; background: #efe9fd; }
+.fsdeck-conf.client { color: #2563c9; background: #e6effc; }

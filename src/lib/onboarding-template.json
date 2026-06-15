@@ -1,0 +1,86 @@
+{
+  "key": "medium_enterprise",
+  "name": "Medium Enterprise Onboarding",
+  "stages": [
+    {
+      "no": 1,
+      "name": "Trigger and Team Setup",
+      "steps": [
+        { "no": "1.1", "title": "Client added and status set to Signed", "description": "Onboarding run auto-created from the Medium Enterprise template. Ops Manager notified via FinChat.", "type": "system", "role": "ops_head", "ai": false, "approval": false },
+        { "no": "1.2", "title": "Ops Manager assigns team", "description": "Assign the Account Manager, Senior Accountant and Junior Accountant from the org chart. On confirm, the run moves to Active.", "type": "manual", "role": "ops_head", "ai": false, "approval": false },
+        { "no": "1.3", "title": "Scope confirmation auto-sent", "description": "Plain-English scope email sent to the client from the Finanshels address — services signed, timeline, who their AM is.", "type": "automated", "role": "am", "ai": false, "approval": false },
+        { "no": "1.4", "title": "Drive folder auto-created", "description": "Full client folder structure created in the assigned member's Drive. Monthly subfolders auto-created as months progress.", "type": "automated", "role": "am", "ai": false, "approval": false }
+      ]
+    },
+    {
+      "no": 2,
+      "name": "Pre-Fill and Form Dispatch",
+      "steps": [
+        { "no": "2.1", "title": "System pre-fills intake form from CRM", "description": "Each pre-filled field is flagged: pre-filled from CRM — confirm or correct. Empty fields shown for the AM to complete.", "type": "automated", "role": "am", "ai": false, "approval": false },
+        { "no": "2.2", "title": "AM reviews, edits and approves form", "description": "AM reviews every field, corrects wrong data, fills what they know. On approval the magic link is generated.", "type": "internal_confirm", "role": "am", "ai": false, "approval": true },
+        { "no": "2.3", "title": "Magic link dispatched to client", "description": "7-day magic link sent to the client's primary contact, locked to that email. Opens the welcome video and pre-filled form.", "type": "automated", "role": "am", "ai": false, "approval": false }
+      ]
+    },
+    {
+      "no": 3,
+      "name": "Client Data Collection",
+      "steps": [
+        { "no": "3.1", "title": "AM reviews submitted data", "description": "Client confirms the form and uploads documents. AM reviews the submission and flags anything that needs clarification before Stage 4.", "type": "internal_confirm", "role": "am", "ai": false, "approval": false }
+      ]
+    },
+    {
+      "no": 4,
+      "name": "Drive Prep and Pre-Call",
+      "steps": [
+        { "no": "4.1", "title": "AI pre-call brief generated", "description": "AI generates a pre-call brief from CRM data, the intake form and any Fathom calls: business overview, industry context, UAE regulatory requirements, key questions, risk flags, COA recommendation.", "type": "ai", "role": "am", "ai": true, "approval": false },
+        { "no": "4.2", "title": "AM reviews AI brief", "description": "AM reads and edits the brief, adds internal notes, then approves.", "type": "internal_confirm", "role": "am", "ai": false, "approval": true },
+        { "no": "4.3", "title": "COA template auto-selected", "description": "System recommends a COA template from industry + structure + VAT status + revenue channels.", "type": "ai", "role": "senior", "ai": true, "approval": false },
+        { "no": "4.4", "title": "Senior Accountant adjusts COA", "description": "Senior Accountant reviews the template and makes client-specific adjustments, documenting any non-standard accounts.", "type": "form", "role": "senior", "ai": false, "approval": false },
+        { "no": "4.5", "title": "Agenda auto-generated and sent", "description": "Kickoff agenda populated from the brief and emailed to the client.", "type": "automated", "role": "am", "ai": false, "approval": false },
+        { "no": "4.6", "title": "Fathom recordings linked", "description": "Fathom recordings and notes auto-linked to the client playbook in Cadence.", "type": "link", "role": "am", "ai": false, "approval": false }
+      ]
+    },
+    {
+      "no": 5,
+      "name": "Kickoff Call",
+      "steps": [
+        { "no": "5.1", "title": "Call scheduled", "description": "AM enters the date and time; the scheduling link is sent to the client.", "type": "manual", "role": "am", "ai": false, "approval": false },
+        { "no": "5.2", "title": "Kickoff call conducted", "description": "Strategic conversation — logistics already handled. Fathom records the call automatically.", "type": "manual", "role": "am", "ai": false, "approval": false },
+        { "no": "5.3", "title": "Post-call structured notes submitted", "description": "Structured notes: decisions, scope confirmed, COA adjustments, action items, go-live date. Action items auto-convert to tasks; due dates back-calculate from go-live.", "type": "form", "role": "am", "ai": false, "approval": false }
+      ]
+    },
+    {
+      "no": 6,
+      "name": "Post-Call and COA Sign-Off",
+      "steps": [
+        { "no": "6.1", "title": "Welcome email auto-drafted", "description": "Draft uses client name, AM, agreed services and timeline. AM reviews and sends in one click.", "type": "automated", "role": "am", "ai": true, "approval": true },
+        { "no": "6.2", "title": "COA sent to client for review", "description": "Client sees a plain-English version of the COA via magic link and can comment per section.", "type": "automated", "role": "am", "ai": false, "approval": false },
+        { "no": "6.3", "title": "Client signs off COA", "description": "Client confirms or requests changes. Step stays open until the client confirms.", "type": "client_action", "role": "am", "ai": false, "approval": false },
+        { "no": "6.4", "title": "Client playbook finalised", "description": "Playbook compiled from CRM data + intake form + Fathom notes + post-call notes. AM confirms it is complete.", "type": "internal_confirm", "role": "am", "ai": false, "approval": false }
+      ]
+    },
+    {
+      "no": 7,
+      "name": "Task Board Configuration",
+      "steps": [
+        { "no": "7.1", "title": "Project configured", "description": "Project name, description and target go-live date (pre-filled from call notes).", "type": "manual", "role": "am", "ai": false, "approval": false },
+        { "no": "7.2", "title": "Task list auto-generated from template", "description": "Tasks loaded per signed service (bookkeeping / VAT / CT / catch-up / CFO). VAT & CT deadlines auto-calculated; due dates back-calculated from go-live.", "type": "automated", "role": "am", "ai": false, "approval": false },
+        { "no": "7.3", "title": "Team configures tasks", "description": "For each task: title, description, assignee, due date and client-visible toggle. Assignees notified via FinChat.", "type": "manual", "role": "am", "ai": false, "approval": false },
+        { "no": "7.4", "title": "Assignees and due dates set", "description": "System enforces that every task has an assignee and a due date before handover unlocks.", "type": "manual", "role": "am", "ai": false, "approval": false },
+        { "no": "7.5", "title": "Task board reviewed and locked", "description": "AM reviews the full board and locks it for handover.", "type": "internal_confirm", "role": "am", "ai": false, "approval": false }
+      ]
+    },
+    {
+      "no": 8,
+      "name": "Handover",
+      "steps": [
+        { "no": "8.1", "title": "Handover checklist auto-generated", "description": "Standard checklist: COA signed off, documents filed, playbook complete, task board complete, regular team assigned, Fathom linked, open items documented, engagement letter signed.", "type": "automated", "role": "am", "ai": false, "approval": false },
+        { "no": "8.2", "title": "AM completes checklist", "description": "Each item confirmed individually. Cannot complete with any mandatory item outstanding.", "type": "manual", "role": "am", "ai": false, "approval": false },
+        { "no": "8.3", "title": "Handover summary PDF auto-generated", "description": "Client overview, COA summary, contacts, timeline, open items and all links.", "type": "automated", "role": "am", "ai": true, "approval": false },
+        { "no": "8.4", "title": "Regular team notified", "description": "FinChat briefing to all assigned regular team members with the handover PDF, playbook and Drive links.", "type": "automated", "role": "am", "ai": false, "approval": false },
+        { "no": "8.5", "title": "Regular team confirms receipt", "description": "Assigned Senior Accountant confirms receipt — one click, cannot be skipped.", "type": "internal_confirm", "role": "senior", "ai": false, "approval": true },
+        { "no": "8.6", "title": "Run close sequence", "description": "CRM tag → Active, task board pushed to PMS, client portal → You Are Live, Drive access shared, recurring runs created, VAT/CT deadlines added.", "type": "automated", "role": "am", "ai": false, "approval": false }
+      ]
+    }
+  ]
+}
