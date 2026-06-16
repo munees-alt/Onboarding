@@ -1,8 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { uploadClientDocToDrive } from "@/lib/google";
+import { uploadClientDocToDrive, sendGmailAs } from "@/lib/google";
+import { PORTAL_COOKIE, makePortalCookie, hashCode, makeCode } from "@/lib/portal-auth";
 
 /** Validates a portal token → returns the magic link row (or null). */
 async function resolve(token: string) {
@@ -15,6 +17,80 @@ async function resolve(token: string) {
   if (!data) return null;
   if (new Date(data.expires_at).getTime() < Date.now()) return null;
   return data;
+}
+
+/** Finds a Google-connected team member to send the OTP email from (prefers the run's AM). */
+async function findEmailSender(orgId: string, amId: string | null): Promise<string | null> {
+  const admin = createAdminClient();
+  if (amId) {
+    const { data } = await admin.from("member_connections").select("team_member_id").eq("team_member_id", amId).eq("provider", "google").eq("connected", true).maybeSingle();
+    if (data?.team_member_id) return data.team_member_id;
+  }
+  const { data } = await admin
+    .from("member_connections")
+    .select("team_member_id,team_members!inner(org_id)")
+    .eq("provider", "google").eq("connected", true)
+    .eq("team_members.org_id", orgId)
+    .limit(1)
+    .maybeSingle();
+  return (data?.team_member_id as string | undefined) ?? null;
+}
+
+/** Step 1 of portal access: email a one-time code IF the email matches the configured one. */
+export async function requestPortalCode(token: string, email: string): Promise<{ error?: string; ok?: boolean }> {
+  const admin = createAdminClient();
+  const { data: link } = await admin
+    .from("magic_links")
+    .select("id,email,org_id,run_id,expires_at")
+    .eq("token", token)
+    .maybeSingle();
+  if (!link || new Date(link.expires_at).getTime() < Date.now()) return { error: "This link has expired. Ask your account manager for a new one." };
+  const configured = (link.email ?? "").trim().toLowerCase();
+  if (!configured || configured === "client@example.com") return { error: "This portal isn't set up with your email yet. Please contact your account manager." };
+  if (email.trim().toLowerCase() !== configured) return { error: "That email doesn't match the one this onboarding was sent to." };
+
+  const code = makeCode();
+  await admin.from("magic_links").update({
+    otp_hash: hashCode(code),
+    otp_expiry: new Date(Date.now() + 10 * 60_000).toISOString(),
+    otp_attempts: 0,
+  }).eq("id", link.id);
+
+  let amId: string | null = null;
+  if (link.run_id) {
+    const { data: run } = await admin.from("onboarding_runs").select("am_id").eq("id", link.run_id).maybeSingle();
+    amId = run?.am_id ?? null;
+  }
+  const sender = await findEmailSender(link.org_id, amId);
+  if (!sender) return { error: "Couldn't send the code (email not configured). Please contact your account manager." };
+  const res = await sendGmailAs(sender, link.email, "Your Finanshels portal access code", `Your one-time access code is: ${code}\n\nIt expires in 10 minutes.\n\nIf you didn't request this, you can ignore this email.`);
+  if (!res.ok) return { error: "Couldn't send the code right now. Please try again or contact your account manager." };
+  return { ok: true };
+}
+
+/** Step 2 of portal access: verify the code and set the access cookie. */
+export async function verifyPortalCode(token: string, code: string): Promise<{ error?: string; ok?: boolean }> {
+  const admin = createAdminClient();
+  const { data: link } = await admin
+    .from("magic_links")
+    .select("id,otp_hash,otp_expiry,otp_attempts,expires_at")
+    .eq("token", token)
+    .maybeSingle();
+  if (!link || new Date(link.expires_at).getTime() < Date.now()) return { error: "This link has expired." };
+  if (!link.otp_hash || !link.otp_expiry) return { error: "Request a code first." };
+  if (new Date(link.otp_expiry).getTime() < Date.now()) return { error: "That code expired. Request a new one." };
+  if ((link.otp_attempts ?? 0) >= 5) return { error: "Too many attempts. Request a new code." };
+  if (hashCode(code.trim()) !== link.otp_hash) {
+    await admin.from("magic_links").update({ otp_attempts: (link.otp_attempts ?? 0) + 1 }).eq("id", link.id);
+    return { error: "Incorrect code. Please check and try again." };
+  }
+  // Success — clear the code and grant access via signed cookie (7 days).
+  await admin.from("magic_links").update({ otp_hash: null, otp_expiry: null, otp_attempts: 0 }).eq("id", link.id);
+  const jar = await cookies();
+  jar.set(PORTAL_COOKIE, makePortalCookie(token), {
+    httpOnly: true, secure: true, sameSite: "lax", path: "/portal", maxAge: 7 * 24 * 60 * 60,
+  });
+  return { ok: true };
 }
 
 export async function confirmCoa(token: string): Promise<{ error?: string; ok?: boolean }> {

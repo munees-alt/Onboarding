@@ -1,6 +1,9 @@
+import { cookies } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { templateById } from "@/lib/onboarding-templates";
 import { PortalView, type PortalData, type IntakePrepView } from "./portal-view";
+import { PortalGate } from "./portal-gate";
+import { PORTAL_COOKIE, verifyPortalCookie, maskEmail } from "@/lib/portal-auth";
 
 export const metadata = { title: "Finanshels — Your onboarding" };
 
@@ -10,7 +13,7 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
 
   const { data: link } = await admin
     .from("magic_links")
-    .select("client_id,run_id,expires_at")
+    .select("client_id,run_id,expires_at,email")
     .eq("token", token)
     .maybeSingle();
 
@@ -24,6 +27,13 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
         </div>
       </div>
     );
+  }
+
+  // Email gate: the portal only opens for the email it was sent to. Until the
+  // visitor verifies a code sent to that email, show the access gate.
+  const jar = await cookies();
+  if (!verifyPortalCookie(token, jar.get(PORTAL_COOKIE)?.value)) {
+    return <PortalGate token={token} emailHint={maskEmail(link.email)} />;
   }
 
   const [{ data: client }, { data: run }, { data: coa }, { data: docs }, { data: tasks }, { data: team }, { data: intake }, { data: messages }] = await Promise.all([

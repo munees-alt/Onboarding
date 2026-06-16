@@ -560,7 +560,7 @@ export async function nudgeTeam(runId: string, message: string): Promise<{ error
 }
 
 /** Creates (or reuses) the client portal magic link for this run. */
-export async function dispatchMagicLink(runId: string): Promise<{ error?: string; token?: string; url?: string }> {
+export async function dispatchMagicLink(runId: string): Promise<{ error?: string; token?: string; url?: string; email?: string }> {
   const supabase = await createClient();
   const { data: run } = await supabase
     .from("onboarding_runs")
@@ -576,19 +576,28 @@ export async function dispatchMagicLink(runId: string): Promise<{ error?: string
     .eq("purpose", "portal")
     .maybeSingle();
 
+  // The portal is email-locked, so a real client email MUST be configured first.
+  const { data: client } = await supabase.from("clients").select("primary_contact_email").eq("id", run.client_id).maybeSingle();
+  const clientEmail = client?.primary_contact_email?.trim();
+  if (!clientEmail) {
+    return { error: "Set the client's email first (Client → Client Data). The portal can only be opened by that email." };
+  }
+
   let token = existing?.token as string | undefined;
   if (!token) {
     token = crypto.randomBytes(24).toString("base64url");
-    const { data: client } = await supabase.from("clients").select("primary_contact_email").eq("id", run.client_id).maybeSingle();
     const expires = new Date(Date.now() + 7 * 86_400_000).toISOString();
     const { error } = await supabase.from("magic_links").insert({
       org_id: run.org_id, run_id: runId, client_id: run.client_id,
-      email: client?.primary_contact_email ?? "client@example.com",
+      email: clientEmail,
       token, purpose: "portal", expires_at: expires,
     });
     if (error) return { error: error.message };
+  } else {
+    // Keep the link's email in sync with the (possibly just-set) client email.
+    await supabase.from("magic_links").update({ email: clientEmail }).eq("token", token);
   }
-  return { token, url: `/portal/${token}` };
+  return { token, url: `/portal/${token}`, email: clientEmail };
 }
 
 export async function rollbackToStage(runId: string, stageNo: number) {
