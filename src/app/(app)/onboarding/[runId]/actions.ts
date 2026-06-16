@@ -164,6 +164,48 @@ export async function assignStep(runId: string, stepId: string, memberId: string
   return {};
 }
 
+/** Assign one or more people to a step (optional/multi-select). Empty list = skip an optional step. */
+export async function assignStepMembers(
+  runId: string,
+  stepId: string,
+  members: { id: string; name: string; role?: string }[],
+): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key,am_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const loc = locate(run.template_key, stepId);
+  if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
+
+  const names = members.map((m) => m.name).join(", ");
+  const r = await upsertStep(supabase, runId, run.template_key, stepId, {
+    status: "complete",
+    assignee_id: members[0]?.id ?? null,
+    payload: { assigned: names || "Skipped (optional)", assignees: members },
+    completed_at: new Date().toISOString(),
+  });
+  if (r.error) return r;
+
+  const fallbackRole =
+    loc?.step.assignRole ||
+    (loc?.step.act?.role ? WHO_TO_ROLE[loc.step.act.role.trim().toLowerCase()] ?? "senior" : "senior");
+  for (const m of members) {
+    await supabase.from("run_team").upsert(
+      { run_id: runId, team_member_id: m.id, role_in_run: m.role || fallbackRole },
+      { onConflict: "run_id,team_member_id" },
+    );
+  }
+  if (run.am_id) {
+    await supabase.from("run_team").upsert(
+      { run_id: runId, team_member_id: run.am_id, role_in_run: "am" },
+      { onConflict: "run_id,team_member_id" },
+    );
+  }
+
+  await recompute(supabase, runId, run.template_key);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 /** Builds the client Drive tree: Company Docs / Books → Year → Months (from contract) / Financial / Cleanup / Others. */
 function buildDriveTree(clientName: string, startYM?: string, endYM?: string): DriveFolderNode {
@@ -418,6 +460,20 @@ export interface TaskInput {
   status?: string;
   due?: string;       // free text (stored in `service`, e.g. "Day 4")
   clientVisible?: boolean;
+  boardColumn?: string | null;
+}
+
+/** Save the run's custom task-board column list. */
+export async function saveBoardColumns(runId: string, columns: string[]): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const clean = columns.map((c) => c.trim()).filter(Boolean);
+  if (!clean.length) return { error: "Keep at least one column." };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "board_columns");
+  await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "board_columns", data: { columns: clean }, status: "open" });
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
 }
 
 /** Create a task on the run's board. */
@@ -454,6 +510,7 @@ export async function updateTask(runId: string, taskId: string, patch: TaskInput
   if (patch.status !== undefined) upd.status = patch.status;
   if (patch.due !== undefined) upd.service = patch.due?.trim() || null;
   if (patch.clientVisible !== undefined) upd.client_visible = patch.clientVisible;
+  if (patch.boardColumn !== undefined) upd.board_column = patch.boardColumn || null;
   if (patch.ownerKind !== undefined) {
     upd.owner_kind = patch.ownerKind;
     upd.owner_id = patch.ownerKind === "client" ? null : (patch.ownerId || null);

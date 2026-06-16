@@ -7,7 +7,9 @@ import { Icon } from "@/components/icon";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStep, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
+
+const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
 import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, generateCompliance, generateProjects, generateDiagram, type CoaLine, type ContractAnalysis } from "./ai-actions";
@@ -33,7 +35,6 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
   const [expanded, setExpanded] = useState<number>(detail.currentStage);
   const [busy, startTransition] = useTransition();
   const [toast, setToast] = useState<string | null>(null);
-  const [assignSel, setAssignSel] = useState<Record<string, string>>({});
   const [actStep, setActStep] = useState<TemplateStep | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [taskStepPending, setTaskStepPending] = useState<string | null>(null);
@@ -213,12 +214,10 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
                           status={stepStatus(step.id)}
                           isActive={actId === step.id}
                           assignedName={detail.stepState[step.id]?.assignedName ?? null}
-                          options={step.act?.role === "Senior" ? detail.seniors : step.act?.role === "Junior" ? detail.juniors : []}
-                          sel={assignSel[step.id] ?? ""}
-                          onSel={(v) => setAssignSel((m) => ({ ...m, [step.id]: v }))}
+                          people={detail.assignPeople}
                           busy={busy}
                           onOpenAct={() => openAct(step)}
-                          onAssign={(id, name) => run(() => assignStep(detail.runId, step.id, id, name), `Assigned ${name}`)}
+                          onAssignMembers={(members) => run(() => assignStepMembers(detail.runId, step.id, members), members.length ? `Assigned ${members.length} ${members.length === 1 ? "person" : "people"}` : "Step skipped")}
                         />
                       ))}
                       {stage.gate && (
@@ -239,6 +238,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
           runId={detail.runId}
           tasks={detail.tasks}
           owners={taskOwners}
+          columns={(() => { const c = detail.items["board_columns"]?.[0]?.data?.columns; return Array.isArray(c) && c.length ? (c as string[]) : DEFAULT_BOARD_COLUMNS; })()}
           confirmStepId={taskStepPending}
           onOpenChat={() => setChatOpen(true)}
           onConfirmStep={() => {
@@ -620,20 +620,69 @@ function CoaBuilderModal({
   );
 }
 
+const ROLE_LBL: Record<string, string> = { team_lead: "Team Lead", senior: "Senior", junior: "Junior", associate: "Associate", intern: "Intern", am: "AM", ops_head: "Ops" };
+const ROLE_ORDER = ["team_lead", "senior", "junior", "associate", "intern"];
+
+function AssignPicker({
+  people, primaryRole, optional, busy, onAssign,
+}: {
+  people: { id: string; name: string; role: string }[];
+  primaryRole?: string;
+  optional: boolean;
+  busy: boolean;
+  onAssign: (members: { id: string; name: string; role: string }[]) => void;
+}) {
+  const [sel, setSel] = useState<Record<string, boolean>>({});
+  const [q, setQ] = useState("");
+  const primary = (primaryRole ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+  const sorted = [...people].sort((a, b) => {
+    const ap = a.role === primary ? 0 : 1, bp = b.role === primary ? 0 : 1;
+    if (ap !== bp) return ap - bp;
+    const ar = ROLE_ORDER.indexOf(a.role), br = ROLE_ORDER.indexOf(b.role);
+    if (ar !== br) return (ar < 0 ? 99 : ar) - (br < 0 ? 99 : br);
+    return a.name.localeCompare(b.name);
+  });
+  const filtered = q ? sorted.filter((p) => p.name.toLowerCase().includes(q.toLowerCase())) : sorted;
+  const chosen = people.filter((p) => sel[p.id]);
+  const count = chosen.length;
+  return (
+    <div style={{ width: "100%", maxWidth: 470, border: "1px solid var(--border)", borderRadius: 10, padding: 10, background: "#fff" }}>
+      <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 6 }}>
+        Assign {primaryRole ? <strong>{primaryRole}</strong> : "people"} — pick one or more.{optional ? " Optional." : ""}
+      </div>
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people…" style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 9px", fontSize: 12.5, marginBottom: 8 }} />
+      <div style={{ maxHeight: 190, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+        {filtered.length === 0 && <div style={{ fontSize: 12, color: "var(--ink-3)", padding: 8 }}>No matching people.</div>}
+        {filtered.map((p) => (
+          <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", borderRadius: 7, cursor: "pointer", fontSize: 13, background: sel[p.id] ? "var(--bg)" : "transparent" }}>
+            <input type="checkbox" checked={!!sel[p.id]} onChange={(e) => setSel((s) => ({ ...s, [p.id]: e.target.checked }))} style={{ accentColor: "var(--orange)" }} />
+            <span style={{ flex: 1 }}>{p.name}</span>
+            <span className="pill gray" style={{ fontSize: 10, padding: "1px 7px" }}>{ROLE_LBL[p.role] ?? p.role}</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+        <button className="btn-primary" disabled={busy || count === 0} onClick={() => onAssign(chosen.map((c) => ({ id: c.id, name: c.name, role: c.role })))}>
+          Assign{count ? ` ${count}` : ""}
+        </button>
+        {optional && <button className="btn-ghost" disabled={busy} onClick={() => onAssign([])}>Skip (optional)</button>}
+      </div>
+    </div>
+  );
+}
+
 function StepBox({
-  step, assignRole, status, isActive, assignedName, options, sel, onSel, busy, onOpenAct, onAssign,
+  step, assignRole, status, isActive, assignedName, people, busy, onOpenAct, onAssignMembers,
 }: {
   step: TemplateStep;
   assignRole: string | null;
   status: string;
   isActive: boolean;
   assignedName: string | null;
-  options: { id: string; name: string }[];
-  sel: string;
-  onSel: (v: string) => void;
+  people: { id: string; name: string; role: string }[];
   busy: boolean;
   onOpenAct: () => void;
-  onAssign: (id: string, name: string) => void;
+  onAssignMembers: (members: { id: string; name: string; role: string }[]) => void;
 }) {
   const ki = KIND_ICON[step.kind] ?? KIND_ICON.person;
   const done = status === "complete";
@@ -674,19 +723,13 @@ function StepBox({
           {isActive && !done && (
             <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               {isAssign ? (
-                <>
-                  <select value={sel} onChange={(e) => onSel(e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", fontSize: 13 }}>
-                    <option value="">Select {step.act?.role}…</option>
-                    {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-                  </select>
-                  <button
-                    className="btn-primary"
-                    disabled={busy || !sel}
-                    onClick={() => { const o = options.find((x) => x.id === sel); if (o) onAssign(o.id, o.name); }}
-                  >
-                    Assign
-                  </button>
-                </>
+                <AssignPicker
+                  people={people}
+                  primaryRole={step.act?.role}
+                  optional={!!step.act?.optional}
+                  busy={busy}
+                  onAssign={onAssignMembers}
+                />
               ) : (
                 <button className="btn-primary" disabled={busy} onClick={onOpenAct}>
                   {step.act?.btn ?? "Mark done"}
@@ -720,11 +763,12 @@ const TASK_TYPE_LABEL: Record<string, string> = { internal: "Internal", client_a
 const inputStyle: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "100%" };
 
 function TaskBoard({
-  runId, tasks, owners, confirmStepId, onConfirmStep, onOpenChat,
+  runId, tasks, owners, columns, confirmStepId, onConfirmStep, onOpenChat,
 }: {
   runId: string;
   tasks: TaskRow[];
   owners: { id: string; name: string }[];
+  columns: string[];
   confirmStepId: string | null;
   onConfirmStep: () => void;
   onOpenChat: () => void;
@@ -735,6 +779,7 @@ function TaskBoard({
   const [nudgeOpen, setNudgeOpen] = useState(false);
   const [nudgeMsg, setNudgeMsg] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  const [colMgr, setColMgr] = useState<string[] | null>(null); // non-null = modal open with draft
 
   const change = (fn: () => Promise<{ error?: string }>) =>
     start(async () => { const r = await fn(); if (r?.error) { setToast(r.error); setTimeout(() => setToast(null), 2400); } router.refresh(); });
@@ -760,7 +805,8 @@ function TaskBoard({
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button className="btn-ghost" onClick={onOpenChat}><Icon name="message-square" size={13} /> Chat</button>
           <button className="btn-ghost" onClick={() => setNudgeOpen(true)}><Icon name="bell" size={13} /> Nudge team</button>
-          <button className="btn-primary" disabled={busy} onClick={() => change(() => addTask(runId, { title: "New task" }))}>
+          <button className="btn-ghost" onClick={() => setColMgr([...columns])}><Icon name="columns" size={13} /> Manage columns</button>
+          <button className="btn-primary" disabled={busy} onClick={() => change(() => addTask(runId, { title: "New task", boardColumn: columns[0] }))}>
             <Icon name="plus" size={14} /> Add task
           </button>
         </div>
@@ -768,7 +814,7 @@ function TaskBoard({
 
       <div className="runs-card">
         <table className="runs-table">
-          <thead><tr><th style={{ minWidth: 220 }}>Task</th><th>Owner</th><th>Type</th><th>Due</th><th>Client sees</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th style={{ minWidth: 200 }}>Task</th><th>Owner</th><th>Column</th><th>Type</th><th>Due</th><th>Client sees</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {tasks.map((t) => (
               <tr key={t.id}>
@@ -792,6 +838,16 @@ function TaskBoard({
                     <option value="">Unassigned</option>
                     <option value="client">Client</option>
                     {owners.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <select
+                    value={t.boardColumn && columns.includes(t.boardColumn) ? t.boardColumn : columns[0]}
+                    disabled={busy}
+                    onChange={(e) => change(() => updateTask(runId, t.id, { boardColumn: e.target.value }))}
+                    style={{ ...inputStyle, minWidth: 110 }}
+                  >
+                    {columns.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </td>
                 <td>
@@ -819,7 +875,7 @@ function TaskBoard({
                 </td>
               </tr>
             ))}
-            {!tasks.length && <tr><td colSpan={7} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No tasks yet — click “Add task”.</td></tr>}
+            {!tasks.length && <tr><td colSpan={8} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No tasks yet — click “Add task”.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -828,6 +884,30 @@ function TaskBoard({
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14, gap: 10, alignItems: "center" }}>
           <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>Done setting the board?</span>
           <button className="btn-primary" disabled={busy} onClick={onConfirmStep}><Icon name="check" size={14} /> Save &amp; confirm step</button>
+        </div>
+      )}
+
+      {colMgr !== null && (
+        <div className="modal-overlay open" onClick={() => setColMgr(null)}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd"><h3>Manage board columns</h3><div className="sub">Add, rename or remove the columns. Tasks in a removed column move to the first column.</div></div>
+            <div className="bd" style={{ maxHeight: "56vh" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {colMgr.map((col, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ color: "var(--ink-4)", fontSize: 12, width: 18 }}>{i + 1}</span>
+                    <input value={col} onChange={(e) => setColMgr((cs) => cs!.map((c, j) => (j === i ? e.target.value : c)))} style={{ ...inputStyle, flex: 1 }} />
+                    <button className="icon-btn" disabled={colMgr.length <= 1} onClick={() => setColMgr((cs) => cs!.filter((_, j) => j !== i))} style={{ color: "var(--red)" }} aria-label="Remove column"><Icon name="trash-2" size={14} /></button>
+                  </div>
+                ))}
+              </div>
+              <button className="add-link" onClick={() => setColMgr((cs) => [...cs!, "New column"])} style={{ marginTop: 10 }}><Icon name="plus" size={12} /> Add column</button>
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setColMgr(null)} disabled={busy}>Cancel</button>
+              <button className="btn-primary" disabled={busy || !colMgr.some((c) => c.trim())} onClick={() => { const cols = colMgr; setColMgr(null); change(() => saveBoardColumns(runId, cols)); }}>Save columns</button>
+            </div>
+          </div>
         </div>
       )}
 

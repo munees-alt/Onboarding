@@ -23,6 +23,7 @@ export interface TaskRow {
   type: string;
   status: string;
   due: string | null;
+  boardColumn: string | null;
 }
 export interface RunDetail {
   runId: string;
@@ -40,6 +41,7 @@ export interface RunDetail {
   stepState: Record<string, StepState>;
   seniors: { id: string; name: string }[];
   juniors: { id: string; name: string }[];
+  assignPeople: { id: string; name: string; role: string }[];
   tasks: TaskRow[];
   items: Record<string, { id: string; data: Record<string, unknown>; status: string }[]>;
   playbook: {
@@ -93,10 +95,11 @@ export async function getRunDetail(
     };
   });
 
-  const [{ data: srs }, { data: jrs }, { data: taskRows }, { data: itemRows }] = await Promise.all([
+  const [{ data: srs }, { data: jrs }, { data: aps }, { data: taskRows }, { data: itemRows }] = await Promise.all([
     supabase.from("team_members").select("id,full_name").eq("org_id", run.org_id).in("role", ["senior", "team_lead"]).eq("active", true).order("full_name").limit(40),
     supabase.from("team_members").select("id,full_name").eq("org_id", run.org_id).in("role", ["junior", "associate"]).eq("active", true).order("full_name").limit(40),
-    supabase.from("tasks").select("id,title,owner_id,owner_kind,client_visible,type,status,service").eq("run_id", runId).order("sort"),
+    supabase.from("team_members").select("id,full_name,role").eq("org_id", run.org_id).in("role", ["team_lead", "senior", "junior", "associate", "intern"]).eq("active", true).order("full_name").limit(200),
+    supabase.from("tasks").select("id,title,owner_id,owner_kind,client_visible,type,status,service,board_column").eq("run_id", runId).order("sort"),
     supabase.from("run_items").select("id,kind,data,status,sort").eq("run_id", runId).order("sort"),
   ]);
 
@@ -121,6 +124,7 @@ export async function getRunDetail(
     type: t.type,
     status: t.status,
     due: t.service ?? null,
+    boardColumn: t.board_column ?? null,
   }));
 
   const [{ data: pbClient }, { data: pbIntake }, { data: pbCoa }, { data: pbDocs }, { data: pbDiag }, { data: pbTeam }] = await Promise.all([
@@ -162,5 +166,6 @@ export async function getRunDetail(
     stepState,
     seniors: (srs ?? []).map((m) => ({ id: m.id, name: m.full_name })),
     juniors: (jrs ?? []).map((m) => ({ id: m.id, name: m.full_name })),
+    assignPeople: (aps ?? []).map((m) => ({ id: m.id, name: m.full_name, role: m.role })),
   };
 }
