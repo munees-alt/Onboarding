@@ -4,7 +4,14 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
 import { ONB_TEMPLATES } from "@/lib/onboarding-templates";
-import { createClientAction, markSignedAction, type NewClientInput } from "./actions";
+import {
+  createClientAction,
+  markSignedAction,
+  setClientStatusAction,
+  deleteClientAction,
+  deleteRunAction,
+  type NewClientInput,
+} from "./actions";
 
 export interface ClientRow {
   id: string;
@@ -12,10 +19,11 @@ export interface ClientRow {
   owner_name: string | null;
   industry: string | null;
   entity_type: string | null;
-  status: "lead" | "signed" | "onboarding" | "active" | "inactive";
+  status: "lead" | "signed" | "onboarding" | "active" | "inactive" | "hold" | "paused";
   services: string[] | null;
   primary_contact_email: string | null;
   profile_complete: boolean;
+  am_id: string | null;
 }
 export interface RunLite {
   id: string;
@@ -24,6 +32,12 @@ export interface RunLite {
   current_stage: number;
   status: string;
 }
+export interface AmOption {
+  id: string;
+  full_name: string;
+  role: string;
+  title: string | null;
+}
 
 const STATUS_PILL: Record<ClientRow["status"], string> = {
   onboarding: "amber",
@@ -31,6 +45,8 @@ const STATUS_PILL: Record<ClientRow["status"], string> = {
   lead: "blue",
   signed: "purple",
   inactive: "gray",
+  hold: "amber",
+  paused: "gray",
 };
 const STATUS_LABEL: Record<ClientRow["status"], string> = {
   onboarding: "Onboarding",
@@ -38,8 +54,10 @@ const STATUS_LABEL: Record<ClientRow["status"], string> = {
   lead: "Lead",
   signed: "Signed",
   inactive: "Inactive",
+  hold: "On hold",
+  paused: "Paused",
 };
-const TABS = ["All", "Active", "Onboarding", "Lead", "Inactive"] as const;
+const TABS = ["All", "Active", "Onboarding", "Lead", "Hold", "Paused", "Inactive"] as const;
 
 const INDUSTRIES = ["Retail", "E-commerce", "SaaS", "Restaurant", "Hospitality", "Trading", "Fintech", "Professional Services", "Holding Company", "Other"];
 const ENTITIES = [["mainland", "Mainland"], ["free_zone", "Free Zone"], ["offshore", "Offshore"]];
@@ -55,9 +73,15 @@ const SIGN_STEPS = [
 export function ClientsTable({
   clients,
   runByClient,
+  members,
+  canDelete,
+  canManageStatus,
 }: {
   clients: ClientRow[];
   runByClient: Record<string, RunLite>;
+  members: AmOption[];
+  canDelete: boolean;
+  canManageStatus: boolean;
 }) {
   const router = useRouter();
   const [tab, setTab] = useState<(typeof TABS)[number]>("All");
@@ -66,10 +90,39 @@ export function ClientsTable({
   const [picking, setPicking] = useState<{ clientId: string; name: string } | null>(null);
   const [signing, setSigning] = useState<{ name: string; step: number } | null>(null);
   const [toast, setToast] = useState<{ msg: string; kind: string } | null>(null);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [confirmDel, setConfirmDel] = useState<{ kind: "client" | "run"; id: string; name: string } | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const showToast = (msg: string, kind = "green") => {
     setToast({ msg, kind });
     setTimeout(() => setToast(null), 2600);
+  };
+
+  const changeStatus = async (clientId: string, status: "active" | "hold" | "paused" | "lead", label: string) => {
+    setMenuFor(null);
+    const res = await setClientStatusAction(clientId, status);
+    if (res.error) showToast(res.error, "red");
+    else {
+      showToast(label);
+      router.refresh();
+    }
+  };
+
+  const doDelete = async () => {
+    if (!confirmDel) return;
+    setBusy(true);
+    const res =
+      confirmDel.kind === "client"
+        ? await deleteClientAction(confirmDel.id)
+        : await deleteRunAction(confirmDel.id);
+    setBusy(false);
+    setConfirmDel(null);
+    if (res.error) showToast(res.error, "red");
+    else {
+      showToast(confirmDel.kind === "client" ? "Client deleted" : "Onboarding run deleted");
+      router.refresh();
+    }
   };
 
   const filtered = useMemo(() => {
@@ -214,15 +267,55 @@ export function ClientsTable({
                       )}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      {run ? (
-                        <button className="btn-ghost" onClick={() => router.push(`/onboarding/${run.id}`)}>
-                          Open run <Icon name="arrow-right" size={13} />
-                        </button>
-                      ) : c.status === "lead" || c.status === "signed" ? (
-                        <button className="btn-primary" onClick={() => setPicking({ clientId: c.id, name: c.name })}>
-                          Mark as Signed
-                        </button>
-                      ) : null}
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                        {run ? (
+                          <button className="btn-ghost" onClick={() => router.push(`/onboarding/${run.id}`)}>
+                            Open run <Icon name="arrow-right" size={13} />
+                          </button>
+                        ) : c.status === "lead" || c.status === "signed" ? (
+                          <button className="btn-primary" onClick={() => setPicking({ clientId: c.id, name: c.name })}>
+                            Mark as Signed
+                          </button>
+                        ) : null}
+                        {(canManageStatus || canDelete) && (
+                          <div style={{ position: "relative" }}>
+                            <button
+                              className="btn-ghost"
+                              style={{ padding: "6px 8px" }}
+                              onClick={() => setMenuFor(menuFor === c.id ? null : c.id)}
+                              aria-label="More actions"
+                            >
+                              <Icon name="more-horizontal" size={16} />
+                            </button>
+                            {menuFor === c.id && (
+                              <>
+                                <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setMenuFor(null)} />
+                                <div className="menu-pop" style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 41, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,.12)", padding: 6, minWidth: 196, textAlign: "left" }}>
+                                  {canManageStatus && (
+                                    <>
+                                      {c.status !== "hold" && (
+                                        <MenuItem icon="pause" label="Put on hold" onClick={() => changeStatus(c.id, "hold", `${c.name} put on hold`)} />
+                                      )}
+                                      {c.status !== "paused" && (
+                                        <MenuItem icon="pause-circle" label="Pause client" onClick={() => changeStatus(c.id, "paused", `${c.name} paused`)} />
+                                      )}
+                                      {(c.status === "hold" || c.status === "paused" || c.status === "inactive") && (
+                                        <MenuItem icon="play" label="Reactivate" onClick={() => changeStatus(c.id, "active", `${c.name} reactivated`)} />
+                                      )}
+                                    </>
+                                  )}
+                                  {canDelete && run && (
+                                    <MenuItem icon="trash-2" danger label="Delete onboarding run" onClick={() => { setMenuFor(null); setConfirmDel({ kind: "run", id: run.id, name: c.name }); }} />
+                                  )}
+                                  {canDelete && (
+                                    <MenuItem icon="trash-2" danger label="Delete client" onClick={() => { setMenuFor(null); setConfirmDel({ kind: "client", id: c.id, name: c.name }); }} />
+                                  )}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -234,6 +327,7 @@ export function ClientsTable({
 
       {addOpen && (
         <AddClientModal
+          members={members}
           onClose={() => setAddOpen(false)}
           onCreated={(name) => {
             setAddOpen(false);
@@ -304,6 +398,27 @@ export function ClientsTable({
         </div>
       )}
 
+      {confirmDel && (
+        <div className="modal-overlay open" style={{ zIndex: 90 }} onClick={() => !busy && setConfirmDel(null)}>
+          <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd">
+              <h3>{confirmDel.kind === "client" ? "Delete client?" : "Delete onboarding run?"}</h3>
+              <div className="sub">
+                {confirmDel.kind === "client"
+                  ? `This permanently deletes ${confirmDel.name} and ALL related onboarding runs, tasks, documents and messages. This cannot be undone.`
+                  : `This permanently deletes the onboarding run for ${confirmDel.name} (steps, tasks, messages). The client stays. This cannot be undone.`}
+              </div>
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setConfirmDel(null)} disabled={busy}>Cancel</button>
+              <button className="btn-danger" onClick={doDelete} disabled={busy}>
+                {busy ? "Deleting…" : confirmDel.kind === "client" ? "Delete client" : "Delete run"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {toast && (
         <div className={"toast show " + toast.kind}>
           <Icon name="check-circle" size={15} />
@@ -314,11 +429,54 @@ export function ClientsTable({
   );
 }
 
+function MenuItem({
+  icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: string;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 9,
+        width: "100%",
+        padding: "8px 10px",
+        borderRadius: 7,
+        fontSize: 13,
+        background: "transparent",
+        border: "none",
+        cursor: "pointer",
+        color: danger ? "var(--red)" : "var(--ink-1)",
+        textAlign: "left",
+      }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = danger ? "var(--red-soft)" : "var(--bg)")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+    >
+      <Icon name={icon} size={15} /> {label}
+    </button>
+  );
+}
+
+const ROLE_SHORT: Record<string, string> = {
+  admin: "Admin", ops_head: "Ops Head", am: "AM", team_lead: "Team Lead",
+  senior: "Senior", junior: "Junior", associate: "Associate", intern: "Intern", other: "Team",
+};
+
 function AddClientModal({
+  members,
   onClose,
   onCreated,
   onMarkSigned,
 }: {
+  members: AmOption[];
   onClose: () => void;
   onCreated: (name: string) => void;
   onMarkSigned: (clientId: string, name: string) => void;
@@ -391,6 +549,17 @@ function AddClientModal({
                 </button>
               ))}
             </div>
+          </div>
+          <div className="field">
+            <label>Account Manager (AM)</label>
+            <select value={form.am_id ?? ""} onChange={(e) => set("am_id", e.target.value || undefined)}>
+              <option value="">Assign me (default)</option>
+              {members.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.full_name} · {ROLE_SHORT[m.role] ?? m.role}
+                </option>
+              ))}
+            </select>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div className="field">

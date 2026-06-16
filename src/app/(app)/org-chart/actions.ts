@@ -84,10 +84,16 @@ export async function deleteMember(id: string): Promise<{ error?: string }> {
   const orgId = await guard();
   if (!orgId) return { error: "Not allowed." };
   const supabase = await createClient();
-  // Re-parent this person's reports to their manager, then delete.
+  // VOID, not hard delete: the person's record (and all their history on runs,
+  // tasks, audit log) stays intact, but they leave the active org chart.
+  // Re-parent their direct reports to their manager so the tree stays connected.
   const { data: node } = await supabase.from("team_members").select("reports_to").eq("id", id).maybeSingle();
   await supabase.from("team_members").update({ reports_to: node?.reports_to ?? null }).eq("reports_to", id);
-  const { error } = await supabase.from("team_members").delete().eq("id", id).eq("org_id", orgId);
+  const { error } = await supabase
+    .from("team_members")
+    .update({ active: false, reports_to: null })
+    .eq("id", id)
+    .eq("org_id", orgId);
   if (error) return { error: error.message };
   revalidatePath("/org-chart");
   return {};

@@ -14,6 +14,7 @@ export default async function OrgChartPage() {
     .from("team_members")
     .select("id,full_name,email,title,role,dept,location,reports_to,avatar_initials,avatar_color")
     .eq("org_id", s.profile.org_id)
+    .eq("active", true)
     .order("sort");
 
   return <OrgChartView members={(data ?? []) as OrgMember[]} />;
