@@ -65,24 +65,42 @@ export async function getRunDetail(
     .maybeSingle();
   if (!run) return null;
 
-  const [{ data: client }, { data: stages }, { data: steps }] = await Promise.all([
+  // Round 1 — everything that depends only on `run`, fetched in parallel (was 4 sequential round-trips).
+  const [
+    { data: client }, { data: stages }, { data: steps },
+    { data: srs }, { data: jrs }, { data: aps },
+    { data: taskRows }, { data: itemRows }, amRes,
+    { data: pbClient }, { data: pbIntake }, { data: pbCoa }, { data: pbDocs }, { data: pbDiag }, { data: pbTeam },
+  ] = await Promise.all([
     supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle(),
     supabase.from("run_stages").select("stage_no,name,status,step_total,step_done").eq("run_id", runId).order("stage_no"),
     supabase.from("run_steps").select("step_no,status,assignee_id,payload").eq("run_id", runId),
+    supabase.from("team_members").select("id,full_name").eq("org_id", run.org_id).in("role", ["senior", "team_lead"]).eq("active", true).order("full_name").limit(40),
+    supabase.from("team_members").select("id,full_name").eq("org_id", run.org_id).in("role", ["junior", "associate"]).eq("active", true).order("full_name").limit(40),
+    supabase.from("team_members").select("id,full_name,role").eq("org_id", run.org_id).in("role", ["team_lead", "senior", "junior", "associate", "intern"]).eq("active", true).order("full_name").limit(200),
+    supabase.from("tasks").select("id,title,owner_id,owner_kind,client_visible,type,status,service,board_column").eq("run_id", runId).order("sort"),
+    supabase.from("run_items").select("id,kind,data,status,sort").eq("run_id", runId).order("sort"),
+    run.am_id ? supabase.from("team_members").select("full_name").eq("id", run.am_id).maybeSingle() : Promise.resolve({ data: null }),
+    supabase.from("clients").select("industry,entity_type,owner_name,primary_contact_email,vat_registered,ct_registered,revenue_channels,payment_gateways,accounting_software").eq("id", run.client_id).maybeSingle(),
+    supabase.from("intake_forms").select("submitted").eq("run_id", runId).maybeSingle(),
+    supabase.from("coa_instances").select("accounts,client_signed_off").eq("run_id", runId).maybeSingle(),
+    supabase.from("documents").select("label,status").eq("run_id", runId).order("created_at"),
+    supabase.from("run_diagrams").select("name,nodes").eq("run_id", runId).order("sort"),
+    supabase.from("run_team").select("role_in_run,team_members(full_name)").eq("run_id", runId),
   ]);
+  const amName = (amRes as { data: { full_name?: string } | null } | null)?.data?.full_name ?? null;
 
-  let amName: string | null = null;
-  if (run.am_id) {
-    const { data } = await supabase.from("team_members").select("full_name").eq("id", run.am_id).maybeSingle();
-    amName = data?.full_name ?? null;
-  }
-
+  // Round 2 — name lookups that depend on round-1 results, fetched in parallel.
   const assigneeIds = [...new Set((steps ?? []).map((s) => s.assignee_id).filter(Boolean))] as string[];
+  const taskOwnerIds = [...new Set((taskRows ?? []).map((t) => t.owner_id).filter(Boolean))] as string[];
+  const [{ data: assigneeRows }, { data: ownerRows }] = await Promise.all([
+    assigneeIds.length ? supabase.from("team_members").select("id,full_name").in("id", assigneeIds) : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
+    taskOwnerIds.length ? supabase.from("team_members").select("id,full_name").in("id", taskOwnerIds) : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
+  ]);
   const nameById: Record<string, string> = {};
-  if (assigneeIds.length) {
-    const { data } = await supabase.from("team_members").select("id,full_name").in("id", assigneeIds);
-    (data ?? []).forEach((m) => (nameById[m.id] = m.full_name));
-  }
+  (assigneeRows ?? []).forEach((m) => (nameById[m.id] = m.full_name));
+  const taskOwnerName: Record<string, string> = {};
+  (ownerRows ?? []).forEach((m) => (taskOwnerName[m.id] = m.full_name));
 
   const stepState: Record<string, StepState> = {};
   (steps ?? []).forEach((s) => {
@@ -95,25 +113,11 @@ export async function getRunDetail(
     };
   });
 
-  const [{ data: srs }, { data: jrs }, { data: aps }, { data: taskRows }, { data: itemRows }] = await Promise.all([
-    supabase.from("team_members").select("id,full_name").eq("org_id", run.org_id).in("role", ["senior", "team_lead"]).eq("active", true).order("full_name").limit(40),
-    supabase.from("team_members").select("id,full_name").eq("org_id", run.org_id).in("role", ["junior", "associate"]).eq("active", true).order("full_name").limit(40),
-    supabase.from("team_members").select("id,full_name,role").eq("org_id", run.org_id).in("role", ["team_lead", "senior", "junior", "associate", "intern"]).eq("active", true).order("full_name").limit(200),
-    supabase.from("tasks").select("id,title,owner_id,owner_kind,client_visible,type,status,service,board_column").eq("run_id", runId).order("sort"),
-    supabase.from("run_items").select("id,kind,data,status,sort").eq("run_id", runId).order("sort"),
-  ]);
-
   const items: RunDetail["items"] = {};
   (itemRows ?? []).forEach((r) => {
     (items[r.kind] ||= []).push({ id: r.id, data: (r.data ?? {}) as Record<string, unknown>, status: r.status });
   });
 
-  const taskOwnerIds = [...new Set((taskRows ?? []).map((t) => t.owner_id).filter(Boolean))] as string[];
-  const taskOwnerName: Record<string, string> = {};
-  if (taskOwnerIds.length) {
-    const { data } = await supabase.from("team_members").select("id,full_name").in("id", taskOwnerIds);
-    (data ?? []).forEach((m) => (taskOwnerName[m.id] = m.full_name));
-  }
   const tasks: TaskRow[] = (taskRows ?? []).map((t) => ({
     id: t.id,
     title: t.title,
@@ -126,15 +130,6 @@ export async function getRunDetail(
     due: t.service ?? null,
     boardColumn: t.board_column ?? null,
   }));
-
-  const [{ data: pbClient }, { data: pbIntake }, { data: pbCoa }, { data: pbDocs }, { data: pbDiag }, { data: pbTeam }] = await Promise.all([
-    supabase.from("clients").select("industry,entity_type,owner_name,primary_contact_email,vat_registered,ct_registered,revenue_channels,payment_gateways,accounting_software").eq("id", run.client_id).maybeSingle(),
-    supabase.from("intake_forms").select("submitted").eq("run_id", runId).maybeSingle(),
-    supabase.from("coa_instances").select("accounts,client_signed_off").eq("run_id", runId).maybeSingle(),
-    supabase.from("documents").select("label,status").eq("run_id", runId).order("created_at"),
-    supabase.from("run_diagrams").select("name,nodes").eq("run_id", runId).order("sort"),
-    supabase.from("run_team").select("role_in_run,team_members(full_name)").eq("run_id", runId),
-  ]);
   const playbook: RunDetail["playbook"] = {
     profile: pbClient ?? {},
     intake: (pbIntake?.submitted as Record<string, unknown>) ?? null,

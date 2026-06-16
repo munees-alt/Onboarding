@@ -4,12 +4,40 @@ import { useState, useTransition, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
+import { useIdentity } from "@/components/identity-context";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
 import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
+
+// Step-permission model: everyone SEES all steps; you can ACT on a step at your
+// role or below (higher roles can edit everyone under them; juniors can't edit
+// above). Steps with no owning role (System/AI) are open to all. Mirrors the
+// server-side guardStepRole so the UI matches what the server will accept.
+const STEP_ROLE_RANK: Record<string, number> = { intern: 0, junior: 1, associate: 1, senior: 2, team_lead: 3, am: 4, ops_head: 5, admin: 6 };
+const WHO_ROLE: Record<string, string> = {
+  am: "am", "account manager": "am",
+  senior: "senior", "senior accountant": "senior",
+  junior: "junior", "junior accountant": "junior",
+  ops: "ops_head", "ops head": "ops_head", "ops manager": "ops_head",
+  "team lead": "team_lead", team_lead: "team_lead", teamlead: "team_lead",
+  intern: "intern",
+};
+function stepRequiredRole(step: TemplateStep): string | null {
+  if (step.approval?.by) { const r = WHO_ROLE[step.approval.by.trim().toLowerCase()]; if (r) return r; }
+  for (const w of step.who ?? []) { const r = WHO_ROLE[w.trim().toLowerCase()]; if (r) return r; }
+  if (step.assignRole) return step.assignRole;
+  if (step.act?.role) { const r = WHO_ROLE[step.act.role.trim().toLowerCase()]; if (r) return r; }
+  return null;
+}
+function canEditStep(myRole: string, step: TemplateStep): boolean {
+  const req = stepRequiredRole(step);
+  if (!req) return true;
+  return (STEP_ROLE_RANK[myRole] ?? 0) >= (STEP_ROLE_RANK[req] ?? 99);
+}
+const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior", junior: "Junior", team_lead: "Team Lead", ops_head: "Ops", intern: "Intern" };
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
 import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, generateCompliance, generateProjects, generateDiagram, type CoaLine, type ContractAnalysis } from "./ai-actions";
@@ -38,6 +66,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
   const [actStep, setActStep] = useState<TemplateStep | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [taskStepPending, setTaskStepPending] = useState<string | null>(null);
+  const { effectiveRole } = useIdentity();
 
   if (!tpl) return <div className="page">Template not found.</div>;
 
@@ -213,6 +242,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
                           assignRole={step.assignRole ?? stage.assignRole ?? null}
                           status={stepStatus(step.id)}
                           isActive={actId === step.id}
+                          canEdit={canEditStep(effectiveRole, step)}
                           assignedName={detail.stepState[step.id]?.assignedName ?? null}
                           people={detail.assignPeople}
                           busy={busy}
@@ -672,12 +702,13 @@ function AssignPicker({
 }
 
 function StepBox({
-  step, assignRole, status, isActive, assignedName, people, busy, onOpenAct, onAssignMembers,
+  step, assignRole, status, isActive, canEdit, assignedName, people, busy, onOpenAct, onAssignMembers,
 }: {
   step: TemplateStep;
   assignRole: string | null;
   status: string;
   isActive: boolean;
+  canEdit: boolean;
   assignedName: string | null;
   people: { id: string; name: string; role: string }[];
   busy: boolean;
@@ -719,8 +750,9 @@ function StepBox({
             </div>
           )}
 
-          {/* Active-step actions */}
-          {isActive && !done && (
+          {/* Actions: any incomplete step the current role may edit (own + below),
+              regardless of whether earlier steps are done. */}
+          {!done && canEdit && (
             <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               {isAssign ? (
                 <AssignPicker
@@ -735,6 +767,11 @@ function StepBox({
                   {step.act?.btn ?? "Mark done"}
                 </button>
               )}
+            </div>
+          )}
+          {!done && !canEdit && (
+            <div style={{ marginTop: 10, fontSize: 12, color: "var(--ink-3)", display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name="lock" size={12} /> {stepRequiredRole(step) ? `${ROLE_NICE[stepRequiredRole(step)!] ?? stepRequiredRole(step)}'s step — view only` : "View only"}
             </div>
           )}
         </div>
