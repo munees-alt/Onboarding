@@ -3,12 +3,13 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { confirmCoa, commentCoa, uploadDocFile, submitIntake } from "./actions";
+import { confirmCoa, commentCoa, uploadDocFile, submitIntake, postPortalMessage, signOffOnboarding } from "./actions";
 
 export interface PortalData {
   token: string;
   clientName: string;
   ownerName: string | null;
+  trn: string | null;
   progress: number;
   currentStage: number;
   status: string;
@@ -16,8 +17,11 @@ export interface PortalData {
   documents: { id: string; label: string; status: string }[];
   tasks: { title: string; status: string; type: string }[];
   team: Record<string, string>;
+  teamEmail: Record<string, string>;
+  messages: { author: string; role: string; body: string; at: string }[];
+  signedOff: boolean;
   intakeFields: { id: string; label: string }[];
-  intakeSubmitted: Record<string, string> | null;
+  intakeSubmitted: Record<string, unknown> | null;
   intakePrep: IntakePrepView | null;
   intakeEnabled: boolean;
   contract: { scope?: string; periodStart?: string; periodEnd?: string; inclusions?: string[]; exclusions?: string[]; paymentTerms?: string } | null;
@@ -35,38 +39,337 @@ export interface IntakePrepView {
   painPoints?: string; stakeholders?: string; reports?: string; employees?: string;
 }
 
+/* UAE-specific option banks — mirror of the team-side intake builder. */
+const UAE_BANKS = [
+  "Emirates NBD", "First Abu Dhabi Bank (FAB)", "Abu Dhabi Commercial Bank (ADCB)",
+  "Dubai Islamic Bank (DIB)", "Mashreq", "RAKBANK", "Abu Dhabi Islamic Bank (ADIB)",
+  "Emirates Islamic", "Commercial Bank of Dubai (CBD)", "Sharjah Islamic Bank",
+  "National Bank of Fujairah (NBF)", "Ajman Bank", "Bank of Sharjah", "HSBC UAE",
+  "Citibank UAE", "Standard Chartered UAE", "Wio Bank", "Mashreq Neo", "Liv.", "Zand Bank",
+];
+const UAE_GATEWAYS = [
+  "Telr", "PayTabs", "Network International (N-Genius)", "Stripe", "Checkout.com",
+  "Amazon Payment Services (PayFort)", "Tap Payments", "Ziina", "Mamo Pay", "Magnati",
+  "PayPal", "Apple Pay / Google Pay", "Tabby", "Tamara",
+];
+const UAE_ACCT_SW = [
+  "Zoho Books", "QuickBooks Online", "Xero", "Tally", "Sage", "Wafeq", "Odoo",
+  "Microsoft Dynamics 365 Business Central", "SAP Business One", "FreshBooks",
+  "Excel / Google Sheets", "No system yet",
+];
+
+type Screen = "welcome" | "intake" | "tasks" | "live";
+
+interface IntakeState {
+  desc: string; revenue: string[]; expense: string[]; employees: string;
+  pains: string[]; stakeholders: string[]; reports: string[];
+  acctSw: string[]; banks: string[]; gateways: string[];
+}
+
 export function PortalView({ data }: { data: PortalData }) {
   const router = useRouter();
   const [busy, start] = useTransition();
   const [toast, setToast] = useState<string | null>(null);
-  const [comment, setComment] = useState("");
-  const [showComment, setShowComment] = useState(false);
-  const [intake, setIntake] = useState<Record<string, string>>((): Record<string, string> => {
-    const p = data.intakePrep;
-    if (!p) return {};
-    return {
-      description: p.description ?? "", revenue: (p.revenue ?? []).join("\n"), expense: (p.expense ?? []).join("\n"),
-      banks: (p.banks ?? []).join(", "), gateways: (p.gateways ?? []).join(", "), software: p.software ?? "",
-      vat: p.vat ?? "", ct: p.ct ?? "", wps: p.wps ?? "", employees: p.employees ?? "",
-      painPoints: p.painPoints ?? "", stakeholders: p.stakeholders ?? "", reports: p.reports ?? "",
-    };
-  });
-  const note = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2600); };
+  const [screen, setScreen] = useState<Screen>("welcome");
+  const note = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2800); };
   const live = data.status === "complete";
-
-  const docsDone = data.documents.filter((d) => d.status === "uploaded").length;
-  const pendingAction = data.coa && !data.coa.signedOff;
-
-  const stageCards = [
-    { name: "Getting Started", desc: "Business profile and documents", state: data.currentStage > 1 || live ? "done" : "current" },
-    { name: "Setting Up Your Account", desc: "COA preparation and system setup", state: live ? "done" : data.currentStage > 1 ? "current" : "upcoming" },
-    { name: "You Are Live", desc: "Your accounts are live", state: live ? "current" : "upcoming" },
-  ];
+  const first = data.ownerName?.split(" ")[0] ?? "there";
 
   const run = (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) =>
     start(async () => { const r = await fn(); if (r.error) note(r.error); else { note(ok); router.refresh(); } });
 
+  const tabs: [Screen, string][] = [
+    ["welcome", "Welcome"],
+    ...(data.intakeEnabled ? ([["intake", "Intake form"]] as [Screen, string][]) : []),
+    ["tasks", "Task board"],
+    ["live", "Live setup"],
+  ];
+
+  const amName = data.team.am ?? "your Account Manager";
+  const amEmail = data.teamEmail.am ?? null;
+  const amInitials = (data.team.am ?? "AM").split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+
+  return (
+    <div className="obv3-portal">
+      <div className="obv3-portal-nav">
+        <div className="obv3-logo">
+          <span className="mark"><Icon name="gauge" size={18} strokeWidth={2.2} /></span>
+          <span className="word">Finan<span className="o">shels</span></span>
+        </div>
+        <div className="cp-client-locked" title="This secure link is unique to your company">
+          <Icon name="building-2" size={13} />
+          <span className="nm">{data.clientName}</span>
+          <span className="lk"><Icon name="lock" size={11} /> Secure client link</span>
+        </div>
+      </div>
+
+      <div className="obv3-portal-wrap">
+        <div className="obv3-screen-tabs">
+          {tabs.map(([id, lbl]) => (
+            <button key={id} className={screen === id ? "active" : ""} onClick={() => setScreen(id)}>{lbl}</button>
+          ))}
+        </div>
+
+        {screen === "welcome" && (
+          <Welcome data={data} live={live} first={first} amInitials={amInitials} amName={amName} go={setScreen} />
+        )}
+        {screen === "intake" && data.intakeEnabled && (
+          <IntakeForm data={data} busy={busy} run={run} note={note} go={setScreen} />
+        )}
+        {screen === "tasks" && (
+          <Tasks data={data} amInitials={amInitials} amName={amName} amEmail={amEmail} busy={busy} run={run} note={note} go={setScreen} />
+        )}
+        {screen === "live" && (
+          <Live data={data} amName={amName} amEmail={amEmail} live={live} busy={busy} run={run} go={setScreen} />
+        )}
+      </div>
+
+      {toast && <div className="toast show green"><Icon name="check-circle" size={15} /><span>{toast}</span></div>}
+    </div>
+  );
+}
+
+/* ---------- Section 1: Welcome ---------- */
+function Welcome({ data, live, first, amInitials, amName, go }: {
+  data: PortalData; live: boolean; first: string; amInitials: string; amName: string; go: (s: Screen) => void;
+}) {
+  const stageCards = [
+    { name: "Getting started", desc: "Business profile & documents", state: data.currentStage > 1 || live ? "done" : "current" },
+    { name: "Setting up your account", desc: "Chart of accounts & system setup", state: live ? "done" : data.currentStage > 1 ? "current" : "upcoming" },
+    { name: "You are live", desc: "Your accounts are live", state: live ? "current" : "upcoming" },
+  ];
+  return (
+    <div className="obv3-fade">
+      <div className="cp-hero">
+        <div className="cp-hero-main">
+          <span className="cp-hero-eyebrow">Welcome to Finanshels</span>
+          <h1 className="cp-hero-h">Hi {first} — let&apos;s get {data.clientName} set up.</h1>
+          <p className="cp-hero-lead">Your onboarding is underway. Here&apos;s everything in one place — what we need from you, where things stand, and who&apos;s looking after your account.</p>
+          <div className="cp-hero-actions">
+            <button className="obv3-pbtn primary" onClick={() => go(data.intakeEnabled ? "intake" : "tasks")}>
+              {data.intakeEnabled ? "Review your details" : "See what needs your input"} <Icon name="arrow-right" size={15} />
+            </button>
+          </div>
+        </div>
+        <div className="cp-hero-aside">
+          <div className="cp-hero-ring" style={{ ["--p" as string]: data.progress }}>
+            <div className="cp-ring-num">{data.progress}%</div>
+            <div className="cp-ring-lbl">complete</div>
+          </div>
+          <div className="cp-hero-contact">
+            <span className="av">{amInitials}</span>
+            <div><div className="r">Your Account Manager</div><div className="n">{amName}</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="obv3-stagecards">
+        {stageCards.map((s, i) => (
+          <div key={i} className={"obv3-scard " + s.state}>
+            {s.state === "current" && <span className="sc-tag">Current</span>}
+            <span className="sc-state"><Icon name={s.state === "done" ? "check" : s.state === "current" ? "loader" : "circle"} size={15} strokeWidth={2.5} /></span>
+            <div className="sc-name">{s.name}</div>
+            <div className="sc-desc">{s.desc}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="cp-next-nav">
+        {data.intakeEnabled && (
+          <button className="cp-nav-card" onClick={() => go("intake")}>
+            <span className="ic"><Icon name="clipboard-list" size={18} /></span>
+            <div><div className="t">Your intake form</div><div className="d">Confirm your business details</div></div>
+            <Icon name="arrow-right" size={16} />
+          </button>
+        )}
+        <button className="cp-nav-card" onClick={() => go("tasks")}>
+          <span className="ic"><Icon name="kanban-square" size={18} /></span>
+          <div><div className="t">Your task board</div><div className="d">What needs your input</div></div>
+          <Icon name="arrow-right" size={16} />
+        </button>
+        <button className="cp-nav-card" onClick={() => go("live")}>
+          <span className="ic"><Icon name="sparkles" size={18} /></span>
+          <div><div className="t">Your live setup</div><div className="d">Team &amp; accounting system</div></div>
+          <Icon name="arrow-right" size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Section 2: Intake form ---------- */
+const SRC: Record<string, [string, string]> = {
+  pms: ["crm", "From your records"], ai: ["ai", "Drafted for you"], client: ["client", "From you"],
+};
+function Field({ label, src, suggested, children }: { label: string; src: keyof typeof SRC; suggested?: boolean; children: React.ReactNode }) {
+  const s = SRC[src] ?? SRC.client;
+  return (
+    <div className="cp-field">
+      <div className="v2-ifield-top">
+        <span className="v2-ifield-label">{label}</span>
+        <span className={"v2-src " + s[0]}>{s[1]}</span>
+        {suggested && <span className="obtpl-suggested">Suggested</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+function ChipList({ items, addLabel, onChange }: { items: string[]; addLabel: string; onChange: (v: string[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const add = () => { const v = draft.trim(); if (!v) return; onChange([...items, v]); setDraft(""); };
+  return (
+    <div>
+      <div className="cp-chips">
+        {items.map((it, i) => (
+          <span key={i} className="cp-chip">{it}<button type="button" onClick={() => onChange(items.filter((_, j) => j !== i))}><Icon name="x" size={11} /></button></span>
+        ))}
+        {items.length === 0 && <span className="cp-empty">Nothing yet — add below.</span>}
+      </div>
+      <div className="cp-add-row">
+        <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} placeholder={addLabel} />
+        <button type="button" onClick={add}><Icon name="plus" size={13} /> Add</button>
+      </div>
+    </div>
+  );
+}
+function MultiPick({ options, items, onChange, otherLabel }: { options: string[]; items: string[]; onChange: (v: string[]) => void; otherLabel: string }) {
+  const [draft, setDraft] = useState("");
+  const norm = (s: string) => s.trim().toLowerCase();
+  const has = (c: string) => items.some((x) => norm(x) === norm(c));
+  const toggle = (c: string) => onChange(has(c) ? items.filter((x) => norm(x) !== norm(c)) : [...items, c]);
+  const custom = items.filter((it) => !options.some((o) => norm(o) === norm(it)));
+  const addOther = () => { const v = draft.trim(); if (v && !has(v)) onChange([...items, v]); setDraft(""); };
+  return (
+    <div className="bld-mpick">
+      <div className="bld-mpick-chips">
+        {options.map((o) => (
+          <button key={o} type="button" className={"bld-mpick-chip" + (has(o) ? " on" : "")} onClick={() => toggle(o)}>
+            {has(o) ? <Icon name="check" size={10} strokeWidth={3} /> : <Icon name="plus" size={10} />} {o}
+          </button>
+        ))}
+      </div>
+      {custom.length > 0 && (
+        <div className="bld-mpick-chips" style={{ marginTop: 6 }}>
+          {custom.map((c) => (
+            <span key={c} className="bld-mpick-chip on custom">{c}<button type="button" onClick={() => toggle(c)}><Icon name="x" size={10} /></button></span>
+          ))}
+        </div>
+      )}
+      <div className="cp-add-row" style={{ marginTop: 6 }}>
+        <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addOther(); } }} placeholder={otherLabel} />
+        <button type="button" onClick={addOther}><Icon name="plus" size={13} /> Add other</button>
+      </div>
+    </div>
+  );
+}
+
+function initIntake(data: PortalData): IntakeState {
+  const sub = data.intakeSubmitted ?? {};
+  const prep = data.intakePrep ?? {};
+  const arr = (v: unknown): string[] => (Array.isArray(v) ? (v as unknown[]).map(String) : typeof v === "string" && v.trim() ? v.split(/[\n,]/).map((x) => x.trim()).filter(Boolean) : []);
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  return {
+    desc: str(sub.desc) || prep.description || "",
+    revenue: arr(sub.revenue).length ? arr(sub.revenue) : (prep.revenue ?? []),
+    expense: arr(sub.expense).length ? arr(sub.expense) : (prep.expense ?? []),
+    employees: str(sub.employees) || prep.employees || "",
+    pains: arr(sub.pains).length ? arr(sub.pains) : arr(prep.painPoints),
+    stakeholders: arr(sub.stakeholders).length ? arr(sub.stakeholders) : arr(prep.stakeholders),
+    reports: arr(sub.reports).length ? arr(sub.reports) : arr(prep.reports),
+    acctSw: arr(sub.acctSw).length ? arr(sub.acctSw) : (prep.software ? [prep.software] : []),
+    banks: arr(sub.banks).length ? arr(sub.banks) : (prep.banks ?? []),
+    gateways: arr(sub.gateways).length ? arr(sub.gateways) : (prep.gateways ?? []),
+  };
+}
+
+function IntakeForm({ data, busy, run, note, go }: {
+  data: PortalData; busy: boolean; run: (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) => void; note: (m: string) => void; go: (s: Screen) => void;
+}) {
+  const [f, setF] = useState<IntakeState>(() => initIntake(data));
+  const set = <K extends keyof IntakeState>(k: K, v: IntakeState[K]) => setF((s) => ({ ...s, [k]: v }));
+  const submitted = data.intakeSubmitted && data.intakeSubmitted !== null && Object.keys(data.intakeSubmitted).length > 0;
+
+  const filled = (v: unknown) => (Array.isArray(v) ? v.length > 0 : !!(typeof v === "string" && v.trim()));
+  const checks = [f.desc, f.revenue, f.expense, f.employees, f.pains, f.stakeholders, f.reports, f.acctSw, f.banks, f.gateways];
+  const done = checks.filter(filled).length + 1; // +1 for the locked company details
+
+  return (
+    <div className="obv3-fade">
+      <div className="obv3-pcard">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div className="obv3-pcard-h">Your intake form</div>
+            <div className="obv3-pcard-sub">We pre-filled what we already knew — everything below is yours to edit. Add channels, stakeholders and reports as needed.</div>
+          </div>
+          <span className="pill amber"><span className="dot" />{done} of {checks.length + 1} complete</span>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <Field label="Company details" src="pms">
+            <div className="cp-locked"><Icon name="lock" size={12} /> {data.clientName}{data.ownerName ? ` · ${data.ownerName}` : ""}{data.trn ? ` · TRN ${data.trn}` : ""}</div>
+          </Field>
+
+          <Field label="Business description" src="ai">
+            <textarea className="cp-input" rows={2} value={f.desc} placeholder="Tell us about your business" onChange={(e) => set("desc", e.target.value)} />
+          </Field>
+
+          <Field label="Major revenue channels" src="client">
+            <ChipList items={f.revenue} addLabel="Add a revenue channel…" onChange={(v) => set("revenue", v)} />
+          </Field>
+
+          <Field label="Major expense channels" src="client">
+            <ChipList items={f.expense} addLabel="Add an expense account…" onChange={(v) => set("expense", v)} />
+          </Field>
+
+          <Field label="Employee details" src="client">
+            <input className="cp-input" value={f.employees} placeholder="e.g. 45 employees · WPS payroll" onChange={(e) => set("employees", e.target.value)} />
+          </Field>
+
+          <Field label="Pain points" src="client">
+            <ChipList items={f.pains} addLabel="Add a pain point…" onChange={(v) => set("pains", v)} />
+          </Field>
+
+          <Field label="Stakeholders" src="client">
+            <ChipList items={f.stakeholders} addLabel="Add a stakeholder…" onChange={(v) => set("stakeholders", v)} />
+          </Field>
+
+          <Field label="Reports you need" src="client">
+            <ChipList items={f.reports} addLabel="Add a report…" onChange={(v) => set("reports", v)} />
+          </Field>
+
+          <Field label="Accounting software" src="client" suggested>
+            <MultiPick options={UAE_ACCT_SW} items={f.acctSw} onChange={(v) => set("acctSw", v)} otherLabel="Other software — type a name and Enter…" />
+          </Field>
+
+          <Field label="Bank accounts" src="client" suggested>
+            <MultiPick options={UAE_BANKS} items={f.banks} onChange={(v) => set("banks", v)} otherLabel="Other UAE bank — type a name and Enter…" />
+          </Field>
+
+          <Field label="Payment gateways" src="client" suggested>
+            <MultiPick options={UAE_GATEWAYS} items={f.gateways} onChange={(v) => set("gateways", v)} otherLabel="Other gateway — type a name and Enter…" />
+          </Field>
+        </div>
+      </div>
+
+      <Documents data={data} note={note} />
+
+      <div className="obv3-pbtn-row">
+        <button className="obv3-pbtn secondary" onClick={() => go("welcome")}><Icon name="arrow-left" size={14} /> Back</button>
+        <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
+          <button className="obv3-pbtn primary" disabled={busy} onClick={() => run(() => submitIntake(data.token, f as unknown as Record<string, unknown>), submitted ? "Updated — your team has been notified" : "Saved — your team has been notified")}>
+            Save &amp; continue <Icon name="arrow-right" size={15} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Documents the client uploads — real upload to Supabase Storage. */
+function Documents({ data, note }: { data: PortalData; note: (m: string) => void }) {
+  const router = useRouter();
   const [uploading, setUploading] = useState<string | null>(null);
+  const received = data.documents.filter((d) => d.status === "uploaded").length;
   const onFile = (docId: string, file: File) => {
     setUploading(docId);
     const fd = new FormData();
@@ -77,223 +380,254 @@ export function PortalView({ data }: { data: PortalData }) {
       else { note("Document received — your team has been notified"); router.refresh(); }
     });
   };
+  if (data.documents.length === 0) return null;
+  return (
+    <div className="obv3-pcard">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <div className="obv3-pcard-h">Documents to upload</div>
+          <div className="obv3-pcard-sub">Browse and upload. Each file lands in the right folder automatically.</div>
+        </div>
+        <span className="pill amber"><span className="dot" />{received} of {data.documents.length} received</span>
+      </div>
+      <div style={{ marginTop: 16 }}>
+        {data.documents.map((d) => (
+          <div key={d.id} className="obv3-doc">
+            <span className={"dstate " + (d.status === "uploaded" ? "done" : "pending")}>
+              {d.status === "uploaded" ? <Icon name="check" size={13} strokeWidth={2.6} /> : <Icon name="upload" size={12} />}
+            </span>
+            <span className="dname">{d.label}</span>
+            {d.status === "uploaded" ? (
+              <span className="pill green" style={{ fontSize: 10.5, height: 18 }}><span className="dot" />Received</span>
+            ) : (
+              <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
+                <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : "Upload →"}
+                <input type="file" hidden disabled={!!uploading} onChange={(e) => { const file = e.target.files?.[0]; if (file) onFile(d.id, file); e.target.value = ""; }} />
+              </label>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Section 3: Task board + chat ---------- */
+function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
+  data: PortalData; amInitials: string; amName: string; amEmail: string | null;
+  busy: boolean; run: (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) => void; note: (m: string) => void; go: (s: Screen) => void;
+}) {
+  const router = useRouter();
+  const [msg, setMsg] = useState("");
+  const [comment, setComment] = useState("");
+  const [showComment, setShowComment] = useState(false);
+
+  const columns: { key: string; label: string; match: (s: string) => boolean }[] = [
+    { key: "input", label: "Needs your input", match: (s) => s === "needs_input" },
+    { key: "progress", label: "In progress", match: (s) => s === "in_progress" || s === "working" },
+    { key: "done", label: "Done", match: (s) => s === "complete" || s === "done" },
+  ];
+
+  const send = () => {
+    const body = msg.trim();
+    if (!body) return;
+    setMsg("");
+    postPortalMessage(data.token, body).then((r) => { if (r.error) note(r.error); else router.refresh(); });
+  };
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--bg)" }}>
-      {/* Header — Finanshels wordmark only, no app chrome */}
-      <header style={{ background: "#fff", borderBottom: "1px solid var(--border)", padding: "14px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div className="rail-logo" style={{ width: 34, height: 34 }}><Icon name="gauge" size={18} style={{ color: "var(--orange)" }} /></div>
-          <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-0.02em" }}>Finanshels</div>
+    <div className="obv3-fade">
+      <div className="obv3-portal-nudge">
+        <span className="ic"><Icon name="bell" size={15} /></span>
+        Here is what is moving on your account. Use the chat below to message your team directly.
+      </div>
+
+      <div className="obv3-contact">
+        <span className="av">{amInitials}</span>
+        <div>
+          <div className="ct-role">Your Account Manager</div>
+          <div className="ct-name">{amName}</div>
+          {amEmail && <div className="ct-meta">{amEmail} · WhatsApp preferred</div>}
         </div>
-        <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>{data.clientName}</div>
-      </header>
+      </div>
 
-      <div style={{ maxWidth: 760, margin: "0 auto", padding: "28px 20px 60px", display: "flex", flexDirection: "column", gap: 18 }}>
-        {live && (
-          <div style={{ background: "var(--green-soft)", border: "1px solid #b8e5c5", borderRadius: 12, padding: "16px 20px", color: "var(--green)", fontWeight: 700 }}>
-            <Icon name="party-popper" size={16} /> Your account is live — welcome to Finanshels.
-          </div>
-        )}
-
-        {pendingAction && (
-          <div style={{ background: "var(--amber-soft)", border: "1px solid #f0d9a8", borderRadius: 10, padding: "10px 14px", color: "var(--amber)", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-            <Icon name="bell" size={14} /> You have an action waiting — please review your chart of accounts below.
-          </div>
-        )}
-
-        {/* Welcome video card */}
-        <div style={{ background: "linear-gradient(135deg, var(--orange), var(--orange-600))", borderRadius: 14, padding: "40px 24px", textAlign: "center", color: "#fff" }}>
-          <div style={{ width: 60, height: 60, borderRadius: "50%", background: "rgba(255,255,255,0.2)", display: "grid", placeItems: "center", margin: "0 auto 14px" }}>
-            <Icon name="play" size={26} />
-          </div>
-          <div style={{ fontWeight: 700, fontSize: 16 }}>Welcome to Finanshels — 28 seconds</div>
-          <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>Auto-plays muted with captions</div>
-        </div>
-        <div style={{ fontSize: 15, color: "var(--ink-1)" }}>
-          Hi {data.ownerName?.split(" ")[0] ?? "there"} — welcome to Finanshels. We&apos;re excited to get started on your account.
-        </div>
-
-        {/* Stage cards */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
-          {stageCards.map((s) => (
-            <div key={s.name} style={{ background: "#fff", border: `1.5px solid ${s.state === "done" ? "#b8e5c5" : s.state === "current" ? "var(--orange)" : "var(--border)"}`, borderRadius: 12, padding: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: s.state === "done" ? "var(--green)" : s.state === "current" ? "var(--orange)" : "var(--ink-3)" }}>
-                {s.state === "done" ? <Icon name="check-circle" size={14} /> : s.state === "current" ? <Icon name="loader" size={14} /> : <Icon name="circle" size={14} />}
-                {s.name}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>{s.desc}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Intake form */}
-        {data.intakeEnabled && (
-          <Section title="Your business profile">
-            {data.intakeSubmitted ? (
-              <div style={{ color: "var(--green)", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
-                <Icon name="check-circle" size={15} /> Thank you — your profile has been received.
-              </div>
-            ) : data.intakePrep ? (
-              <>
-                <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 12 }}>Please confirm what we understood — edit anything that&apos;s not quite right.</div>
-                <IField label="What you do" v={intake.description} on={(x) => setIntake((m) => ({ ...m, description: x }))} area />
-                <IField label="Revenue channels (one per line)" v={intake.revenue} on={(x) => setIntake((m) => ({ ...m, revenue: x }))} area />
-                <IField label="Expense channels (one per line)" v={intake.expense} on={(x) => setIntake((m) => ({ ...m, expense: x }))} area />
-                <IField label="Bank accounts" v={intake.banks} on={(x) => setIntake((m) => ({ ...m, banks: x }))} />
-                <IField label="Payment gateways" v={intake.gateways} on={(x) => setIntake((m) => ({ ...m, gateways: x }))} />
-                <IField label="Accounting software" v={intake.software} on={(x) => setIntake((m) => ({ ...m, software: x }))} />
-                <IField label="Employees" v={intake.employees} on={(x) => setIntake((m) => ({ ...m, employees: x }))} />
-                <IField label="Pain points" v={intake.painPoints} on={(x) => setIntake((m) => ({ ...m, painPoints: x }))} area />
-                <IField label="Who we report to" v={intake.stakeholders} on={(x) => setIntake((m) => ({ ...m, stakeholders: x }))} />
-                <IField label="Reports you need" v={intake.reports} on={(x) => setIntake((m) => ({ ...m, reports: x }))} />
-                <button className="btn-primary" disabled={busy} onClick={() => run(() => submitIntake(data.token, intake), "Profile submitted — thank you!")}>Submit profile</button>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 12 }}>Tell us a little about your business so we can prepare before our first call.</div>
-                {data.intakeFields.map((f) => (
-                  <div className="field" key={f.id} style={{ marginBottom: 10 }}>
-                    <label style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>{f.label}</label>
-                    <textarea className="notes" style={{ minHeight: 60 }} value={intake[f.id] ?? ""} onChange={(e) => setIntake((m) => ({ ...m, [f.id]: e.target.value }))} />
-                  </div>
-                ))}
-                <button className="btn-primary" disabled={busy} onClick={() => run(() => submitIntake(data.token, intake), "Profile submitted — thank you!")}>Submit profile</button>
-              </>
-            )}
-          </Section>
-        )}
-
-        {/* Contract / engagement breakdown */}
-        {data.contract && (data.contract.scope || data.contract.inclusions?.length) && (
-          <Section title="Your engagement">
-            {data.contract.scope && <div style={{ fontSize: 13, color: "var(--ink-1)", marginBottom: 8 }}>{data.contract.scope}</div>}
-            {(data.contract.periodStart || data.contract.periodEnd) && (
-              <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 8 }}>Period: {data.contract.periodStart ?? "—"} → {data.contract.periodEnd ?? "—"}</div>
-            )}
-            {data.contract.inclusions?.length ? (
-              <div style={{ marginBottom: 8 }}><div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--ink-3)" }}>Included</div>{data.contract.inclusions.map((x, i) => <div key={i} style={{ fontSize: 13, display: "flex", gap: 6 }}><Icon name="check" size={12} style={{ color: "var(--green)" }} /> {x}</div>)}</div>
-            ) : null}
-            {data.contract.exclusions?.length ? (
-              <div style={{ marginBottom: 8 }}><div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--ink-3)" }}>Not included</div>{data.contract.exclusions.map((x, i) => <div key={i} style={{ fontSize: 13, color: "var(--ink-3)" }}>— {x}</div>)}</div>
-            ) : null}
-            {data.contract.paymentTerms && <div style={{ fontSize: 12.5, color: "var(--ink-2)" }}><strong>Payment:</strong> {data.contract.paymentTerms}</div>}
-          </Section>
-        )}
-
-        {/* COA review */}
-        {data.coa && (
-          <Section title="Your chart of accounts">
-            {data.coa.signedOff ? (
-              <div style={{ color: "var(--green)", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
-                <Icon name="check-circle" size={15} /> Thank you — you&apos;ve confirmed this structure. Your team will proceed.
-              </div>
-            ) : (
-              <>
-                <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 12 }}>This is the account structure we&apos;ve prepared for {data.clientName}. Please review and confirm, or leave a comment if anything needs to change.</div>
-                {[...new Set(data.coa.accounts.map((a) => a.section))].map((sec) => (
-                  <div key={sec} style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 4 }}>{sec}</div>
-                    {data.coa!.accounts.filter((a) => a.section === sec).map((a, i) => (
-                      <div key={a.code + i} style={{ fontSize: 13, color: "var(--ink-1)", padding: "3px 0", display: "flex", alignItems: "center", gap: 6 }}>
-                        <Icon name="check" size={12} style={{ color: "var(--green)" }} /> {a.account}
-                      </div>
-                    ))}
-                  </div>
-                ))}
-                {showComment && (
-                  <textarea className="notes" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="What would you like changed?" style={{ marginTop: 8 }} />
-                )}
-                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                  <button className="btn-primary" disabled={busy} onClick={() => run(() => confirmCoa(data.token), "Thank you — confirmed!")}>Looks good — confirm</button>
-                  {showComment ? (
-                    <button className="btn-ghost" disabled={busy || !comment.trim()} onClick={() => run(() => commentCoa(data.token, comment), "Comment sent to your team")}>Send comment</button>
-                  ) : (
-                    <button className="btn-ghost" onClick={() => setShowComment(true)}>I have a comment</button>
-                  )}
+      <div className="obv3-pcard">
+        <div className="obv3-pcard-h">Your task board — {data.clientName}</div>
+        <div className="obv3-pcard-sub" style={{ marginBottom: 18 }}>Only the items relevant to you are shown. Your team handles the rest behind the scenes.</div>
+        {data.tasks.length === 0 ? (
+          <div className="cp-empty">Nothing needs your input right now — your team is working behind the scenes.</div>
+        ) : (
+          <div className="cp-board">
+            {columns.map((col) => {
+              const items = data.tasks.filter((t) => col.match(t.status));
+              return (
+                <div key={col.key} className="cp-board-col">
+                  <div className="cp-board-col-h">{col.label}<span className="cp-board-count">{items.length}</span></div>
+                  {items.length === 0 && <div className="cp-empty" style={{ padding: "6px 0" }}>—</div>}
+                  {items.map((t, i) => (
+                    <div key={i} className="cp-board-card">
+                      <span className="cp-board-dot" data-col={col.key} />
+                      <span style={{ flex: 1 }}>{t.title}</span>
+                      {t.type === "milestone" && <span className="pill purple" style={{ fontSize: 10 }}>Milestone</span>}
+                    </div>
+                  ))}
                 </div>
-              </>
-            )}
-          </Section>
-        )}
-
-        {/* Progress timeline */}
-        {data.tasks.length > 0 && (
-          <Section title="Your onboarding progress">
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {data.tasks.map((t, i) => {
-                const done = t.status === "complete";
-                const active = t.status === "in_progress" || t.status === "needs_input";
-                return (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: i < data.tasks.length - 1 ? "1px solid var(--border)" : "none" }}>
-                    <span style={{ color: done ? "var(--green)" : active ? "var(--orange)" : "var(--ink-4)" }}>
-                      <Icon name={done ? "check-circle" : active ? "loader" : "circle"} size={16} />
-                    </span>
-                    <span style={{ flex: 1, fontSize: 13, color: done ? "var(--ink-3)" : "var(--ink-1)" }}>{t.title}</span>
-                    {t.type === "milestone" && <span className="pill purple" style={{ fontSize: 10 }}>Milestone</span>}
-                  </div>
-                );
-              })}
-            </div>
-          </Section>
-        )}
-
-        {/* Documents */}
-        <Section title={`Documents — ${docsDone} of ${data.documents.length} received`}>
-          {data.documents.map((d) => (
-            <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
-              <span style={{ color: d.status === "uploaded" ? "var(--green)" : "var(--ink-4)" }}>
-                <Icon name={d.status === "uploaded" ? "check-circle" : "circle"} size={16} />
-              </span>
-              <span style={{ flex: 1, fontSize: 13 }}>{d.label}</span>
-              {d.status === "uploaded" ? (
-                <span className="pill green" style={{ fontSize: 10 }}>Uploaded</span>
-              ) : (
-                <label className="btn-ghost" style={{ cursor: uploading ? "default" : "pointer" }}>
-                  <Icon name="upload" size={13} /> {uploading === d.id ? "Uploading…" : "Upload"}
-                  <input type="file" hidden disabled={!!uploading} onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(d.id, f); e.target.value = ""; }} />
-                </label>
-              )}
-            </div>
-          ))}
-        </Section>
-
-        {/* Team / You are live */}
-        {(data.team.am || data.team.senior) && (
-          <Section title={live ? "You are live — your team" : "Your team"}>
-            <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.9 }}>
-              {data.team.senior && <div>Primary contact: <strong>{data.team.senior}</strong>{data.team.junior ? ` (with ${data.team.junior})` : ""}</div>}
-              {data.team.am && <div>Account Manager: <strong>{data.team.am}</strong></div>}
-              {data.software && <div>Your accounting software: <strong>{data.software}</strong></div>}
-              <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-3)" }}>
-                <strong>Escalation:</strong> reach your Senior first, then your Account Manager{data.team.am ? ` (${data.team.am})` : ""}, then Ops.
-              </div>
-            </div>
-          </Section>
+              );
+            })}
+          </div>
         )}
       </div>
 
-      {toast && <div className="toast show green"><Icon name="check-circle" size={15} /><span>{toast}</span></div>}
+      {/* Suggested chart of accounts — AI-tailored, client confirms */}
+      {data.coa && data.coa.accounts.length > 0 && (
+        <div className="obv3-pcard">
+          <div className="obv3-pcard-h">Your chart of accounts {data.coa.industry ? `· ${data.coa.industry}` : ""}</div>
+          {data.coa.signedOff ? (
+            <div style={{ color: "var(--green)", fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+              <Icon name="check-circle" size={15} /> Thank you — you&apos;ve confirmed this structure. Your team will proceed.
+            </div>
+          ) : (
+            <>
+              <div className="obv3-pcard-sub" style={{ marginBottom: 12 }}>This is the account structure we&apos;ve tailored for {data.clientName}. Review and confirm, or tell us what to change.</div>
+              {[...new Set(data.coa.accounts.map((a) => a.section))].map((sec) => (
+                <div key={sec} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 4 }}>{sec}</div>
+                  {data.coa!.accounts.filter((a) => a.section === sec).map((a, i) => (
+                    <div key={a.code + i} style={{ fontSize: 13, color: "var(--ink-1)", padding: "3px 0", display: "flex", alignItems: "center", gap: 6 }}>
+                      <Icon name="check" size={12} style={{ color: "var(--green)" }} /> {a.account}
+                    </div>
+                  ))}
+                </div>
+              ))}
+              {showComment && (
+                <textarea className="cp-input" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="What would you like changed?" style={{ marginTop: 8 }} />
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button className="obv3-pbtn primary" disabled={busy} onClick={() => run(() => confirmCoa(data.token), "Thank you — confirmed!")}>Looks good — confirm</button>
+                {showComment ? (
+                  <button className="obv3-pbtn secondary" disabled={busy || !comment.trim()} onClick={() => run(() => commentCoa(data.token, comment), "Comment sent to your team")}>Send comment</button>
+                ) : (
+                  <button className="obv3-pbtn secondary" onClick={() => setShowComment(true)}>I have a comment</button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Two-way chat — same thread the team sees */}
+      <div className="obv3-pcard">
+        <div className="obv3-pcard-h">Chat with your team</div>
+        <div className="obv3-pcard-sub" style={{ marginBottom: 12 }}>Messages here go straight to {amName} and your assigned team.</div>
+        <div className="cp-chat">
+          {data.messages.length === 0 && <div className="cp-empty">No messages yet — say hello 👋</div>}
+          {data.messages.map((m, i) => {
+            const mine = m.role === "Client";
+            const system = m.role === "System";
+            return (
+              <div key={i} className={"cp-chat-row" + (mine ? " mine" : "") + (system ? " system" : "")}>
+                {!mine && !system && <span className="cp-chat-av">{m.author.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}</span>}
+                <div className="cp-chat-bubble">
+                  {!mine && !system && <div className="cp-chat-who">{m.author}{m.role ? ` · ${m.role}` : ""}</div>}
+                  <div className="cp-chat-text">{m.body}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="cp-add-row" style={{ marginTop: 12 }}>
+          <input value={msg} onChange={(e) => setMsg(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); send(); } }} placeholder={`Message ${amName}…`} />
+          <button type="button" onClick={send} disabled={!msg.trim()}><Icon name="send" size={13} /> Send</button>
+        </div>
+      </div>
+
+      <div className="obv3-pbtn-row">
+        <button className="obv3-pbtn secondary" onClick={() => go(data.intakeEnabled ? "intake" : "welcome")}><Icon name="arrow-left" size={14} /> Back</button>
+        <button className="obv3-pbtn primary" onClick={() => go("live")}>Next — your live setup <Icon name="arrow-right" size={15} /></button>
+      </div>
     </div>
   );
 }
 
-function IField({ label, v, on, area }: { label: string; v?: string; on: (x: string) => void; area?: boolean }) {
+/* ---------- Section 4: Live setup ---------- */
+function Live({ data, amName, amEmail, live, busy, run, go }: {
+  data: PortalData; amName: string; amEmail: string | null; live: boolean;
+  busy: boolean; run: (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) => void; go: (s: Screen) => void;
+}) {
+  const ini = (n: string) => n.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  const senior = data.team.senior;
+  const junior = data.team.junior;
   return (
-    <div className="field" style={{ marginBottom: 10 }}>
-      <label style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>{label}</label>
-      {area
-        ? <textarea className="notes" style={{ minHeight: 60 }} value={v ?? ""} onChange={(e) => on(e.target.value)} />
-        : <input value={v ?? ""} onChange={(e) => on(e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />}
-    </div>
-  );
-}
+    <div className="obv3-fade">
+      <div className="obv3-live-banner">
+        <h2>Here&apos;s how your account is set up</h2>
+        <p>Your team, your accounting system and your point of contact — all in one place.</p>
+      </div>
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: 20 }}>
-      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>{title}</div>
-      {children}
+      <div className="cp-live-grid">
+        <div className="obv3-pcard cp-live-poc">
+          <div className="cp-poc-eyebrow">Point of contact</div>
+          <div className="cp-poc-name">{amName}</div>
+          <div className="cp-poc-role">Account Manager — for scope, billing or anything else</div>
+          {amEmail && <div className="cp-poc-meta"><Icon name="mail" size={13} /> {amEmail}</div>}
+          <div className="cp-poc-meta"><Icon name="message-circle" size={13} /> WhatsApp preferred · mornings</div>
+        </div>
+        <div className="obv3-pcard cp-live-book">
+          <div className="cp-poc-eyebrow">Accounting book</div>
+          <div className="cp-book-row">
+            <span className="cp-book-ic"><Icon name="book-open" size={18} /></span>
+            <div><div className="cp-book-name">{data.software ?? "To be confirmed"}</div><div className="cp-book-sub">{live ? "Connected · books migrated" : "Setup in progress"}</div></div>
+          </div>
+          <div className="cp-book-foot"><span className="pill green" style={{ fontSize: 10.5, height: 18 }}><span className="dot" />{live ? "Live" : "Setting up"}</span> VAT quarterly · CT annual</div>
+        </div>
+      </div>
+
+      {(senior || junior) && (
+        <div className="obv3-pcard">
+          <div className="obv3-pcard-h">Your team</div>
+          <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+            {senior && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ width: 40, height: 40, borderRadius: 999, background: "var(--blue-soft)", color: "var(--blue)", display: "grid", placeItems: "center", fontWeight: 800 }}>{ini(senior)}</span>
+                <div><div style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Senior Accountant</div><div style={{ fontSize: 14, fontWeight: 700 }}>{senior}{data.teamEmail.senior ? ` · ${data.teamEmail.senior}` : ""}</div></div>
+              </div>
+            )}
+            {junior && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ width: 40, height: 40, borderRadius: 999, background: "var(--teal-soft)", color: "var(--teal)", display: "grid", placeItems: "center", fontWeight: 800 }}>{ini(junior)}</span>
+                <div><div style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Junior Accountant</div><div style={{ fontSize: 14, fontWeight: 700 }}>{junior} — day-to-day bookkeeping</div></div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="obv3-pcard" style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.9 }}>
+        <div className="obv3-pcard-h" style={{ marginBottom: 8 }}>Escalation path</div>
+        Reach your Senior first{senior ? ` (${senior})` : ""}, then your Account Manager ({amName}), then Operations.
+      </div>
+
+      {/* Sign-off */}
+      <div className={"cp-signoff-card" + (data.signedOff ? " done" : "")}>
+        {data.signedOff ? (
+          <div className="cp-signoff-head">
+            <span className="ic done"><Icon name="check" size={20} strokeWidth={3} /></span>
+            <div><div className="t">You&apos;re all set — onboarding signed off</div><div className="d">Thank you{data.ownerName ? `, ${data.ownerName.split(" ")[0]}` : ""}. Your team has been notified and your recurring service is live.</div></div>
+          </div>
+        ) : (
+          <>
+            <div className="cp-signoff-head">
+              <span className="ic"><Icon name="clipboard-check" size={20} /></span>
+              <div><div className="t">Happy with your setup?</div><div className="d">Sign off to confirm everything looks right. This lets your team move you to live delivery.</div></div>
+            </div>
+            <button className="cp-signoff-btn" disabled={busy} onClick={() => run(() => signOffOnboarding(data.token), "Thank you — your onboarding is signed off.")}>
+              <Icon name="check-circle" size={16} /> Sign off my onboarding
+            </button>
+          </>
+        )}
+      </div>
+
+      <button className="obv3-pbtn secondary" onClick={() => go("welcome")}><Icon name="arrow-left" size={14} /> Back to welcome</button>
     </div>
   );
 }

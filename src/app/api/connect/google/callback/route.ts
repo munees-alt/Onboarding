@@ -4,10 +4,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { encryptSecret } from "@/lib/crypto";
 
 const SCOPES = [
-  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/userinfo.email",
 ];
+
+const DEFAULT_DRIVE_ROOT_FOLDER_ID =
+  process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || "1r-FdD4NRrMvKD4tITiY6PTglo1z_Cy4_";
 
 export async function GET(request: NextRequest) {
   const base = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -48,6 +51,7 @@ export async function GET(request: NextRequest) {
       refresh_token_enc: tok.refresh_token ? encryptSecret(tok.refresh_token) : null,
       token_expiry: new Date(Date.now() + (tok.expires_in ?? 3600) * 1000).toISOString(),
       scopes: SCOPES,
+      drive_root_folder_id: DEFAULT_DRIVE_ROOT_FOLDER_ID,
       connected: true,
     },
     { onConflict: "team_member_id,provider" },

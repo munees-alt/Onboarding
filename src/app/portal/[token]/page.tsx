@@ -26,20 +26,25 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     );
   }
 
-  const [{ data: client }, { data: run }, { data: coa }, { data: docs }, { data: tasks }, { data: team }, { data: intake }] = await Promise.all([
-    admin.from("clients").select("name,owner_name,accounting_software").eq("id", link.client_id).maybeSingle(),
+  const [{ data: client }, { data: run }, { data: coa }, { data: docs }, { data: tasks }, { data: team }, { data: intake }, { data: messages }] = await Promise.all([
+    admin.from("clients").select("name,owner_name,accounting_software,vat_trn").eq("id", link.client_id).maybeSingle(),
     link.run_id ? admin.from("onboarding_runs").select("progress,current_stage,status,template_key").eq("id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
     link.run_id ? admin.from("coa_instances").select("accounts,client_signed_off,status,base_industry").eq("run_id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
     admin.from("documents").select("id,label,status").eq("client_id", link.client_id).order("created_at"),
     link.run_id ? admin.from("tasks").select("title,status,type,service").eq("run_id", link.run_id).eq("client_visible", true).order("sort") : Promise.resolve({ data: [] }),
-    link.run_id ? admin.from("run_team").select("role_in_run,team_members(full_name)").eq("run_id", link.run_id) : Promise.resolve({ data: [] }),
+    link.run_id ? admin.from("run_team").select("role_in_run,team_members(full_name,email)").eq("run_id", link.run_id) : Promise.resolve({ data: [] }),
     link.run_id ? admin.from("intake_forms").select("submitted,status,prefilled").eq("run_id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
+    link.run_id ? admin.from("run_messages").select("author_name,author_role,body,created_at").eq("run_id", link.run_id).order("created_at") : Promise.resolve({ data: [] }),
   ]);
 
-  const { data: contractRow } = link.run_id
-    ? await admin.from("run_items").select("data").eq("run_id", link.run_id).eq("kind", "contract").maybeSingle()
-    : { data: null };
+  const [{ data: contractRow }, { data: signoffRow }] = link.run_id
+    ? await Promise.all([
+        admin.from("run_items").select("data").eq("run_id", link.run_id).eq("kind", "contract").maybeSingle(),
+        admin.from("run_items").select("data").eq("run_id", link.run_id).eq("kind", "signoff").maybeSingle(),
+      ])
+    : [{ data: null }, { data: null }];
   const contract = (contractRow?.data ?? null) as PortalData["contract"];
+  const signedOff = !!(signoffRow?.data as { signed?: boolean } | null)?.signed;
 
   const prep = (intake?.prefilled ?? null) as IntakePrepView | null;
   const intakeFields = (templateById(run?.template_key ?? "medium-team")?.intake ?? [])
@@ -48,15 +53,17 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
   const intakeSubmitted = intake?.status === "submitted" ? (intake.submitted as Record<string, string>) : null;
 
   const teamMap: Record<string, string> = {};
-  (team ?? []).forEach((t: { role_in_run: string; team_members: { full_name: string } | { full_name: string }[] | null }) => {
+  const emailMap: Record<string, string> = {};
+  (team ?? []).forEach((t: { role_in_run: string; team_members: { full_name: string; email: string | null } | { full_name: string; email: string | null }[] | null }) => {
     const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members;
-    if (tm) teamMap[t.role_in_run] = tm.full_name;
+    if (tm) { teamMap[t.role_in_run] = tm.full_name; if (tm.email) emailMap[t.role_in_run] = tm.email; }
   });
 
   const data: PortalData = {
     token,
     clientName: client?.name ?? "Your company",
     ownerName: client?.owner_name ?? null,
+    trn: client?.vat_trn ?? null,
     progress: run?.progress ?? 0,
     currentStage: run?.current_stage ?? 1,
     status: run?.status ?? "active",
@@ -64,6 +71,9 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     documents: (docs ?? []).map((d) => ({ id: d.id, label: d.label, status: d.status })),
     tasks: (tasks ?? []).map((t) => ({ title: t.title, status: t.status, type: t.type })),
     team: teamMap,
+    teamEmail: emailMap,
+    messages: (messages ?? []).map((m) => ({ author: m.author_name ?? "Team", role: m.author_role ?? "", body: m.body, at: m.created_at })),
+    signedOff,
     intakeFields,
     intakeSubmitted,
     intakePrep: prep,

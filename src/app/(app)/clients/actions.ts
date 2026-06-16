@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getSession } from "@/lib/auth";
 import { createRunFromTemplate } from "@/lib/runs";
+import { createClientDriveFolder } from "@/lib/google";
 
 export interface NewClientInput {
   name: string;
@@ -95,6 +96,30 @@ export async function markSignedAction(
       startedAt: today,
       targetCompletion: target,
     });
+    const { data: client } = await supabase.from("clients").select("name").eq("id", clientId).maybeSingle();
+    const clientName = client?.name ?? null;
+    const drive = amId && clientName ? await createClientDriveFolder(amId, clientName) : null;
+    if (!drive) {
+      await supabase.from("audit_events").insert({
+        org_id: session.profile.org_id,
+        actor: session.teamMember?.full_name ?? session.email,
+        actor_role: session.profile.role,
+        action: "drive_folder_failed",
+        module: "onboarding",
+        resource_ref: `Drive folder not created for ${clientName ?? "client"}`,
+        resource_id: runId,
+        resource_type: "run",
+        details: { client_id: clientId },
+      });
+      return {
+        error: "Onboarding run was created, but the Drive folder was not. Reconnect Google and confirm you have access to the master Drive folder.",
+        runId,
+      };
+    }
+    await supabase.from("drive_folders").upsert(
+      { client_id: clientId, tree: { name: clientName, id: drive.id, link: drive.link } },
+      { onConflict: "client_id" },
+    );
     await supabase.from("audit_events").insert({
       org_id: session.profile.org_id,
       actor: session.teamMember?.full_name ?? session.email,
@@ -104,6 +129,7 @@ export async function markSignedAction(
       resource_ref: "Onboarding run created",
       resource_id: runId,
       resource_type: "run",
+      details: drive ? { drive_folder_id: drive.id, drive_link: drive.link } : {},
     });
     revalidatePath("/clients");
     revalidatePath("/onboarding");

@@ -4,11 +4,43 @@ import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getSession } from "@/lib/auth";
-import { sendGmailAs } from "@/lib/google";
+import { createClientDriveTree, sendGmailAs, type DriveFolderNode } from "@/lib/google";
 import { templateById } from "@/lib/onboarding-templates";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const KIND_TO_TYPE: Record<string, string> = { ai: "ai", link: "link", doc: "form", check: "manual", person: "manual" };
+
+// ── Role-based edit access ──────────────────────────────────────────────
+// Hierarchy: a member can act on a step at their own level or BELOW, never
+// above. This is what stops (e.g.) a Team Lead from completing an AM sign-off.
+const ROLE_RANK: Record<string, number> = { intern: 0, junior: 1, senior: 2, team_lead: 3, am: 4, ops_head: 5, admin: 6 };
+const WHO_TO_ROLE: Record<string, string> = {
+  am: "am", "account manager": "am",
+  senior: "senior", "senior accountant": "senior",
+  junior: "junior", "junior accountant": "junior",
+  ops: "ops_head", "ops manager": "ops_head", "ops head": "ops_head",
+  "team lead": "team_lead", "team_lead": "team_lead", teamlead: "team_lead",
+  intern: "intern",
+};
+type StepLike = { who?: string[]; approval?: { by: string } };
+function requiredRoleForStep(step: StepLike): string | null {
+  // An explicit approval gate is the strict one (e.g. AM sign-off).
+  if (step.approval?.by) { const r = WHO_TO_ROLE[step.approval.by.trim().toLowerCase()]; if (r) return r; }
+  // Otherwise the step's owning person role. System / AI / Client steps aren't gated by team rank.
+  for (const w of step.who ?? []) { const r = WHO_TO_ROLE[w.trim().toLowerCase()]; if (r) return r; }
+  return null;
+}
+/** Returns an error string if the signed-in member's role is below the step's required role. */
+async function guardStepRole(step: StepLike): Promise<string | null> {
+  const required = requiredRoleForStep(step);
+  if (!required) return null;
+  const session = await getSession();
+  const myRole = session?.teamMember?.role ?? session?.profile.role;
+  if (!myRole) return "You must be signed in.";
+  if ((ROLE_RANK[myRole] ?? 0) >= (ROLE_RANK[required] ?? 99)) return null;
+  const nice = (r: string) => r.replace(/_/g, " ");
+  return `This step is reserved for ${nice(required)} or above. Your role (${nice(myRole)}) can't sign it off.`;
+}
 
 function locate(templateId: string, stepId: string) {
   const tpl = templateById(templateId);
@@ -86,6 +118,8 @@ export async function completeStep(runId: string, stepId: string) {
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
+  const loc = locate(run.template_key, stepId);
+  if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
   const r = await upsertStep(supabase, runId, run.template_key, stepId, {
     status: "complete",
     completed_at: new Date().toISOString(),
@@ -100,6 +134,8 @@ export async function assignStep(runId: string, stepId: string, memberId: string
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
+  const loc = locate(run.template_key, stepId);
+  if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
   const r = await upsertStep(supabase, runId, run.template_key, stepId, {
     status: "complete",
     assignee_id: memberId,
@@ -113,11 +149,9 @@ export async function assignStep(runId: string, stepId: string, memberId: string
 }
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-interface FolderNode { name: string; children?: FolderNode[] }
-
 /** Builds the client Drive tree: Company Docs / Books → Year → Months (from contract) / Financial / Cleanup / Others. */
-function buildDriveTree(clientName: string, startYM?: string, endYM?: string): FolderNode {
-  const books: FolderNode = { name: "Books", children: [] };
+function buildDriveTree(clientName: string, startYM?: string, endYM?: string): DriveFolderNode {
+  const books: DriveFolderNode = { name: "Books", children: [] };
   if (startYM && endYM) {
     const [sy, sm] = startYM.split("-").map(Number);
     const [ey, em] = endYM.split("-").map(Number);
@@ -181,18 +215,22 @@ export async function saveDrive(
   runId: string, stepId: string,
   opts: { periodStart?: string; periodEnd?: string; contract?: Record<string, unknown> | null },
 ): Promise<{ error?: string; link?: string }> {
+  const session = await getSession();
+  if (!session?.teamMember?.id) return { error: "Connect your account to a team member before creating Drive folders." };
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
   const { data: client } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
   const tree = buildDriveTree(client?.name ?? "Client", opts.periodStart, opts.periodEnd);
-  await supabase.from("drive_folders").upsert({ client_id: run.client_id, tree }, { onConflict: "client_id" });
+  const driveTree = await createClientDriveTree(session.teamMember.id, tree);
+  if (!driveTree) return { error: "Could not create Drive folders. Reconnect Google and make sure you have access to the master Drive folder." };
+  await supabase.from("drive_folders").upsert({ client_id: run.client_id, tree: driveTree }, { onConflict: "client_id" });
   if (opts.contract) {
     await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "contract");
     await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "contract", data: opts.contract });
   }
   await completeStep(runId, stepId);
-  return { link: `/drive/${runId.slice(0, 8)}` };
+  return { link: driveTree.link ?? `/drive/${runId.slice(0, 8)}` };
 }
 
 export interface IntakePrep {
@@ -390,6 +428,12 @@ export async function dispatchMagicLink(runId: string): Promise<{ error?: string
 
 export async function rollbackToStage(runId: string, stageNo: number) {
   const supabase = await createClient();
+  // Rolling a run back a stage is a supervisory action — AM level or above only.
+  const session = await getSession();
+  const myRole = session?.teamMember?.role ?? session?.profile.role;
+  if ((ROLE_RANK[myRole ?? ""] ?? 0) < ROLE_RANK.am) {
+    return { error: "Only an Account Manager or above can roll a run back to an earlier stage." };
+  }
   const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
   const tpl = templateById(run.template_key);

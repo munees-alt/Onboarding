@@ -1358,3 +1358,27 @@
 .bld-link-share input { flex: 1; border: none; background: transparent; font-family: var(--font-mono, monospace); font-size: 12px; color: var(--ink-1); outline: none; }
 .bld-link-copy { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: #fff; color: var(--ink-2); font-family: var(--font); font-size: 11.5px; font-weight: 700; border-radius: 8px; padding: 6px 11px; cursor: pointer; }
 .bld-link-copy:hover { border-color: var(--orange); color: var(--orange-600); }
+
+/* ── Client-portal task board (client view) ── */
+.cp-board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.cp-board-col { background: var(--bg, #f7f7f8); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+.cp-board-col-h { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); margin-bottom: 10px; }
+.cp-board-count { background: #fff; border: 1px solid var(--border); border-radius: 999px; min-width: 20px; height: 20px; display: inline-grid; place-items: center; font-size: 11px; padding: 0 6px; }
+.cp-board-card { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; color: var(--ink-1); }
+.cp-board-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--ink-4); flex-shrink: 0; }
+.cp-board-dot[data-col="input"] { background: var(--orange); }
+.cp-board-dot[data-col="progress"] { background: var(--blue, #3b82f6); }
+.cp-board-dot[data-col="done"] { background: var(--green); }
+@media (max-width: 720px) { .cp-board { grid-template-columns: 1fr; } }
+
+/* ── Client-portal two-way chat ── */
+.cp-chat { display: flex; flex-direction: column; gap: 10px; max-height: 360px; overflow-y: auto; padding: 4px; }
+.cp-chat-row { display: flex; align-items: flex-end; gap: 8px; }
+.cp-chat-row.mine { flex-direction: row-reverse; }
+.cp-chat-row.system { justify-content: center; }
+.cp-chat-av { width: 28px; height: 28px; border-radius: 999px; background: var(--blue-soft); color: var(--blue, #3b82f6); display: grid; place-items: center; font-size: 11px; font-weight: 800; flex-shrink: 0; }
+.cp-chat-bubble { max-width: 72%; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; }
+.cp-chat-row.mine .cp-chat-bubble { background: var(--orange); border-color: var(--orange); color: #fff; }
+.cp-chat-row.system .cp-chat-bubble { background: var(--green-soft); border-color: #b8e5c5; color: var(--green); font-size: 12px; max-width: 90%; text-align: center; }
+.cp-chat-who { font-size: 11px; font-weight: 700; color: var(--ink-3); margin-bottom: 2px; }
+.cp-chat-text { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
