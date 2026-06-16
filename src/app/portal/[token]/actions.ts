@@ -155,19 +155,19 @@ export async function submitIntake(token: string, data: Record<string, unknown>)
 }
 
 /** Client posts a chat message — lands in the same run thread the team sees (two-way). */
-export async function postPortalMessage(token: string, body: string): Promise<{ error?: string; ok?: boolean }> {
+export async function postPortalMessage(token: string, body: string, taskRef?: string | null): Promise<{ error?: string; ok?: boolean }> {
   const link = await resolve(token);
   if (!link?.run_id) return { error: "Link invalid or expired." };
   if (!body.trim()) return { error: "Message is empty." };
   const admin = createAdminClient();
   const { data: client } = await admin.from("clients").select("name").eq("id", link.client_id).maybeSingle();
   const { error } = await admin.from("run_messages").insert({
-    run_id: link.run_id, author_name: client?.name ?? "Client", author_role: "Client", body: body.trim(),
+    run_id: link.run_id, author_name: client?.name ?? "Client", author_role: "Client", body: body.trim(), task_ref: taskRef?.trim() || null,
   });
   if (error) return { error: error.message };
   await admin.from("notifications").insert({
     org_id: link.org_id, run_id: link.run_id, kind: "info",
-    title: "New message from your client", body: body.trim().slice(0, 140),
+    title: "New message from your client", body: (taskRef ? `[${taskRef}] ` : "") + body.trim().slice(0, 140),
   });
   revalidatePath(`/portal/${token}`);
   return { ok: true };

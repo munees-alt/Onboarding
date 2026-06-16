@@ -15,10 +15,11 @@ export interface PortalData {
   status: string;
   coa: { accounts: { code: string; account: string; section: string }[]; signedOff: boolean; industry: string | null } | null;
   documents: { id: string; label: string; status: string }[];
-  tasks: { title: string; status: string; type: string }[];
+  tasks: { title: string; status: string; type: string; boardColumn?: string | null }[];
+  boardColumns?: string[] | null;
   team: Record<string, string>;
   teamEmail: Record<string, string>;
-  messages: { author: string; role: string; body: string; at: string }[];
+  messages: { author: string; role: string; body: string; at: string; taskRef?: string | null }[];
   signedOff: boolean;
   intakeFields: { id: string; label: string }[];
   intakeSubmitted: Record<string, unknown> | null;
@@ -419,20 +420,37 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
 }) {
   const router = useRouter();
   const [msg, setMsg] = useState("");
+  const [chatTask, setChatTask] = useState("");
   const [comment, setComment] = useState("");
   const [showComment, setShowComment] = useState(false);
 
-  const columns: { key: string; label: string; match: (s: string) => boolean }[] = [
-    { key: "input", label: "Needs your input", match: (s) => s === "needs_input" },
-    { key: "progress", label: "In progress", match: (s) => s === "in_progress" || s === "working" },
-    { key: "done", label: "Done", match: (s) => s === "complete" || s === "done" },
-  ];
+  // If the team set custom board columns, mirror those exactly; otherwise group
+  // the client-visible tasks by status into friendly columns.
+  const useCustom = (data.boardColumns?.length ?? 0) > 0;
+  const cols = useCustom
+    ? data.boardColumns!.map((c) => ({ key: c, label: c }))
+    : [
+        { key: "input", label: "Needs your input" },
+        { key: "progress", label: "In progress" },
+        { key: "done", label: "Done" },
+      ];
+  const itemsFor = (key: string) => {
+    if (useCustom) {
+      const first = data.boardColumns![0];
+      return data.tasks.filter((t) => (t.boardColumn && data.boardColumns!.includes(t.boardColumn) ? t.boardColumn : first) === key);
+    }
+    return data.tasks.filter((t) =>
+      key === "input" ? t.status === "needs_input"
+        : key === "progress" ? (t.status === "in_progress" || t.status === "working")
+          : (t.status === "complete" || t.status === "done"));
+  };
 
   const send = () => {
     const body = msg.trim();
     if (!body) return;
-    setMsg("");
-    postPortalMessage(data.token, body).then((r) => { if (r.error) note(r.error); else router.refresh(); });
+    const ref = chatTask || null;
+    setMsg(""); setChatTask("");
+    postPortalMessage(data.token, body, ref).then((r) => { if (r.error) note(r.error); else router.refresh(); });
   };
 
   return (
@@ -458,8 +476,8 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
           <div className="cp-empty">Nothing needs your input right now — your team is working behind the scenes.</div>
         ) : (
           <div className="cp-board">
-            {columns.map((col) => {
-              const items = data.tasks.filter((t) => col.match(t.status));
+            {cols.map((col) => {
+              const items = itemsFor(col.key);
               return (
                 <div key={col.key} className="cp-board-col">
                   <div className="cp-board-col-h">{col.label}<span className="cp-board-count">{items.length}</span></div>
@@ -529,14 +547,21 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
                 {!mine && !system && <span className="cp-chat-av">{m.author.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}</span>}
                 <div className="cp-chat-bubble">
                   {!mine && !system && <div className="cp-chat-who">{m.author}{m.role ? ` · ${m.role}` : ""}</div>}
+                  {m.taskRef && <span className="pill blue" style={{ fontSize: 10, padding: "1px 7px", marginBottom: 4, display: "inline-flex" }}><Icon name="tag" size={10} /> {m.taskRef}</span>}
                   <div className="cp-chat-text">{m.body}</div>
                 </div>
               </div>
             );
           })}
         </div>
-        <div className="cp-add-row" style={{ marginTop: 12 }}>
-          <input value={msg} onChange={(e) => setMsg(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); send(); } }} placeholder={`Message ${amName}…`} />
+        {data.tasks.length > 0 && (
+          <select value={chatTask} onChange={(e) => setChatTask(e.target.value)} style={{ marginTop: 12, width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
+            <option value="">Tag a task this is about (optional)…</option>
+            {data.tasks.map((t, i) => <option key={i} value={t.title}>{t.title}</option>)}
+          </select>
+        )}
+        <div className="cp-add-row" style={{ marginTop: 8 }}>
+          <input value={msg} onChange={(e) => setMsg(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); send(); } }} placeholder={chatTask ? `Describe the issue with "${chatTask}"…` : `Message ${amName}…`} />
           <button type="button" onClick={send} disabled={!msg.trim()}><Icon name="send" size={13} /> Send</button>
         </div>
       </div>

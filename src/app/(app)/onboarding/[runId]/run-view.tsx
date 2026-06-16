@@ -66,7 +66,16 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
   const [actStep, setActStep] = useState<TemplateStep | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [taskStepPending, setTaskStepPending] = useState<string | null>(null);
+  const [chatUnread, setChatUnread] = useState(false);
   const { effectiveRole } = useIdentity();
+
+  useEffect(() => {
+    if (chatOpen || !detail.lastMessageAt) { setChatUnread(false); return; }
+    try {
+      const read = localStorage.getItem(`cadence-chat-read-${detail.runId}`);
+      setChatUnread(!read || new Date(read).getTime() < new Date(detail.lastMessageAt).getTime());
+    } catch { setChatUnread(false); }
+  }, [detail.lastMessageAt, detail.runId, chatOpen]);
 
   if (!tpl) return <div className="page">Template not found.</div>;
 
@@ -124,7 +133,10 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
             <div className="progress orange" style={{ flex: 1 }}><i style={{ width: `${detail.progress}%` }} /></div>
             <span className="progress-pct">{detail.progress}%</span>
           </div>
-          <button className="btn-ghost" onClick={() => setChatOpen(true)}><Icon name="message-square" size={13} /> Chat</button>
+          <button className="btn-ghost" style={{ position: "relative" }} onClick={() => setChatOpen(true)}>
+            <Icon name="message-square" size={13} /> Chat
+            {chatUnread && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: "50%", background: "var(--red)", border: "1.5px solid #fff" }} />}
+          </button>
           <button className="btn-ghost" style={{ color: "var(--red)" }}><Icon name="ban" size={13} /> Void</button>
           <button className="btn-ghost"><Icon name="settings" size={13} /> Settings</button>
         </div>
@@ -281,13 +293,9 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
       ) : tab === "playbook" ? (
         <div className="scroll"><div className="page" style={{ maxWidth: 900 }}><Playbook detail={detail} /></div></div>
       ) : (
-        <div className="scroll">
-          <div className="page">
-            <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 10, padding: "60px 40px", textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
-              Switch to the client&apos;s magic-link portal — dispatch the link from the Send Magic Link stage, then open it from there.
-            </div>
-          </div>
-        </div>
+        <div className="scroll"><div className="page" style={{ maxWidth: 900 }}>
+          <ClientPortalTab detail={detail} onOpenChat={() => setChatOpen(true)} />
+        </div></div>
       )}
 
       {actStep && actStep.act?.type === "coa" && (
@@ -387,7 +395,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      <RunChat runId={detail.runId} open={chatOpen} onClose={() => setChatOpen(false)} />
+      <RunChat runId={detail.runId} open={chatOpen} onClose={() => setChatOpen(false)} tasks={detail.tasks} />
 
       {toast && (
         <div className="toast show green"><Icon name="check-circle" size={15} /><span>{toast}</span></div>
@@ -396,23 +404,30 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
   );
 }
 
-function RunChat({ runId, open, onClose }: { runId: string; open: boolean; onClose: () => void }) {
-  const [messages, setMessages] = useState<{ id: string; author_name: string | null; author_role: string | null; body: string; created_at: string }[]>([]);
+function RunChat({ runId, open, onClose, tasks = [] }: { runId: string; open: boolean; onClose: () => void; tasks?: { title: string }[] }) {
+  const [messages, setMessages] = useState<{ id: string; author_name: string | null; author_role: string | null; body: string; created_at: string; task_ref: string | null }[]>([]);
   const [text, setText] = useState("");
+  const [taskRef, setTaskRef] = useState("");
   const [busy, start] = useTransition();
   const supabase = createClient();
 
   const load = async () => {
-    const { data } = await supabase.from("run_messages").select("id,author_name,author_role,body,created_at").eq("run_id", runId).order("created_at");
+    const { data } = await supabase.from("run_messages").select("id,author_name,author_role,body,created_at,task_ref").eq("run_id", runId).order("created_at");
     setMessages(data ?? []);
   };
-  useEffect(() => { if (open) load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [open]);
+  useEffect(() => {
+    if (open) {
+      load();
+      try { localStorage.setItem(`cadence-chat-read-${runId}`, new Date().toISOString()); } catch {}
+    }
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [open]);
 
   const send = () => {
     if (!text.trim()) return;
-    const body = text;
+    const body = text; const ref = taskRef || null;
     setText("");
-    start(async () => { await postMessage(runId, body); await load(); });
+    start(async () => { await postMessage(runId, body, ref); await load(); try { localStorage.setItem(`cadence-chat-read-${runId}`, new Date().toISOString()); } catch {} });
   };
 
   return (
@@ -426,15 +441,24 @@ function RunChat({ runId, open, onClose }: { runId: string; open: boolean; onClo
           ) : (
             messages.map((m) => (
               <div key={m.id} style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 700 }}>{m.author_name ?? "Someone"} <span style={{ color: "var(--ink-4)", fontWeight: 400 }}>· {new Date(m.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>{m.author_name ?? "Someone"} <span style={{ color: "var(--ink-4)", fontWeight: 400 }}>· {m.author_role === "Client" ? "Client · " : ""}{new Date(m.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+                {m.task_ref && <span className="pill blue" style={{ fontSize: 10, padding: "1px 7px", marginTop: 3, display: "inline-flex" }}><Icon name="tag" size={10} /> {m.task_ref}</span>}
                 <div style={{ fontSize: 13, color: "var(--ink-1)", marginTop: 2 }}>{m.body}</div>
               </div>
             ))
           )}
         </div>
-        <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8 }}>
-          <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Message the team…" style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
-          <button className="btn-primary" onClick={send} disabled={busy || !text.trim()}><Icon name="send" size={14} /></button>
+        <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 8 }}>
+          {tasks.length > 0 && (
+            <select value={taskRef} onChange={(e) => setTaskRef(e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 9px", fontSize: 12.5 }}>
+              <option value="">Tag a task (optional)…</option>
+              {tasks.map((t, i) => <option key={i} value={t.title}>{t.title}</option>)}
+            </select>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Message the team…" style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+            <button className="btn-primary" onClick={send} disabled={busy || !text.trim()}><Icon name="send" size={14} /></button>
+          </div>
         </div>
       </aside>
     </>
@@ -785,6 +809,113 @@ function StepBox({
           )}
         </span>
       </div>
+    </div>
+  );
+}
+
+function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const visible = detail.tasks.filter((t) => t.clientVisible);
+  const cols = (detail.items["board_columns"]?.[0]?.data?.columns as string[] | undefined) ?? null;
+  const link = detail.portalLink;
+  const docs = detail.playbook.documents;
+  const docReceived = docs.filter((d) => d.status === "uploaded").length;
+  const intakeSubmitted = !!detail.playbook.intake;
+  const coaSignedOff = !!detail.playbook.coa?.signedOff;
+
+  const groups: { label: string; items: typeof visible }[] = cols && cols.length
+    ? cols.map((c) => ({ label: c, items: visible.filter((t) => (t.boardColumn && cols.includes(t.boardColumn) ? t.boardColumn : cols[0]) === c) }))
+    : [
+        { label: "Needs client input", items: visible.filter((t) => t.status === "needs_input") },
+        { label: "In progress", items: visible.filter((t) => t.status === "in_progress" || t.status === "not_started") },
+        { label: "Done", items: visible.filter((t) => t.status === "complete") },
+      ];
+
+  const copyLink = () => {
+    if (!link) return;
+    const url = `${window.location.origin}/portal/${link.token}`;
+    navigator.clipboard?.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+
+  return (
+    <>
+      <div className="section-head">
+        <div>
+          <h2 style={{ fontSize: 16 }}>Client portal — live mirror</h2>
+          <div className="sub">Exactly what {detail.clientName} sees, and what they&apos;ve done. Updates here in real time.</div>
+        </div>
+        <button className="btn-ghost" onClick={onOpenChat}><Icon name="message-square" size={13} /> Open chat</button>
+      </div>
+
+      {/* Access */}
+      <div className="runs-card" style={{ padding: 14, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ width: 30, height: 30, borderRadius: 8, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center" }}><Icon name="lock" size={15} /></span>
+          {link ? (
+            <>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>Secure link active</div>
+                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Opens only with a code sent to <strong>{link.email ?? "the client email"}</strong></div>
+              </div>
+              <button className="btn-ghost" onClick={copyLink}><Icon name={copied ? "check" : "copy"} size={13} /> {copied ? "Copied" : "Copy link"}</button>
+            </>
+          ) : (
+            <div style={{ fontSize: 13, color: "var(--ink-3)" }}>Portal link not dispatched yet — send it from the <strong>Send Magic Link</strong> stage.</div>
+          )}
+        </div>
+      </div>
+
+      {/* Progress chips */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <MirrorChip icon="file-text" label="Documents" value={`${docReceived}/${docs.length} received`} done={docs.length > 0 && docReceived === docs.length} />
+        <MirrorChip icon="clipboard-list" label="Intake form" value={intakeSubmitted ? "Submitted" : "Awaiting client"} done={intakeSubmitted} />
+        <MirrorChip icon="check-circle" label="COA sign-off" value={coaSignedOff ? "Signed off" : "Pending"} done={coaSignedOff} />
+      </div>
+
+      {/* Client-visible board */}
+      <div className="runs-card" style={{ padding: 16, marginBottom: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Task board the client sees</div>
+        {visible.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>No client-visible tasks yet. On the Task Board, tick &quot;Client sees&quot; to share a task here.</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(groups.length, 4)}, 1fr)`, gap: 10 }}>
+            {groups.map((g) => (
+              <div key={g.label} style={{ background: "var(--bg-soft)", borderRadius: 10, padding: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 8 }}>{g.label} · {g.items.length}</div>
+                {g.items.length === 0 && <div style={{ fontSize: 12, color: "var(--ink-4)" }}>—</div>}
+                {g.items.map((t, i) => (
+                  <div key={i} style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 8, padding: "7px 9px", fontSize: 12.5, marginBottom: 6 }}>{t.title}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Documents */}
+      {docs.length > 0 && (
+        <div className="runs-card" style={{ padding: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Documents</div>
+          {docs.map((d, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13 }}>
+              <span style={{ color: d.status === "uploaded" ? "var(--green)" : "var(--ink-4)" }}><Icon name={d.status === "uploaded" ? "check-circle" : "circle"} size={14} /></span>
+              <span style={{ flex: 1 }}>{d.label}</span>
+              <span className={"pill " + (d.status === "uploaded" ? "green" : "gray")} style={{ fontSize: 10 }}>{d.status === "uploaded" ? "Received" : "Pending"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function MirrorChip({ icon, label, value, done }: { icon: string; label: string; value: string; done: boolean }) {
+  return (
+    <div style={{ flex: 1, minWidth: 150, background: "#fff", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--ink-3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}><Icon name={icon} size={12} /> {label}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, marginTop: 4, color: done ? "var(--green)" : "var(--ink-1)" }}>{value}</div>
     </div>
   );
 }

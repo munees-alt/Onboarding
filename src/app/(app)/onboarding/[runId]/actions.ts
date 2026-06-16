@@ -355,7 +355,7 @@ export async function saveDocuments(runId: string, stepId: string, labels: strin
   return {};
 }
 
-export async function postMessage(runId: string, body: string): Promise<{ error?: string }> {
+export async function postMessage(runId: string, body: string, taskRef?: string | null): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: "Not signed in." };
   if (!body.trim()) return { error: "Empty message." };
@@ -366,6 +366,7 @@ export async function postMessage(runId: string, body: string): Promise<{ error?
     author_name: session.teamMember?.full_name ?? session.email,
     author_role: session.profile.role,
     body: body.trim(),
+    task_ref: taskRef?.trim() || null,
   });
   if (error) return { error: error.message };
   return {};

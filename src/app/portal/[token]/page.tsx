@@ -41,20 +41,22 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     link.run_id ? admin.from("onboarding_runs").select("progress,current_stage,status,template_key").eq("id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
     link.run_id ? admin.from("coa_instances").select("accounts,client_signed_off,status,base_industry").eq("run_id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
     admin.from("documents").select("id,label,status").eq("client_id", link.client_id).order("created_at"),
-    link.run_id ? admin.from("tasks").select("title,status,type,service").eq("run_id", link.run_id).eq("client_visible", true).order("sort") : Promise.resolve({ data: [] }),
+    link.run_id ? admin.from("tasks").select("title,status,type,service,board_column").eq("run_id", link.run_id).eq("client_visible", true).order("sort") : Promise.resolve({ data: [] }),
     link.run_id ? admin.from("run_team").select("role_in_run,team_members(full_name,email)").eq("run_id", link.run_id) : Promise.resolve({ data: [] }),
     link.run_id ? admin.from("intake_forms").select("submitted,status,prefilled").eq("run_id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
-    link.run_id ? admin.from("run_messages").select("author_name,author_role,body,created_at").eq("run_id", link.run_id).order("created_at") : Promise.resolve({ data: [] }),
+    link.run_id ? admin.from("run_messages").select("author_name,author_role,body,created_at,task_ref").eq("run_id", link.run_id).order("created_at") : Promise.resolve({ data: [] }),
   ]);
 
-  const [{ data: contractRow }, { data: signoffRow }] = link.run_id
+  const [{ data: contractRow }, { data: signoffRow }, { data: colsRow }] = link.run_id
     ? await Promise.all([
         admin.from("run_items").select("data").eq("run_id", link.run_id).eq("kind", "contract").maybeSingle(),
         admin.from("run_items").select("data").eq("run_id", link.run_id).eq("kind", "signoff").maybeSingle(),
+        admin.from("run_items").select("data").eq("run_id", link.run_id).eq("kind", "board_columns").maybeSingle(),
       ])
-    : [{ data: null }, { data: null }];
+    : [{ data: null }, { data: null }, { data: null }];
   const contract = (contractRow?.data ?? null) as PortalData["contract"];
   const signedOff = !!(signoffRow?.data as { signed?: boolean } | null)?.signed;
+  const boardCols = (colsRow?.data as { columns?: string[] } | null)?.columns ?? null;
 
   const prep = (intake?.prefilled ?? null) as IntakePrepView | null;
   const intakeFields = (templateById(run?.template_key ?? "medium-team")?.intake ?? [])
@@ -79,10 +81,11 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     status: run?.status ?? "active",
     coa: coa ? { accounts: (coa.accounts ?? []) as NonNullable<PortalData["coa"]>["accounts"], signedOff: coa.client_signed_off, industry: coa.base_industry } : null,
     documents: (docs ?? []).map((d) => ({ id: d.id, label: d.label, status: d.status })),
-    tasks: (tasks ?? []).map((t) => ({ title: t.title, status: t.status, type: t.type })),
+    tasks: (tasks ?? []).map((t) => ({ title: t.title, status: t.status, type: t.type, boardColumn: t.board_column ?? null })),
+    boardColumns: boardCols,
     team: teamMap,
     teamEmail: emailMap,
-    messages: (messages ?? []).map((m) => ({ author: m.author_name ?? "Team", role: m.author_role ?? "", body: m.body, at: m.created_at })),
+    messages: (messages ?? []).map((m) => ({ author: m.author_name ?? "Team", role: m.author_role ?? "", body: m.body, at: m.created_at, taskRef: (m as { task_ref?: string | null }).task_ref ?? null })),
     signedOff,
     intakeFields,
     intakeSubmitted,

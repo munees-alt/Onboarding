@@ -42,6 +42,8 @@ export interface RunDetail {
   seniors: { id: string; name: string }[];
   juniors: { id: string; name: string }[];
   assignPeople: { id: string; name: string; role: string }[];
+  portalLink: { token: string; email: string | null } | null;
+  lastMessageAt: string | null;
   tasks: TaskRow[];
   items: Record<string, { id: string; data: Record<string, unknown>; status: string }[]>;
   playbook: {
@@ -71,6 +73,7 @@ export async function getRunDetail(
     { data: srs }, { data: jrs }, { data: aps },
     { data: taskRows }, { data: itemRows }, amRes,
     { data: pbClient }, { data: pbIntake }, { data: pbCoa }, { data: pbDocs }, { data: pbDiag }, { data: pbTeam },
+    { data: portalLinkRow }, { data: lastMsgRow },
   ] = await Promise.all([
     supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle(),
     supabase.from("run_stages").select("stage_no,name,status,step_total,step_done").eq("run_id", runId).order("stage_no"),
@@ -87,6 +90,8 @@ export async function getRunDetail(
     supabase.from("documents").select("label,status").eq("run_id", runId).order("created_at"),
     supabase.from("run_diagrams").select("name,nodes").eq("run_id", runId).order("sort"),
     supabase.from("run_team").select("role_in_run,team_members(full_name)").eq("run_id", runId),
+    supabase.from("magic_links").select("token,email").eq("run_id", runId).eq("purpose", "portal").maybeSingle(),
+    supabase.from("run_messages").select("created_at").eq("run_id", runId).order("created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
   const amName = (amRes as { data: { full_name?: string } | null } | null)?.data?.full_name ?? null;
 
@@ -162,5 +167,7 @@ export async function getRunDetail(
     seniors: (srs ?? []).map((m) => ({ id: m.id, name: m.full_name })),
     juniors: (jrs ?? []).map((m) => ({ id: m.id, name: m.full_name })),
     assignPeople: (aps ?? []).map((m) => ({ id: m.id, name: m.full_name, role: m.role })),
+    portalLink: portalLinkRow ? { token: portalLinkRow.token as string, email: (portalLinkRow.email as string | null) ?? null } : null,
+    lastMessageAt: (lastMsgRow?.created_at as string | undefined) ?? null,
   };
 }
