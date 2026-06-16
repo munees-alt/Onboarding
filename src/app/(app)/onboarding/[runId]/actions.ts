@@ -355,6 +355,25 @@ export async function saveDocuments(runId: string, stepId: string, labels: strin
   return {};
 }
 
+/** Saves a call step's recording link + notes into the step payload, then completes it.
+    These are what the MoM generator reads — without them the MoM can't be generated. */
+export async function saveCallNotes(runId: string, stepId: string, recording: string, notes: string): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const loc = locate(run.template_key, stepId);
+  if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
+  const r = await upsertStep(supabase, runId, run.template_key, stepId, {
+    status: "complete",
+    payload: { recording: recording.trim(), notes: notes.trim() },
+    completed_at: new Date().toISOString(),
+  });
+  if (r.error) return r;
+  await recompute(supabase, runId, run.template_key);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 export async function postMessage(runId: string, body: string, taskRef?: string | null): Promise<{ error?: string }> {
   const session = await getSession();
   if (!session) return { error: "Not signed in." };

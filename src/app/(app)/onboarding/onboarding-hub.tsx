@@ -8,6 +8,7 @@ import { RunCard } from "@/components/run-card";
 import { stepCount, type OnbTemplate } from "@/lib/onboarding-templates";
 import type { RunCardData } from "@/lib/data/runs";
 import { markSignedAction, deleteRunAction } from "../clients/actions";
+import { createTemplateFromText } from "../templates/actions";
 
 const TABS = [
   { id: "dashboard", label: "Dashboard", icon: "layout-dashboard" },
@@ -155,13 +156,51 @@ function Pipeline({ runs }: { runs: RunCardData[] }) {
 }
 
 function Templates({ templates }: { templates: OnbTemplate[] }) {
+  const router = useRouter();
   const [open, setOpen] = useState<string | null>(null);
+  const [genOpen, setGenOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, start] = useTransition();
+
+  const generate = () =>
+    start(async () => {
+      setErr(null);
+      const r = await createTemplateFromText(text);
+      if (r.error) { setErr(r.error); return; }
+      if (r.id) router.push(`/templates/${r.id}`);
+    });
 
   return (
     <>
       <div className="section-head" style={{ marginTop: 4 }}>
         <div><div className="sub">{templates.length} onboarding templates · all editable</div></div>
+        <button className="btn-primary" onClick={() => { setGenOpen(true); setErr(null); }}>
+          <Icon name="sparkles" size={14} /> Create from description
+        </button>
       </div>
+
+      {genOpen && (
+        <div className="modal-overlay open" onClick={() => !busy && setGenOpen(false)}>
+          <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd">
+              <h3>Create a template from a description</h3>
+              <div className="sub">Describe your onboarding process in plain words. AI drafts the stages and steps — real, based on what you write, fully editable after.</div>
+            </div>
+            <div className="bd">
+              <textarea className="notes" value={text} onChange={(e) => setText(e.target.value)} style={{ minHeight: 160 }}
+                placeholder={"e.g. When a new VAT client signs, the AM assigns a senior and junior. We collect the trade licence and bank statements, set up the books in Zoho, hold a kickoff call, then run a monthly close with a handover to the delivery team."} />
+              {err && <div style={{ fontSize: 12.5, color: "var(--red)", background: "var(--red-soft)", padding: "8px 10px", borderRadius: 8 }}>{err}</div>}
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setGenOpen(false)} disabled={busy}>Cancel</button>
+              <button className="btn-ai" onClick={generate} disabled={busy || text.trim().length < 20}>
+                <Icon name="sparkles" size={14} /> {busy ? "Generating…" : "Generate template"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="tmpl-grid">
         {templates.map((t) => (
           <div key={t.id} className="tmpl-card" style={{ cursor: "default" }}>

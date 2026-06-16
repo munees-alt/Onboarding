@@ -65,17 +65,50 @@ export async function generateStepText(
   const { data: client } = await supabase.from("clients").select("*").eq("id", run.client_id).maybeSingle();
   if (!client) return { error: "Client not found." };
 
+  // Real team names (no placeholders like "[Account Manager]").
+  const { data: teamRows } = await supabase
+    .from("run_team")
+    .select("role_in_run,team_members(full_name)")
+    .eq("run_id", runId);
+  const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior Accountant", junior: "Junior Accountant", team_lead: "Team Lead", ops_head: "Operations" };
+  const team = (teamRows ?? [])
+    .map((t: { role_in_run: string; team_members: { full_name: string } | { full_name: string }[] | null }) => {
+      const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members;
+      return tm ? `${ROLE_NICE[t.role_in_run] ?? t.role_in_run}: ${tm.full_name}` : null;
+    })
+    .filter(Boolean)
+    .join("; ");
+
+  // Minutes of meeting MUST be based on the real recording + notes — never invented.
+  let meetingBlock = "";
+  if (cfg.feature === "mom") {
+    const { data: callStep } = await supabase
+      .from("run_steps")
+      .select("payload,completed_at")
+      .eq("run_id", runId)
+      .not("payload->>recording", "is", null)
+      .order("completed_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const p = (callStep?.payload ?? {}) as { recording?: string; notes?: string };
+    if (!p.recording?.trim() || !p.notes?.trim()) {
+      return { error: "Add the meeting recording link and your notes on the call step first — minutes are written from the real meeting, not generated blank." };
+    }
+    meetingBlock = `\n\nThe meeting actually happened. Write the minutes ONLY from these real notes (do not add anything that isn't here):\nRecording: ${p.recording}\nNotes:\n${p.notes}`;
+  }
+
   const ctx =
-    `Client: ${client.name}; industry ${client.industry}; entity ${client.entity_type}; ` +
+    `Client: ${client.name}; owner ${client.owner_name ?? "n/a"}; industry ${client.industry}; entity ${client.entity_type}; ` +
     `VAT ${client.vat_registered}; CT ${client.ct_registered}; ` +
     `revenue channels ${(client.revenue_channels ?? []).join(", ") || "n/a"}; ` +
-    `accounting software ${client.accounting_software ?? "n/a"}.`;
+    `accounting software ${client.accounting_software ?? "n/a"}.` +
+    (team ? ` Assigned team — ${team}.` : "");
 
   try {
     const text = await runAi(session.profile.org_id, cfg.feature, {
       runId,
-      system: "You write for a UAE accounting firm (Finanshels). Output must be polished and ready to send AS-IS — never use [placeholders], brackets, or 'insert X here'. Fill every detail from the context provided. Professional, warm, concise.",
-      prompt: `${cfg.instruction}\n\nUse these details (do not invent beyond them):\n${ctx}`,
+      system: "You write for a UAE accounting firm (Finanshels). Output must be polished and ready to send AS-IS — NEVER use [placeholders], brackets, or 'insert X here'; use the real client and team names provided. If a needed detail isn't in the context, leave it out rather than inventing it. Professional, warm, concise.",
+      prompt: `${cfg.instruction}\n\nUse these real details (do not invent beyond them):\n${ctx}${meetingBlock}`,
     });
     return { text };
   } catch (e) {
@@ -145,11 +178,11 @@ export async function generateProjects(
   try {
     const out = await runAi(session.profile.org_id, "handover_summary", {
       runId,
-      system: "You plan recurring accounting delivery work. Output ONLY a JSON array.",
+      system: "You plan recurring accounting delivery work. Output ONLY a JSON array. Base tasks on the instruction and industry — do not invent client-specific names or numbers.",
       prompt:
-        `Create internal delivery projects with tasks as JSON array [{"name":"","month":"YYYY-MM","tasks":"task1; task2; task3"}] ` +
-        `for the period ${periodStart} to ${periodEnd}, ${cadence} cadence. Industry: ${c?.industry ?? "general"}. ` +
-        `Instruction: ${instructions || "standard monthly bookkeeping, VAT, payroll, reporting"}. One project per period with its tasks.`,
+        `Create the FIRST month's delivery project with its tasks as a JSON array with ONE object [{"name":"","month":"${periodStart}","tasks":"task1; task2; task3"}]. ` +
+        `Only one month — the team will duplicate it across the rest of the period (${periodStart} to ${periodEnd}, ${cadence} cadence). ` +
+        `Industry: ${c?.industry ?? "general"}. Instruction: ${instructions || "standard monthly bookkeeping, VAT, payroll, reporting"}.`,
     });
     return { items: parseArray(out) };
   } catch (e) {
@@ -200,8 +233,8 @@ export async function generateBusinessDescription(runId: string): Promise<{ erro
   try {
     const text = await runAi(session.profile.org_id, "brief", {
       runId,
-      system: "You research UAE businesses for an accounting firm. Write a concise, confident, client-facing description (4-5 sentences) of what the business does — as if confirming back to the client 'here's what we understood about your business'. No preamble.",
-      prompt: `Company: ${client.name}. Industry: ${client.industry ?? "n/a"}. Entity: ${client.entity_type ?? "n/a"}. Website/email domain: ${domain || "n/a"}. Based on the domain and industry, describe what this business most likely does, its likely revenue model, and customer base in the UAE context.`,
+      system: "You research UAE businesses. Write a concise, client-facing description (3-5 sentences) of what THIS business does — confirming back 'here's what we understood about your business'. Describe ONLY the client's business; never mention our firm, Finanshels, or the accounting services we provide. If the domain/industry give you too little to go on, say plainly that there's limited public information and ask the client to confirm — do NOT invent specifics, named products, or figures.",
+      prompt: `Company: ${client.name}. Industry: ${client.industry ?? "unknown"}. Entity: ${client.entity_type ?? "unknown"}. Email domain: ${domain || "unknown"}. Using the domain and industry only, describe what this business most likely does, its likely revenue model and customer base in the UAE. If unsure, say so rather than guessing.`,
     });
     return { text };
   } catch (e) {

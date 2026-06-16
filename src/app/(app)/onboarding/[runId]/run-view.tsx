@@ -8,7 +8,7 @@ import { useIdentity } from "@/components/identity-context";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -386,6 +386,11 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
             setActStep(null);
             run(() => completeStep(detail.runId, s.id), `${s.title} — done`);
           }}
+          onSaveCall={(recording, notes) => {
+            const s = actStep;
+            setActStep(null);
+            run(() => saveCallNotes(detail.runId, s.id, recording, notes), `${s.title} — saved`);
+          }}
           onRework={() => {
             const s = actStep;
             const stageNo = tpl.stages.findIndex((st) => st.steps.some((x) => x.id === s.id)) + 1;
@@ -466,13 +471,14 @@ function RunChat({ runId, open, onClose, tasks = [] }: { runId: string; open: bo
 }
 
 function RunStepModal({
-  runId, step, busy, onClose, onConfirm, onRework,
+  runId, step, busy, onClose, onConfirm, onSaveCall, onRework,
 }: {
   runId: string;
   step: TemplateStep;
   busy: boolean;
   onClose: () => void;
   onConfirm: () => void;
+  onSaveCall?: (recording: string, notes: string) => void;
   onRework: () => void;
 }) {
   const act = step.act;
@@ -578,7 +584,7 @@ function RunStepModal({
           {type === "approve" && act?.rework && (
             <button className="btn-ghost" style={{ color: "var(--red)" }} onClick={onRework} disabled={busy}>Send back for rework</button>
           )}
-          <button className="btn-primary" onClick={onConfirm} disabled={busy || !canConfirm}>{confirmLabel}</button>
+          <button className="btn-primary" onClick={type === "call" && onSaveCall ? () => onSaveCall(recording, notes) : onConfirm} disabled={busy || !canConfirm}>{confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -1216,6 +1222,14 @@ function ItemsBuilderModal({
 
   const aiCompliance = async () => { setAiBusy(true); setInfo(null); const r = await generateCompliance(runId); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type }))); };
   const aiProjects = async () => { setAiBusy(true); setInfo(null); const r = await generateProjects(runId, pBrief, pStart, pEnd, pCadence); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ name: i.name, month: i.month, tasks: i.tasks }))); };
+  const dupAcrossPeriod = () => {
+    if (!rows.length || !pStart || !pEnd) return;
+    const base = rows[0];
+    const [sy, sm] = pStart.split("-").map(Number); const [ey, em] = pEnd.split("-").map(Number);
+    const out: Record<string, string>[] = []; let y = sy, m = sm, g = 0;
+    while ((y < ey || (y === ey && m <= em)) && g++ < 60) { out.push({ ...base, month: `${y}-${String(m).padStart(2, "0")}` }); m++; if (m > 12) { m = 1; y++; } }
+    if (out.length) { setRows(out); setInfo(`Duplicated across ${out.length} month${out.length === 1 ? "" : "s"} — edit any month as needed.`); }
+  };
 
   const saveItems = (after?: "email" | "push") => start(async () => {
     const items: RunItemInput[] = rows.filter((r) => Object.values(r).some((v) => v)).map((r) => ({ data: r, status: "open" }));
@@ -1246,7 +1260,10 @@ function ItemsBuilderModal({
                 <select value={pCadence} onChange={(e) => setPCadence(e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12.5 }}>{["monthly", "weekly", "daily", "quarterly"].map((c) => <option key={c}>{c}</option>)}</select>
               </div>
               <textarea className="notes" value={pBrief} onChange={(e) => setPBrief(e.target.value)} placeholder="In plain language: what should happen each month? (e.g. monthly close, VAT each quarter, payroll by 25th)" style={{ minHeight: 50 }} />
-              <button className="btn-ai" disabled={aiBusy || !pStart || !pEnd} onClick={aiProjects} style={{ marginTop: 6 }}><Icon name="sparkles" size={13} /> {aiBusy ? "Generating…" : "Generate projects & tasks (AI)"}</button>
+              <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                <button className="btn-ai" disabled={aiBusy || !pStart || !pEnd} onClick={aiProjects}><Icon name="sparkles" size={13} /> {aiBusy ? "Generating…" : "Generate 1 month (AI)"}</button>
+                <button className="btn-ghost" disabled={!rows[0]?.name || !pStart || !pEnd} onClick={dupAcrossPeriod}><Icon name="copy" size={13} /> Duplicate across period</button>
+              </div>
             </div>
           )}
           <table className="runs-table" style={{ border: "1px solid var(--border)", borderRadius: 8 }}>
