@@ -132,7 +132,7 @@ export async function completeStep(runId: string, stepId: string) {
 
 export async function assignStep(runId: string, stepId: string, memberId: string, name: string) {
   const supabase = await createClient();
-  const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key,am_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
   const loc = locate(run.template_key, stepId);
   if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
@@ -143,6 +143,22 @@ export async function assignStep(runId: string, stepId: string, memberId: string
     completed_at: new Date().toISOString(),
   });
   if (r.error) return r;
+
+  // Reflect the assignment in the run team so the live view + escalation auto-fill.
+  const roleInRun =
+    loc?.step.assignRole ||
+    (loc?.step.act?.role ? WHO_TO_ROLE[loc.step.act.role.trim().toLowerCase()] ?? "senior" : "senior");
+  await supabase.from("run_team").upsert(
+    { run_id: runId, team_member_id: memberId, role_in_run: roleInRun },
+    { onConflict: "run_id,team_member_id" },
+  );
+  if (run.am_id) {
+    await supabase.from("run_team").upsert(
+      { run_id: runId, team_member_id: run.am_id, role_in_run: "am" },
+      { onConflict: "run_id,team_member_id" },
+    );
+  }
+
   await recompute(supabase, runId, run.template_key);
   revalidatePath(`/onboarding/${runId}`);
   return {};

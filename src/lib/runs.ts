@@ -51,6 +51,14 @@ export async function createRunFromTemplate(
   if (error || !run) throw new Error(error?.message ?? "Failed to create run");
   const runId = run.id as string;
 
+  // Seed the run team with the AM so the live view + escalation have a contact from day one.
+  if (opts.amId) {
+    await supabase.from("run_team").upsert(
+      { run_id: runId, team_member_id: opts.amId, role_in_run: "am" },
+      { onConflict: "run_id,team_member_id" },
+    );
+  }
+
   const stages = tpl.stages.map((s, i) => ({
     run_id: runId,
     stage_no: i + 1,

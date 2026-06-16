@@ -16,6 +16,8 @@ export interface NewClientInput {
   email?: string;
   phone?: string;
   am_id?: string;
+  target_go_live?: string;
+  expected_onboarding_days?: number;
 }
 
 /** Lifecycle statuses a user can manually set from the Clients list. */
@@ -50,6 +52,8 @@ export async function createClientAction(
       primary_contact_email: input.email?.trim() || null,
       phone: input.phone?.trim() || null,
       am_id: amId,
+      target_go_live: input.target_go_live || null,
+      expected_onboarding_days: input.expected_onboarding_days ?? null,
       status: "lead",
       profile_complete: false,
       slug: slugify(input.name),
@@ -226,7 +230,17 @@ export async function markSignedAction(
   if (ue) return { error: ue.message };
 
   const today = new Date().toISOString().slice(0, 10);
-  const target = new Date(Date.now() + 28 * 86_400_000).toISOString().slice(0, 10);
+  // Use the timeline captured at client creation: explicit go-live date wins,
+  // else expected days from today, else default 28 days.
+  const { data: tl } = await supabase
+    .from("clients")
+    .select("target_go_live,expected_onboarding_days")
+    .eq("id", clientId)
+    .maybeSingle();
+  const days = tl?.expected_onboarding_days && tl.expected_onboarding_days > 0 ? tl.expected_onboarding_days : 28;
+  const target = tl?.target_go_live
+    ? tl.target_go_live
+    : new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
 
   try {
     const runId = await createRunFromTemplate(supabase, {

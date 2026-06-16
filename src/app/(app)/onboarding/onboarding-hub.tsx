@@ -7,7 +7,7 @@ import { Icon } from "@/components/icon";
 import { RunCard } from "@/components/run-card";
 import { stepCount, type OnbTemplate } from "@/lib/onboarding-templates";
 import type { RunCardData } from "@/lib/data/runs";
-import { markSignedAction } from "../clients/actions";
+import { markSignedAction, deleteRunAction } from "../clients/actions";
 
 const TABS = [
   { id: "dashboard", label: "Dashboard", icon: "layout-dashboard" },
@@ -16,10 +16,21 @@ const TABS = [
   { id: "templates", label: "Templates", icon: "file-text" },
 ] as const;
 
-export function OnboardingHub({ runs, templates, leads }: { runs: RunCardData[]; templates: OnbTemplate[]; leads: { id: string; name: string; industry: string | null }[] }) {
+export function OnboardingHub({ runs, templates, leads, canDelete = false }: { runs: RunCardData[]; templates: OnbTemplate[]; leads: { id: string; name: string; industry: string | null }[]; canDelete?: boolean }) {
   const router = useRouter();
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("dashboard");
   const [newOpen, setNewOpen] = useState(false);
+  const [confirmDel, setConfirmDel] = useState<{ id: string; name: string } | null>(null);
+  const [busy, startDel] = useTransition();
+
+  const doDeleteRun = () => {
+    if (!confirmDel) return;
+    startDel(async () => {
+      const res = await deleteRunAction(confirmDel.id);
+      setConfirmDel(null);
+      if (!res.error) router.refresh();
+    });
+  };
 
   const avg = runs.length ? Math.round(runs.reduce((n, r) => n + r.progress, 0) / runs.length) : 0;
 
@@ -71,7 +82,14 @@ export function OnboardingHub({ runs, templates, leads }: { runs: RunCardData[];
                     <td>{r.templateName}</td>
                     <td>{r.currentStage}. {r.currentStageName}</td>
                     <td><div className="progress-wrap"><div className="progress orange"><i style={{ width: `${r.progress}%` }} /></div><span className="progress-pct">{r.progress}%</span></div></td>
-                    <td><button className="btn-ghost">Open <Icon name="arrow-right" size={13} /></button></td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                        <button className="btn-ghost" onClick={() => router.push(`/onboarding/${r.id}`)}>Open <Icon name="arrow-right" size={13} /></button>
+                        {canDelete && (
+                          <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
                 {!runs.length && <tr><td colSpan={5} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No onboarding clients.</td></tr>}
@@ -81,6 +99,21 @@ export function OnboardingHub({ runs, templates, leads }: { runs: RunCardData[];
         )}
 
         {tab === "templates" && <Templates templates={templates} />}
+
+        {confirmDel && (
+          <div className="modal-overlay open" style={{ zIndex: 90 }} onClick={() => !busy && setConfirmDel(null)}>
+            <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
+              <div className="hd">
+                <h3>Delete onboarding run?</h3>
+                <div className="sub">This permanently deletes the onboarding run for {confirmDel.name} — its stages, steps, tasks and messages. The client stays. This cannot be undone.</div>
+              </div>
+              <div className="ft">
+                <button className="btn-ghost" onClick={() => setConfirmDel(null)} disabled={busy}>Cancel</button>
+                <button className="btn-danger" onClick={doDeleteRun} disabled={busy}>{busy ? "Deleting…" : "Delete run"}</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

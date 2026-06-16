@@ -563,6 +563,19 @@ function AddClientModal({
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div className="field">
+              <label>Target go-live date</label>
+              <input type="date" value={form.target_go_live ?? ""} onChange={(e) => set("target_go_live", e.target.value || undefined)} />
+            </div>
+            <div className="field">
+              <label>Expected onboarding (days)</label>
+              <input type="number" min={1} value={form.expected_onboarding_days ?? ""} onChange={(e) => set("expected_onboarding_days", e.target.value ? parseInt(e.target.value, 10) : undefined)} placeholder="e.g. 21" />
+            </div>
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--ink-4)", marginTop: -4 }}>
+            Used to set the onboarding deadline and to track timelines for insights later.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="field">
               <label>Primary contact email</label>
               <input value={form.email ?? ""} onChange={(e) => set("email", e.target.value)} placeholder="ahmed@gulfretail.ae" />
             </div>

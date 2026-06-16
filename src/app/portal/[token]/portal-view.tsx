@@ -557,6 +557,8 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
   const ini = (n: string) => n.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   const senior = data.team.senior;
   const junior = data.team.junior;
+  const teamLead = data.team.team_lead;
+  const teamLeadEmail = data.teamEmail.team_lead;
   return (
     <div className="obv3-fade">
       <div className="obv3-live-banner">
@@ -582,10 +584,16 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
         </div>
       </div>
 
-      {(senior || junior) && (
+      {(senior || junior || teamLead) && (
         <div className="obv3-pcard">
           <div className="obv3-pcard-h">Your team</div>
           <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+            {teamLead && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ width: 40, height: 40, borderRadius: 999, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center", fontWeight: 800 }}>{ini(teamLead)}</span>
+                <div><div style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Team Lead</div><div style={{ fontSize: 14, fontWeight: 700 }}>{teamLead}{teamLeadEmail ? ` · ${teamLeadEmail}` : ""}</div></div>
+              </div>
+            )}
             {senior && (
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span style={{ width: 40, height: 40, borderRadius: 999, background: "var(--blue-soft)", color: "var(--blue)", display: "grid", placeItems: "center", fontWeight: 800 }}>{ini(senior)}</span>
@@ -604,7 +612,7 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
 
       <div className="obv3-pcard" style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.9 }}>
         <div className="obv3-pcard-h" style={{ marginBottom: 8 }}>Escalation path</div>
-        Reach your Senior first{senior ? ` (${senior})` : ""}, then your Account Manager ({amName}), then Operations.
+        First, your <strong>Team Lead</strong>{teamLead ? ` (${teamLead}${teamLeadEmail ? ` · ${teamLeadEmail}` : ""})` : ""}. If unresolved, your <strong>Customer Relationship Manager</strong> ({amName}{amEmail ? ` · ${amEmail}` : ""}). Email is the default channel for both.
       </div>
 
       {/* Sign-off */}
