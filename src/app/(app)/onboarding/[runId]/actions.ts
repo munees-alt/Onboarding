@@ -394,6 +394,98 @@ export async function toggleTaskVisible(runId: string, taskId: string, value: bo
   return {};
 }
 
+export interface TaskInput {
+  title?: string;
+  ownerId?: string | null;
+  ownerKind?: string; // "team" | "client"
+  type?: string;      // internal | client_action | milestone
+  status?: string;
+  due?: string;       // free text (stored in `service`, e.g. "Day 4")
+  clientVisible?: boolean;
+}
+
+/** Create a task on the run's board. */
+export async function addTask(runId: string, input: TaskInput): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  if (!input.title?.trim()) return { error: "Task needs a title." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: maxRow } = await supabase.from("tasks").select("sort").eq("run_id", runId).order("sort", { ascending: false }).limit(1).maybeSingle();
+  const { error } = await supabase.from("tasks").insert({
+    org_id: run.org_id, run_id: runId, client_id: run.client_id,
+    title: input.title.trim(),
+    type: input.type ?? "internal",
+    status: input.status ?? "not_started",
+    owner_kind: input.ownerKind ?? "team",
+    owner_id: input.ownerKind === "client" ? null : (input.ownerId || null),
+    service: input.due?.trim() || null,
+    client_visible: input.clientVisible ?? false,
+    sort: (maxRow?.sort ?? 0) + 1,
+  });
+  if (error) return { error: error.message };
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Edit any field of a task. */
+export async function updateTask(runId: string, taskId: string, patch: TaskInput): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const upd: Record<string, unknown> = {};
+  if (patch.title !== undefined) upd.title = patch.title.trim();
+  if (patch.type !== undefined) upd.type = patch.type;
+  if (patch.status !== undefined) upd.status = patch.status;
+  if (patch.due !== undefined) upd.service = patch.due?.trim() || null;
+  if (patch.clientVisible !== undefined) upd.client_visible = patch.clientVisible;
+  if (patch.ownerKind !== undefined) {
+    upd.owner_kind = patch.ownerKind;
+    upd.owner_id = patch.ownerKind === "client" ? null : (patch.ownerId || null);
+  } else if (patch.ownerId !== undefined) {
+    upd.owner_id = patch.ownerId || null;
+  }
+  if (!Object.keys(upd).length) return {};
+  const { error } = await supabase.from("tasks").update(upd).eq("id", taskId).eq("run_id", runId);
+  if (error) return { error: error.message };
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Delete a task. */
+export async function deleteTask(runId: string, taskId: string): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { error } = await supabase.from("tasks").delete().eq("id", taskId).eq("run_id", runId);
+  if (error) return { error: error.message };
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Nudge the team: posts to the run chat AND notifies task owners + the AM. */
+export async function nudgeTeam(runId: string, message: string): Promise<{ error?: string; notified?: number }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("org_id,am_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const body = message.trim() || "Nudge: please check the onboarding task board.";
+  await supabase.from("run_messages").insert({
+    run_id: runId,
+    author_id: session.teamMember?.id ?? null,
+    author_name: session.teamMember?.full_name ?? session.email,
+    author_role: session.profile.role,
+    body,
+  });
+  const { data: owners } = await supabase.from("tasks").select("owner_id").eq("run_id", runId).not("owner_id", "is", null);
+  const ids = [...new Set([...(owners ?? []).map((o) => o.owner_id), run.am_id].filter(Boolean))] as string[];
+  if (ids.length) {
+    await supabase.from("notifications").insert(
+      ids.map((id) => ({ org_id: run.org_id, run_id: runId, recipient_id: id, kind: "task_tag", title: "Nudge from the team", body })),
+    );
+  }
+  revalidatePath(`/onboarding/${runId}`);
+  return { notified: ids.length };
+}
+
 /** Creates (or reuses) the client portal magic link for this run. */
 export async function dispatchMagicLink(runId: string): Promise<{ error?: string; token?: string; url?: string }> {
   const supabase = await createClient();

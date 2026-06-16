@@ -17,6 +17,7 @@ export interface TaskRow {
   id: string;
   title: string;
   ownerName: string | null;
+  ownerId: string | null;
   ownerKind: string;
   clientVisible: boolean;
   type: string;
@@ -114,6 +115,7 @@ export async function getRunDetail(
     id: t.id,
     title: t.title,
     ownerName: t.owner_kind === "client" ? "Client" : t.owner_id ? taskOwnerName[t.owner_id] ?? null : null,
+    ownerId: t.owner_id ?? null,
     ownerKind: t.owner_kind,
     clientVisible: t.client_visible,
     type: t.type,

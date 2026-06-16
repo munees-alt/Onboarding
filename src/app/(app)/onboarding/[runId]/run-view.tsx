@@ -7,7 +7,7 @@ import { Icon } from "@/components/icon";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStep, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
+import { completeStep, assignStep, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
 import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, generateCompliance, generateProjects, generateDiagram, type CoaLine, type ContractAnalysis } from "./ai-actions";
@@ -36,8 +36,22 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
   const [assignSel, setAssignSel] = useState<Record<string, string>>({});
   const [actStep, setActStep] = useState<TemplateStep | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [taskStepPending, setTaskStepPending] = useState<string | null>(null);
 
   if (!tpl) return <div className="page">Template not found.</div>;
+
+  // People who can own a task (seniors+team-leads and juniors+associates are already merged in detail).
+  const taskOwners = [...detail.seniors, ...detail.juniors];
+
+  // Opening a step's action: the task-board step jumps to the board instead of a modal.
+  const openAct = (step: TemplateStep) => {
+    if (step.act?.type === "taskboard") {
+      setTaskStepPending(step.id);
+      setTab("tasks");
+    } else {
+      setActStep(step);
+    }
+  };
 
   const stepStatus = (id: string) => detail.stepState[id]?.status ?? "pending";
   const stageRow = (no: number) => detail.stages.find((s) => s.stage_no === no);
@@ -203,7 +217,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
                           sel={assignSel[step.id] ?? ""}
                           onSel={(v) => setAssignSel((m) => ({ ...m, [step.id]: v }))}
                           busy={busy}
-                          onOpenAct={() => setActStep(step)}
+                          onOpenAct={() => openAct(step)}
                           onAssign={(id, name) => run(() => assignStep(detail.runId, step.id, id, name), `Assigned ${name}`)}
                         />
                       ))}
@@ -221,7 +235,19 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
           </main>
         </div>
       ) : tab === "tasks" ? (
-        <div className="scroll"><div className="page"><TaskBoard runId={detail.runId} tasks={detail.tasks} /></div></div>
+        <div className="scroll"><div className="page"><TaskBoard
+          runId={detail.runId}
+          tasks={detail.tasks}
+          owners={taskOwners}
+          confirmStepId={taskStepPending}
+          onOpenChat={() => setChatOpen(true)}
+          onConfirmStep={() => {
+            const id = taskStepPending;
+            setTaskStepPending(null);
+            setTab("team");
+            if (id) run(() => completeStep(detail.runId, id), "Task board confirmed — step complete");
+          }}
+        /></div></div>
       ) : tab === "playbook" ? (
         <div className="scroll"><div className="page" style={{ maxWidth: 900 }}><Playbook detail={detail} /></div></div>
       ) : (
@@ -689,31 +715,140 @@ const TASK_STATUS_LABEL: Record<string, string> = {
   needs_input: "Needs input", blocked: "Blocked",
 };
 
-function TaskBoard({ runId, tasks }: { runId: string; tasks: TaskRow[] }) {
+const TASK_TYPES = ["internal", "client_action", "milestone"];
+const TASK_TYPE_LABEL: Record<string, string> = { internal: "Internal", client_action: "Client action", milestone: "Milestone" };
+const inputStyle: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "100%" };
+
+function TaskBoard({
+  runId, tasks, owners, confirmStepId, onConfirmStep, onOpenChat,
+}: {
+  runId: string;
+  tasks: TaskRow[];
+  owners: { id: string; name: string }[];
+  confirmStepId: string | null;
+  onConfirmStep: () => void;
+  onOpenChat: () => void;
+}) {
   const router = useRouter();
   const [busy, start] = useTransition();
-  const change = (fn: () => Promise<unknown>) => start(async () => { await fn(); router.refresh(); });
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  const [nudgeOpen, setNudgeOpen] = useState(false);
+  const [nudgeMsg, setNudgeMsg] = useState("");
+  const [toast, setToast] = useState<string | null>(null);
+
+  const change = (fn: () => Promise<{ error?: string }>) =>
+    start(async () => { const r = await fn(); if (r?.error) { setToast(r.error); setTimeout(() => setToast(null), 2400); } router.refresh(); });
+
+  const titleOf = (t: TaskRow) => (titles[t.id] !== undefined ? titles[t.id] : t.title);
+
+  const sendNudge = () =>
+    start(async () => {
+      const r = await nudgeTeam(runId, nudgeMsg);
+      setNudgeOpen(false); setNudgeMsg("");
+      setToast(r.error ? r.error : `Team nudged${r.notified ? ` (${r.notified})` : ""}`);
+      setTimeout(() => setToast(null), 2400);
+      router.refresh();
+    });
+
   return (
     <>
-      <div className="section-head"><div><h2 style={{ fontSize: 16 }}>Task board</h2><div className="sub">Replaces the PMS during onboarding. Toggle what the client sees in their portal.</div></div></div>
+      <div className="section-head">
+        <div>
+          <h2 style={{ fontSize: 16 }}>Task board</h2>
+          <div className="sub">Replaces the PMS during onboarding. Add, edit and delete tasks; toggle what the client sees.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn-ghost" onClick={onOpenChat}><Icon name="message-square" size={13} /> Chat</button>
+          <button className="btn-ghost" onClick={() => setNudgeOpen(true)}><Icon name="bell" size={13} /> Nudge team</button>
+          <button className="btn-primary" disabled={busy} onClick={() => change(() => addTask(runId, { title: "New task" }))}>
+            <Icon name="plus" size={14} /> Add task
+          </button>
+        </div>
+      </div>
+
       <div className="runs-card">
         <table className="runs-table">
-          <thead><tr><th>Task</th><th>Owner</th><th>Type</th><th>Due</th><th>Client sees</th><th>Status</th></tr></thead>
+          <thead><tr><th style={{ minWidth: 220 }}>Task</th><th>Owner</th><th>Type</th><th>Due</th><th>Client sees</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {tasks.map((t) => (
               <tr key={t.id}>
-                <td style={{ fontWeight: 600 }}>{t.title}</td>
-                <td>{t.ownerName ?? "—"}</td>
-                <td><span className={"pill " + (t.type === "milestone" ? "purple" : t.type === "client_action" ? "teal" : "gray")} style={{ fontSize: 10 }}>{t.type.replace("_", " ")}</span></td>
-                <td>{t.due ?? "—"}</td>
+                <td>
+                  <input
+                    value={titleOf(t)}
+                    disabled={busy}
+                    onChange={(e) => setTitles((m) => ({ ...m, [t.id]: e.target.value }))}
+                    onBlur={() => { if (titleOf(t).trim() && titleOf(t) !== t.title) change(() => updateTask(runId, t.id, { title: titleOf(t) })); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    style={{ ...inputStyle, fontWeight: 600 }}
+                  />
+                </td>
+                <td>
+                  <select
+                    value={t.ownerKind === "client" ? "client" : t.ownerId ?? ""}
+                    disabled={busy}
+                    onChange={(e) => { const v = e.target.value; change(() => updateTask(runId, t.id, v === "client" ? { ownerKind: "client" } : { ownerKind: "team", ownerId: v || null })); }}
+                    style={{ ...inputStyle, minWidth: 130 }}
+                  >
+                    <option value="">Unassigned</option>
+                    <option value="client">Client</option>
+                    {owners.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <select value={t.type} disabled={busy} onChange={(e) => change(() => updateTask(runId, t.id, { type: e.target.value }))} style={inputStyle}>
+                    {TASK_TYPES.map((s) => <option key={s} value={s}>{TASK_TYPE_LABEL[s]}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <input
+                    defaultValue={t.due ?? ""}
+                    disabled={busy}
+                    placeholder="e.g. Day 4"
+                    onBlur={(e) => { if ((e.target.value || "") !== (t.due ?? "")) change(() => updateTask(runId, t.id, { due: e.target.value })); }}
+                    style={{ ...inputStyle, width: 90 }}
+                  />
+                </td>
                 <td><input type="checkbox" checked={t.clientVisible} disabled={busy} onChange={(e) => change(() => toggleTaskVisible(runId, t.id, e.target.checked))} style={{ accentColor: "var(--orange)" }} /></td>
-                <td><select value={t.status} disabled={busy} onChange={(e) => change(() => setTaskStatus(runId, t.id, e.target.value))} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "5px 8px", fontSize: 12.5 }}>{TASK_STATUSES.map((s) => <option key={s} value={s}>{TASK_STATUS_LABEL[s]}</option>)}</select></td>
+                <td>
+                  <select value={t.status} disabled={busy} onChange={(e) => change(() => setTaskStatus(runId, t.id, e.target.value))} style={inputStyle}>
+                    {TASK_STATUSES.map((s) => <option key={s} value={s}>{TASK_STATUS_LABEL[s]}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <button className="icon-btn" disabled={busy} onClick={() => change(() => deleteTask(runId, t.id))} style={{ color: "var(--red)" }} aria-label="Delete task"><Icon name="trash-2" size={14} /></button>
+                </td>
               </tr>
             ))}
-            {!tasks.length && <tr><td colSpan={6} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No tasks yet — configure the client task board in Stage 2.</td></tr>}
+            {!tasks.length && <tr><td colSpan={7} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No tasks yet — click “Add task”.</td></tr>}
           </tbody>
         </table>
       </div>
+
+      {confirmStepId && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14, gap: 10, alignItems: "center" }}>
+          <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>Done setting the board?</span>
+          <button className="btn-primary" disabled={busy} onClick={onConfirmStep}><Icon name="check" size={14} /> Save &amp; confirm step</button>
+        </div>
+      )}
+
+      {nudgeOpen && (
+        <div className="modal-overlay open" onClick={() => setNudgeOpen(false)}>
+          <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd"><h3>Nudge the team</h3><div className="sub">Posts to the run chat and notifies task owners + the AM.</div></div>
+            <div className="bd">
+              <div className="field"><label>Message</label>
+                <textarea className="notes" value={nudgeMsg} onChange={(e) => setNudgeMsg(e.target.value)} placeholder="e.g. Please move your tasks forward today — client is waiting." />
+              </div>
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setNudgeOpen(false)} disabled={busy}>Cancel</button>
+              <button className="btn-primary" onClick={sendNudge} disabled={busy}>Send nudge</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && <div className="toast show green"><Icon name="check-circle" size={15} /><span>{toast}</span></div>}
     </>
   );
 }
