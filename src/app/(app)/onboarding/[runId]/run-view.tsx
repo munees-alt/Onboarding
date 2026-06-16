@@ -1318,6 +1318,56 @@ const GATEWAYS = ["Telr", "Network International", "Stripe", "PayPal", "Checkout
 const SOFTWARE = ["Zoho Books", "QuickBooks", "Xero", "Tally", "Odoo", "SAP", "Oracle NetSuite", "Wafeq", "Excel / Spreadsheets", "None / Other"];
 const YESNO = ["Yes", "No", "In progress", "Not applicable"];
 
+// Hoisted out of IntakeBuilderModal: defining components inside a component
+// remounts them every render, which steals focus from inputs after each keystroke.
+function IntakeField({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div className="field"><label>{label}</label>{children}</div>;
+}
+function IntakeChips({ options, selected, onToggle }: { options: string[]; selected: string[]; onToggle: (v: string) => void }) {
+  const [draft, setDraft] = useState("");
+  const all = [...new Set([...options, ...selected])];
+  const add = () => { const v = draft.trim(); if (v) { onToggle(v); setDraft(""); } };
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+      {all.map((b) => (
+        <button key={b} type="button" className={"tab-pill" + (selected.includes(b) ? " active" : "")} onClick={() => onToggle(b)}>{b}</button>
+      ))}
+      <input
+        value={draft}
+        placeholder="+ type & Enter"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+        onBlur={add}
+        style={{ border: "1px dashed var(--border-strong)", borderRadius: 999, padding: "4px 10px", fontSize: 12, width: 120 }}
+      />
+    </div>
+  );
+}
+const REVENUE_BY_INDUSTRY: Record<string, string[]> = {
+  "Retail": ["In-store sales", "Online store", "Wholesale", "Delivery"],
+  "E-commerce": ["Online store", "Marketplace (Amazon/Noon)", "Subscriptions", "Dropshipping"],
+  "SaaS": ["Subscriptions", "Setup / onboarding fees", "Professional services", "Add-ons"],
+  "Restaurant": ["Dine-in", "Takeaway", "Delivery (Talabat/Deliveroo)", "Catering"],
+  "Hospitality": ["Room revenue", "Food & beverage", "Events", "Spa / activities"],
+  "Trading": ["Wholesale", "Retail", "Export", "Commission"],
+  "Fintech": ["Transaction fees", "Subscriptions", "Interchange", "Float income"],
+  "Professional Services": ["Consulting fees", "Retainers", "Project fees", "Commissions"],
+  "Holding Company": ["Dividends", "Management fees", "Rental income", "Interest income"],
+};
+const EXPENSE_BY_INDUSTRY: Record<string, string[]> = {
+  "Retail": ["Inventory purchases", "Rent", "Salaries / WPS", "Utilities", "Marketing"],
+  "E-commerce": ["Cost of goods", "Shipping / logistics", "Ad spend", "Platform fees", "Salaries / WPS"],
+  "SaaS": ["Salaries / WPS", "Hosting / cloud", "Software subscriptions", "Marketing", "Contractors"],
+  "Restaurant": ["Food cost", "Rent", "Salaries / WPS", "Utilities", "Delivery commissions"],
+  "Hospitality": ["Salaries / WPS", "Rent", "Utilities", "Supplies", "Maintenance"],
+  "Trading": ["Cost of goods", "Logistics / freight", "Rent", "Salaries / WPS", "Bank charges"],
+  "Fintech": ["Salaries / WPS", "Tech / infrastructure", "Compliance", "Marketing", "Processing fees"],
+  "Professional Services": ["Salaries / WPS", "Rent", "Software", "Travel", "Marketing"],
+  "Holding Company": ["Management fees", "Professional fees", "Bank charges", "Office costs"],
+};
+const GENERIC_REVENUE = ["Product sales", "Service fees", "Subscriptions", "Commissions", "Other income"];
+const GENERIC_EXPENSE = ["Salaries / WPS", "Rent", "Utilities", "Marketing", "Software", "Bank charges", "Professional fees"];
+
 function IntakeBuilderModal({
   runId, stepId, onClose, onDone,
 }: { runId: string; stepId: string; onClose: () => void; onDone: (msg: string) => void }) {
@@ -1325,6 +1375,7 @@ function IntakeBuilderModal({
   const [enabled, setEnabled] = useState(true);
   const [gen, setGen] = useState(false);
   const [saving, start] = useTransition();
+  const [industry, setIndustry] = useState<string>("");
   const [f, setF] = useState<IntakePrep>({ enabled: true, description: "", revenue: [], expense: [], banks: [], gateways: [], vat: "", ct: "", wps: "", software: "", painPoints: "", stakeholders: "", reports: "", employees: "" });
 
   useEffect(() => {
@@ -1332,25 +1383,20 @@ function IntakeBuilderModal({
       const p = data?.prefilled as IntakePrep | undefined;
       if (p && Object.keys(p).length) { setF((s) => ({ ...s, ...p })); setEnabled(p.enabled ?? true); }
     });
+    supabase.from("onboarding_runs").select("clients(industry)").eq("id", runId).maybeSingle().then(({ data }) => {
+      const cl = (data as { clients?: { industry?: string } | { industry?: string }[] } | null)?.clients;
+      const ind = Array.isArray(cl) ? cl[0]?.industry : cl?.industry;
+      if (ind) setIndustry(ind);
+    });
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, []);
 
   const set = (k: keyof IntakePrep, v: unknown) => setF((s) => ({ ...s, [k]: v }));
-  const toggleArr = (k: "banks" | "gateways", v: string) => setF((s) => { const a = new Set(s[k] ?? []); a.has(v) ? a.delete(v) : a.add(v); return { ...s, [k]: [...a] }; });
-  const lines = (v?: string[]) => (v ?? []).join("\n");
+  const toggleArr = (k: "banks" | "gateways" | "revenue" | "expense", v: string) =>
+    setF((s) => { const a = new Set(s[k] ?? []); a.has(v) ? a.delete(v) : a.add(v); return { ...s, [k]: [...a] }; });
   const genDesc = async () => { setGen(true); const r = await generateBusinessDescription(runId); setGen(false); if (r.text) set("description", r.text); else if (r.error) set("description", "AI: " + r.error); };
-
-  const Pills = ({ k, list }: { k: "banks" | "gateways"; list: string[] }) => (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-      {[...new Set([...list, ...(f[k] ?? [])])].map((b) => (
-        <button key={b} type="button" className={"tab-pill" + ((f[k] ?? []).includes(b) ? " active" : "")} onClick={() => toggleArr(k, b)}>{b}</button>
-      ))}
-      <input placeholder="+ add" onKeyDown={(e) => { if (e.key === "Enter" && e.currentTarget.value.trim()) { toggleArr(k, e.currentTarget.value.trim()); e.currentTarget.value = ""; } }} style={{ border: "1px dashed var(--border-strong)", borderRadius: 999, padding: "4px 10px", fontSize: 12, width: 90 }} />
-    </div>
-  );
-  const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <div className="field"><label>{label}</label>{children}</div>
-  );
+  const revOpts = REVENUE_BY_INDUSTRY[industry] ?? GENERIC_REVENUE;
+  const expOpts = EXPENSE_BY_INDUSTRY[industry] ?? GENERIC_EXPENSE;
 
   return (
     <div className="modal-overlay open" onClick={onClose}>
@@ -1364,26 +1410,30 @@ function IntakeBuilderModal({
 
           {enabled && (
             <>
-              <Field label="Business description (AI — editable)">
+              <IntakeField label="Business description (AI — editable)">
                 <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
                   <button className="btn-ai" type="button" disabled={gen} onClick={genDesc}><Icon name="sparkles" size={13} /> {gen ? "Researching…" : "Research with AI"}</button>
                 </div>
                 <textarea className="notes" value={f.description ?? ""} onChange={(e) => set("description", e.target.value)} placeholder="What we understood about the client's business…" style={{ minHeight: 90 }} />
-              </Field>
-              <Field label="Revenue channels (one per line)"><textarea className="notes" value={lines(f.revenue)} onChange={(e) => set("revenue", e.target.value.split("\n").filter(Boolean))} placeholder="In-store sales&#10;Online store&#10;Delivery" /></Field>
-              <Field label="Expense channels (one per line)"><textarea className="notes" value={lines(f.expense)} onChange={(e) => set("expense", e.target.value.split("\n").filter(Boolean))} placeholder="Inventory purchases&#10;Rent&#10;Salaries / WPS" /></Field>
+              </IntakeField>
+              <IntakeField label={`Revenue channels${industry ? ` (${industry} — click to add, or type & Enter)` : " (click to add, or type & Enter)"}`}>
+                <IntakeChips options={revOpts} selected={f.revenue ?? []} onToggle={(v) => toggleArr("revenue", v)} />
+              </IntakeField>
+              <IntakeField label="Expense channels (click to add, or type & Enter)">
+                <IntakeChips options={expOpts} selected={f.expense ?? []} onToggle={(v) => toggleArr("expense", v)} />
+              </IntakeField>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                <Field label="VAT registered"><select value={f.vat ?? ""} onChange={(e) => set("vat", e.target.value)}><option value="">—</option>{YESNO.map((y) => <option key={y}>{y}</option>)}</select></Field>
-                <Field label="Corporate Tax"><select value={f.ct ?? ""} onChange={(e) => set("ct", e.target.value)}><option value="">—</option>{YESNO.map((y) => <option key={y}>{y}</option>)}</select></Field>
-                <Field label="WPS / Payroll"><select value={f.wps ?? ""} onChange={(e) => set("wps", e.target.value)}><option value="">—</option>{YESNO.map((y) => <option key={y}>{y}</option>)}</select></Field>
+                <IntakeField label="VAT registered"><select value={f.vat ?? ""} onChange={(e) => set("vat", e.target.value)}><option value="">—</option>{YESNO.map((y) => <option key={y}>{y}</option>)}</select></IntakeField>
+                <IntakeField label="Corporate Tax"><select value={f.ct ?? ""} onChange={(e) => set("ct", e.target.value)}><option value="">—</option>{YESNO.map((y) => <option key={y}>{y}</option>)}</select></IntakeField>
+                <IntakeField label="WPS / Payroll"><select value={f.wps ?? ""} onChange={(e) => set("wps", e.target.value)}><option value="">—</option>{YESNO.map((y) => <option key={y}>{y}</option>)}</select></IntakeField>
               </div>
-              <Field label="Employee details"><input value={f.employees ?? ""} onChange={(e) => set("employees", e.target.value)} placeholder="e.g. 45 employees, payroll outsourced" /></Field>
-              <Field label="Bank accounts"><Pills k="banks" list={UAE_BANKS} /></Field>
-              <Field label="Payment gateways"><Pills k="gateways" list={GATEWAYS} /></Field>
-              <Field label="Accounting software"><select value={f.software ?? ""} onChange={(e) => set("software", e.target.value)}><option value="">—</option>{SOFTWARE.map((s) => <option key={s}>{s}</option>)}</select></Field>
-              <Field label="Pain points"><textarea className="notes" value={f.painPoints ?? ""} onChange={(e) => set("painPoints", e.target.value)} placeholder="What's hurting today?" /></Field>
-              <Field label="Stakeholders (who we report to)"><input value={f.stakeholders ?? ""} onChange={(e) => set("stakeholders", e.target.value)} placeholder="e.g. Owner, Finance Manager" /></Field>
-              <Field label="Reports the client needs"><input value={f.reports ?? ""} onChange={(e) => set("reports", e.target.value)} placeholder="e.g. Monthly P&L, cash flow, VAT" /></Field>
+              <IntakeField label="Employee details"><input value={f.employees ?? ""} onChange={(e) => set("employees", e.target.value)} placeholder="e.g. 45 employees, payroll outsourced" /></IntakeField>
+              <IntakeField label="Bank accounts"><IntakeChips options={UAE_BANKS} selected={f.banks ?? []} onToggle={(v) => toggleArr("banks", v)} /></IntakeField>
+              <IntakeField label="Payment gateways"><IntakeChips options={GATEWAYS} selected={f.gateways ?? []} onToggle={(v) => toggleArr("gateways", v)} /></IntakeField>
+              <IntakeField label="Accounting software"><select value={f.software ?? ""} onChange={(e) => set("software", e.target.value)}><option value="">—</option>{SOFTWARE.map((s) => <option key={s}>{s}</option>)}</select></IntakeField>
+              <IntakeField label="Pain points"><textarea className="notes" value={f.painPoints ?? ""} onChange={(e) => set("painPoints", e.target.value)} placeholder="What's hurting today?" /></IntakeField>
+              <IntakeField label="Stakeholders (who we report to)"><input value={f.stakeholders ?? ""} onChange={(e) => set("stakeholders", e.target.value)} placeholder="e.g. Owner, Finance Manager" /></IntakeField>
+              <IntakeField label="Reports the client needs"><input value={f.reports ?? ""} onChange={(e) => set("reports", e.target.value)} placeholder="e.g. Monthly P&L, cash flow, VAT" /></IntakeField>
             </>
           )}
         </div>
