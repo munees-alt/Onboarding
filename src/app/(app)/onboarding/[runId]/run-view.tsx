@@ -8,7 +8,7 @@ import { useIdentity } from "@/components/identity-context";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -281,6 +281,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
           tasks={detail.tasks}
           owners={taskOwners}
           columns={(() => { const c = detail.items["board_columns"]?.[0]?.data?.columns; return Array.isArray(c) && c.length ? (c as string[]) : DEFAULT_BOARD_COLUMNS; })()}
+          sla={(detail.items["task_sla"]?.[0]?.data as { notStartedDays?: number; notCompletedDays?: number } | undefined) ?? null}
           confirmStepId={taskStepPending}
           onOpenChat={() => setChatOpen(true)}
           onConfirmStep={() => {
@@ -488,9 +489,9 @@ function RunStepModal({
   const [notes, setNotes] = useState("");
   const [link, setLink] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  const [items, setItems] = useState<string[]>(act?.items ?? []);
+  const [cover, setCover] = useState<string[]>(act?.cover ?? []);
 
-  const items = act?.items ?? [];
-  const cover = act?.cover ?? [];
   const allItemsDone = items.length > 0 && items.every((_, i) => checked["i" + i]);
   const allCoverDone = cover.length === 0 || cover.every((_, i) => checked["c" + i]);
 
@@ -516,25 +517,29 @@ function RunStepModal({
           </div>
         )}
         {items.map((it, i) => (
-          <label key={i} className={"check-row" + (checked["i" + i] ? " checked" : "")}>
+          <div key={i} className={"check-row" + (checked["i" + i] ? " checked" : "")} style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input type="checkbox" checked={!!checked["i" + i]} onChange={(e) => setChecked((c) => ({ ...c, ["i" + i]: e.target.checked }))} />
-            {it}
-          </label>
+            <input value={it} onChange={(e) => setItems((a) => a.map((x, j) => (j === i ? e.target.value : x)))} style={{ flex: 1, border: "1px solid transparent", borderRadius: 6, padding: "3px 6px", fontSize: 13, background: "transparent" }} onFocus={(e) => (e.currentTarget.style.borderColor = "var(--border)")} onBlur={(e) => (e.currentTarget.style.borderColor = "transparent")} />
+            <button className="icon-btn" onClick={() => { setItems((a) => a.filter((_, j) => j !== i)); setChecked((c) => { const n = { ...c }; delete n["i" + i]; return n; }); }} style={{ color: "var(--red)" }} aria-label="Delete item"><Icon name="x" size={13} /></button>
+          </div>
         ))}
+        <button className="add-link" onClick={() => setItems((a) => [...a, "New item"])} style={{ marginTop: 4 }}><Icon name="plus" size={12} /> Add item</button>
       </div>
     );
   } else if (type === "call") {
     canConfirm = allCoverDone && recording.trim().length > 0;
     body = (
       <>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Coverage</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Coverage — add, edit or remove points</div>
         <div className="checklist">
           {cover.map((it, i) => (
-            <label key={i} className={"check-row" + (checked["c" + i] ? " checked" : "")}>
+            <div key={i} className={"check-row" + (checked["c" + i] ? " checked" : "")} style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <input type="checkbox" checked={!!checked["c" + i]} onChange={(e) => setChecked((c) => ({ ...c, ["c" + i]: e.target.checked }))} />
-              {it}
-            </label>
+              <input value={it} onChange={(e) => setCover((a) => a.map((x, j) => (j === i ? e.target.value : x)))} style={{ flex: 1, border: "1px solid transparent", borderRadius: 6, padding: "3px 6px", fontSize: 13, background: "transparent" }} onFocus={(e) => (e.currentTarget.style.borderColor = "var(--border)")} onBlur={(e) => (e.currentTarget.style.borderColor = "transparent")} />
+              <button className="icon-btn" onClick={() => { setCover((a) => a.filter((_, j) => j !== i)); setChecked((c) => { const n = { ...c }; delete n["c" + i]; return n; }); }} style={{ color: "var(--red)" }} aria-label="Delete point"><Icon name="x" size={13} /></button>
+            </div>
           ))}
+          <button className="add-link" onClick={() => setCover((a) => [...a, "New discussion point"])} style={{ marginTop: 4 }}><Icon name="plus" size={12} /> Add point</button>
         </div>
         <div className="field"><label>Recording link</label><input value={recording} onChange={(e) => setRecording(e.target.value)} placeholder="https://fathom.video/…" /></div>
         <div className="field"><label>Notes {act?.memo ? "/ MoM" : ""}</label><textarea className="notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Key points, decisions, action items…" /></div>
@@ -937,12 +942,13 @@ const TASK_TYPE_LABEL: Record<string, string> = { internal: "Internal", client_a
 const inputStyle: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "100%" };
 
 function TaskBoard({
-  runId, tasks, owners, columns, confirmStepId, onConfirmStep, onOpenChat,
+  runId, tasks, owners, columns, sla, confirmStepId, onConfirmStep, onOpenChat,
 }: {
   runId: string;
   tasks: TaskRow[];
   owners: { id: string; name: string }[];
   columns: string[];
+  sla: { notStartedDays?: number; notCompletedDays?: number } | null;
   confirmStepId: string | null;
   onConfirmStep: () => void;
   onOpenChat: () => void;
@@ -954,6 +960,9 @@ function TaskBoard({
   const [nudgeMsg, setNudgeMsg] = useState("");
   const [toast, setToast] = useState<string | null>(null);
   const [colMgr, setColMgr] = useState<string[] | null>(null); // non-null = modal open with draft
+  const [slaOpen, setSlaOpen] = useState(false);
+  const [slaStart, setSlaStart] = useState(String(sla?.notStartedDays ?? 1));
+  const [slaDone, setSlaDone] = useState(String(sla?.notCompletedDays ?? 7));
 
   const change = (fn: () => Promise<{ error?: string }>) =>
     start(async () => { const r = await fn(); if (r?.error) { setToast(r.error); setTimeout(() => setToast(null), 2400); } router.refresh(); });
@@ -980,6 +989,7 @@ function TaskBoard({
           <button className="btn-ghost" onClick={onOpenChat}><Icon name="message-square" size={13} /> Chat</button>
           <button className="btn-ghost" onClick={() => setNudgeOpen(true)}><Icon name="bell" size={13} /> Nudge team</button>
           <button className="btn-ghost" onClick={() => setColMgr([...columns])}><Icon name="columns" size={13} /> Manage columns</button>
+          <button className="btn-ghost" onClick={() => setSlaOpen(true)}><Icon name="bell-ring" size={13} /> Reminders</button>
           <button className="btn-primary" disabled={busy} onClick={() => change(() => addTask(runId, { title: "New task", boardColumn: columns[0] }))}>
             <Icon name="plus" size={14} /> Add task
           </button>
@@ -1080,6 +1090,28 @@ function TaskBoard({
             <div className="ft">
               <button className="btn-ghost" onClick={() => setColMgr(null)} disabled={busy}>Cancel</button>
               <button className="btn-primary" disabled={busy || !colMgr.some((c) => c.trim())} onClick={() => { const cols = colMgr; setColMgr(null); change(() => saveBoardColumns(runId, cols)); }}>Save columns</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {slaOpen && (
+        <div className="modal-overlay open" onClick={() => setSlaOpen(false)}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd"><h3>Task reminders</h3><div className="sub">Automatically notify the AM when a task stalls. Set 0 to turn a reminder off. Checked once a day.</div></div>
+            <div className="bd">
+              <div className="field">
+                <label>Notify AM if a task is not started after (days)</label>
+                <input type="number" min={0} value={slaStart} onChange={(e) => setSlaStart(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Notify AM if a task is not completed after (days)</label>
+                <input type="number" min={0} value={slaDone} onChange={(e) => setSlaDone(e.target.value)} />
+              </div>
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setSlaOpen(false)} disabled={busy}>Cancel</button>
+              <button className="btn-primary" disabled={busy} onClick={() => { const a = parseInt(slaStart, 10) || 0, b = parseInt(slaDone, 10) || 0; setSlaOpen(false); change(() => saveTaskSla(runId, a, b)); }}>Save reminders</button>
             </div>
           </div>
         </div>

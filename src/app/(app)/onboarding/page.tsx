@@ -9,9 +9,7 @@ export default async function OnboardingPage() {
   const role = session?.teamMember?.role ?? session?.profile.role ?? "other";
   const canDelete = role === "admin" || role === "ops_head";
   const supabase = await createClient();
-  const runs = (await getRunCards(supabase)).filter(
-    (r) => r.status !== "archived" && r.status !== "closed",
-  );
+  const runs = (await getRunCards(supabase)).filter((r) => r.status !== "archived");
   const templates = await getAllTemplates();
   const { data: leads } = await supabase
     .from("clients")

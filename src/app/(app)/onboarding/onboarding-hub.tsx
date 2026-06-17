@@ -14,15 +14,22 @@ const TABS = [
   { id: "dashboard", label: "Dashboard", icon: "layout-dashboard" },
   { id: "pipeline", label: "Pipeline", icon: "git-branch" },
   { id: "clients", label: "Clients", icon: "users" },
+  { id: "done", label: "Done", icon: "check-circle" },
   { id: "templates", label: "Templates", icon: "file-text" },
 ] as const;
 
-export function OnboardingHub({ runs, templates, leads, canDelete = false }: { runs: RunCardData[]; templates: OnbTemplate[]; leads: { id: string; name: string; industry: string | null }[]; canDelete?: boolean }) {
+const isDone = (s: string) => s === "complete" || s === "closed";
+
+export function OnboardingHub({ runs: allRuns, templates, leads, canDelete = false }: { runs: RunCardData[]; templates: OnbTemplate[]; leads: { id: string; name: string; industry: string | null }[]; canDelete?: boolean }) {
   const router = useRouter();
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("dashboard");
   const [newOpen, setNewOpen] = useState(false);
   const [confirmDel, setConfirmDel] = useState<{ id: string; name: string } | null>(null);
   const [busy, startDel] = useTransition();
+
+  // Active onboardings vs completed ones (the Done section).
+  const runs = allRuns.filter((r) => !isDone(r.status));
+  const doneRuns = allRuns.filter((r) => isDone(r.status));
 
   const doDeleteRun = () => {
     if (!confirmDel) return;
@@ -94,6 +101,30 @@ export function OnboardingHub({ runs, templates, leads, canDelete = false }: { r
                   </tr>
                 ))}
                 {!runs.length && <tr><td colSpan={5} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No onboarding clients.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {tab === "done" && (
+          <div className="runs-card" style={{ marginTop: 4 }}>
+            <table className="runs-table">
+              <thead><tr><th>Client</th><th>Template</th><th>Completed</th><th></th></tr></thead>
+              <tbody>
+                {doneRuns.map((r) => (
+                  <tr key={r.id} onClick={() => router.push(`/onboarding/${r.id}`)}>
+                    <td><div className="client-cell"><div className="client">{r.clientName}</div><div className="wf">AM {r.amName ?? "—"}</div></div></td>
+                    <td>{r.templateName}</td>
+                    <td><span className="pill green" style={{ fontSize: 10 }}><span className="dot" /> Completed</span></td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                        <button className="btn-ghost" onClick={() => router.push(`/onboarding/${r.id}`)}>Open <Icon name="arrow-right" size={13} /></button>
+                        {canDelete && <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!doneRuns.length && <tr><td colSpan={4} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No completed onboardings yet. They move here automatically when finished.</td></tr>}
               </tbody>
             </table>
           </div>

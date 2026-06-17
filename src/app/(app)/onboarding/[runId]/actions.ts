@@ -86,6 +86,40 @@ async function recompute(supabase: SupabaseClient, runId: string, templateId: st
     .from("onboarding_runs")
     .update({ current_stage: activeStage, progress, status: allDone ? "complete" : "in_progress" })
     .eq("id", runId);
+  // When the whole onboarding is finished, the client goes live (active) and the
+  // run drops into the Done section of the hub.
+  if (allDone) {
+    const { data: r } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+    if (r?.client_id) await supabase.from("clients").update({ status: "active" }).eq("id", r.client_id);
+  } else {
+    // Whoever owns the now-active step gets a heads-up (once per step).
+    const stage = tpl.stages[activeStage - 1];
+    const nextStep = stage?.steps.find((st) => status[st.id] !== "complete");
+    if (nextStep) await notifyNext(supabase, runId, nextStep);
+  }
+}
+
+/** Notifies the person who owns the active step that it's their turn (deduped per step). */
+async function notifyNext(supabase: SupabaseClient, runId: string, step: StepLike & { id: string; title: string }) {
+  const { data: run } = await supabase.from("onboarding_runs").select("org_id,client_id,am_id").eq("id", runId).maybeSingle();
+  if (!run) return;
+  const { data: marker } = await supabase.from("run_items").select("id,data").eq("run_id", runId).eq("kind", "next_notify").maybeSingle();
+  if ((marker?.data as { step?: string } | null)?.step === step.id) return; // already notified for this step
+
+  const role = requiredRoleForStep(step);
+  let recipient = run.am_id as string | null;
+  if (role) {
+    const { data: rt } = await supabase.from("run_team").select("team_member_id").eq("run_id", runId).eq("role_in_run", role).limit(1).maybeSingle();
+    if (rt?.team_member_id) recipient = rt.team_member_id;
+  }
+  if (recipient) {
+    await supabase.from("notifications").insert({
+      org_id: run.org_id, run_id: runId, recipient_id: recipient, kind: "task_tag",
+      title: "Your onboarding step is ready", body: `"${step.title}" is now active and waiting on you.`,
+    });
+  }
+  if (marker?.id) await supabase.from("run_items").update({ data: { step: step.id } }).eq("id", marker.id);
+  else await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "next_notify", data: { step: step.id }, status: "open" });
 }
 
 async function upsertStep(
@@ -492,6 +526,21 @@ export async function saveBoardColumns(runId: string, columns: string[]): Promis
   if (!clean.length) return { error: "Keep at least one column." };
   await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "board_columns");
   await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "board_columns", data: { columns: clean }, status: "open" });
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Save task-board SLA reminders for the run (notify the AM if a task stalls). */
+export async function saveTaskSla(runId: string, notStartedDays: number, notCompletedDays: number): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "task_sla");
+  await supabase.from("run_items").insert({
+    run_id: runId, client_id: run.client_id, kind: "task_sla",
+    data: { notStartedDays: Math.max(0, notStartedDays || 0), notCompletedDays: Math.max(0, notCompletedDays || 0) },
+    status: "open",
+  });
   revalidatePath(`/onboarding/${runId}`);
   return {};
 }
