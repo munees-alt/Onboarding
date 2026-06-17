@@ -15,6 +15,7 @@ export const NAV: NavItem[] = [
   { id: "sop", label: "SOP Library", icon: "book-open", href: "/sop", group: "more" },
   { id: "create-run", label: "Create Run", icon: "plus-circle", href: "/create-run", group: "more", stub: true, roles: ["admin", "ops_head", "am"] },
 
+  { id: "master-coa", label: "Master COA", icon: "book-open", href: "/master-coa", group: "admin", roles: ["admin", "ops_head", "am"] },
   { id: "org-chart", label: "Org Chart", icon: "network", href: "/org-chart", group: "admin", roles: ["admin", "ops_head"] },
   { id: "tickets", label: "Requests", icon: "lightbulb", href: "/tickets", group: "admin", roles: ["admin", "ops_head"] },
   { id: "audit-log", label: "Audit Log", icon: "shield-check", href: "/audit-log", group: "admin", roles: ["admin", "ops_head"] },

@@ -28,6 +28,8 @@ export const canOpenAudit = (r: Role) => r === "admin" || r === "ops_head";
 export const canSeeAllRuns = (r: Role) => r === "admin";
 export const canCreateRun = (r: Role) =>
   r === "admin" || r === "ops_head" || r === "am";
+export const canManageCoa = (r: Role) =>
+  r === "admin" || r === "ops_head" || r === "am";
 export const canAccessOnboarding = (r: Role) =>
   r === "admin" ||
   r === "ops_head" ||
