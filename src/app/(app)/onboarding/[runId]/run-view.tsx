@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useEffect } from "react";
+import { useState, useTransition, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
@@ -8,7 +8,7 @@ import { useIdentity } from "@/components/identity-context";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, pushToPms, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, uploadContractFile, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -40,7 +40,7 @@ function canEditStep(myRole: string, step: TemplateStep): boolean {
 const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior", junior: "Junior", team_lead: "Team Lead", ops_head: "Ops", intern: "Intern" };
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
-import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, generateCompliance, generateProjects, generateDiagram, type CoaLine, type ContractAnalysis } from "./ai-actions";
+import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, generateCompliance, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
 
 const KIND_ICON: Record<string, { icon: string; color: string }> = {
   ai: { icon: "sparkles", color: "var(--purple)" },
@@ -355,7 +355,15 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      {actStep && ["agenda", "ai", "mom", "deck"].includes(actStep.act?.type ?? "") && (
+      {actStep && actStep.act?.type === "deck" && (
+        <DeckModal
+          runId={detail.runId}
+          onClose={() => setActStep(null)}
+          onDone={() => { const s = actStep; setActStep(null); showToast("Onboarding deck saved"); run(() => completeStep(detail.runId, s.id), `${s.title} — done`); }}
+        />
+      )}
+
+      {actStep && ["agenda", "ai", "mom"].includes(actStep.act?.type ?? "") && (
         <AiTextModal
           runId={detail.runId}
           stepId={actStep.id}
@@ -961,6 +969,9 @@ function TaskBoard({
   const [toast, setToast] = useState<string | null>(null);
   const [colMgr, setColMgr] = useState<string[] | null>(null); // non-null = modal open with draft
   const [slaOpen, setSlaOpen] = useState(false);
+  const [taskFilter, setTaskFilter] = useState<"all" | "active" | "done">("all");
+  const [chatTask, setChatTask] = useState<string | null>(null); // per-task chat modal
+  const shownTasks = tasks.filter((t) => taskFilter === "all" ? true : taskFilter === "done" ? t.status === "complete" : t.status !== "complete");
   const [slaStart, setSlaStart] = useState(String(sla?.notStartedDays ?? 1));
   const [slaDone, setSlaDone] = useState(String(sla?.notCompletedDays ?? 7));
 
@@ -996,11 +1007,20 @@ function TaskBoard({
         </div>
       </div>
 
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Show:</span>
+        {([["all", "All"], ["active", "Relevant (open)"], ["done", "Completed"]] as const).map(([k, l]) => (
+          <button key={k} className={"tab-pill" + (taskFilter === k ? " active" : "")} onClick={() => setTaskFilter(k)}>
+            {l} · {k === "all" ? tasks.length : k === "done" ? tasks.filter((t) => t.status === "complete").length : tasks.filter((t) => t.status !== "complete").length}
+          </button>
+        ))}
+      </div>
+
       <div className="runs-card">
         <table className="runs-table">
-          <thead><tr><th style={{ minWidth: 200 }}>Task</th><th>Owner</th><th>Column</th><th>Type</th><th>Due</th><th>Client sees</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th style={{ minWidth: 200 }}>Task</th><th>Owner</th><th>Column</th><th>Type</th><th>Due</th><th>Client sees</th><th>Status</th><th>Chat</th><th></th></tr></thead>
           <tbody>
-            {tasks.map((t) => (
+            {shownTasks.map((t) => (
               <tr key={t.id}>
                 <td>
                   <input
@@ -1055,11 +1075,19 @@ function TaskBoard({
                   </select>
                 </td>
                 <td>
+                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <button className="icon-btn" disabled={busy} title="Open task chat" onClick={() => setChatTask(t.title)} aria-label="Task chat"><Icon name="message-square" size={14} /></button>
+                    {(t.status === "needs_input" || t.status === "blocked") && (
+                      <button className="icon-btn" disabled={busy} title="Notify the client this needs their input" onClick={() => change(() => notifyClientOnTask(runId, t.title))} style={{ color: "var(--orange)" }} aria-label="Notify client"><Icon name="at-sign" size={14} /></button>
+                    )}
+                  </div>
+                </td>
+                <td>
                   <button className="icon-btn" disabled={busy} onClick={() => change(() => deleteTask(runId, t.id))} style={{ color: "var(--red)" }} aria-label="Delete task"><Icon name="trash-2" size={14} /></button>
                 </td>
               </tr>
             ))}
-            {!tasks.length && <tr><td colSpan={8} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No tasks yet — click “Add task”.</td></tr>}
+            {!shownTasks.length && <tr><td colSpan={9} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>{tasks.length ? "No tasks match this filter." : "No tasks yet — click “Add task”."}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1134,8 +1162,66 @@ function TaskBoard({
         </div>
       )}
 
+      {chatTask && <TeamTaskChat runId={runId} task={chatTask} onClose={() => setChatTask(null)} />}
+
       {toast && <div className="toast show green"><Icon name="check-circle" size={15} /><span>{toast}</span></div>}
     </>
+  );
+}
+
+/* Per-task chat (team side) — the same run thread, filtered to one task, with file attach. */
+function TeamTaskChat({ runId, task, onClose }: { runId: string; task: string; onClose: () => void }) {
+  const [messages, setMessages] = useState<{ id: string; author_name: string | null; author_role: string | null; body: string; created_at: string }[]>([]);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const supabase = createClient();
+
+  const load = async () => {
+    const { data } = await supabase.from("run_messages").select("id,author_name,author_role,body,created_at").eq("run_id", runId).eq("task_ref", task).order("created_at");
+    setMessages(data ?? []);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [task]);
+
+  const send = async () => {
+    const body = text.trim();
+    if (!body) return;
+    setText("");
+    await postMessage(runId, body, task);
+    await load();
+  };
+  const attach = async (files: FileList) => {
+    setBusy(true);
+    for (const file of Array.from(files)) { const fd = new FormData(); fd.append("file", file); await attachTaskFile(runId, task, fd); }
+    setBusy(false);
+    await load();
+  };
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 520 }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>{task}</h3><div className="sub">Task thread — shared with the client if this task is client-visible. Attachments save to the client&apos;s Drive.</div></div>
+        <div className="bd" style={{ maxHeight: "56vh" }}>
+          {messages.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 30, color: "var(--ink-3)", fontSize: 13 }}>No messages on this task yet.</div>
+          ) : messages.map((m) => (
+            <div key={m.id} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700 }}>{m.author_name ?? "Someone"} <span style={{ color: "var(--ink-4)", fontWeight: 400 }}>· {m.author_role === "Client" ? "Client · " : ""}{new Date(m.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+              <div style={{ fontSize: 13, color: "var(--ink-1)", marginTop: 2, wordBreak: "break-word" }}>{m.body}</div>
+            </div>
+          ))}
+        </div>
+        <div className="ft" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") send(); }} placeholder="Message about this task…" style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+            <button className="btn-primary" onClick={send} disabled={busy || !text.trim()}><Icon name="send" size={14} /></button>
+          </div>
+          <label className="btn-ghost" style={{ cursor: busy ? "default" : "pointer", justifyContent: "center" }}>
+            <Icon name="paperclip" size={13} /> {busy ? "Attaching…" : "Attach documents"}
+            <input type="file" hidden multiple disabled={busy} onChange={(e) => { const f = e.target.files; if (f && f.length) attach(f); e.target.value = ""; }} />
+          </label>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1228,9 +1314,11 @@ function DiagramBuilderModal({
 
 const ITEM_FIELDS: Record<string, { k: string; l: string; opts?: string[] }[]> = {
   catchup: [{ k: "title", l: "Task" }, { k: "owner", l: "Owner" }, { k: "due", l: "Due" }],
-  project: [{ k: "name", l: "Project" }, { k: "month", l: "Month" }, { k: "tasks", l: "Tasks (; separated)" }],
+  project: [{ k: "task", l: "Task" }, { k: "cadence", l: "Cadence" }, { k: "when", l: "When" }],
   compliance: [{ k: "label", l: "Item" }, { k: "date", l: "Due date" }, { k: "type", l: "Type", opts: ["VAT", "CT", "WPS", "Doc expiry", "Other"] }],
 };
+const CADENCES = ["daily", "weekly", "biweekly", "monthly"];
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const ITEM_TITLE: Record<string, string> = { catchup: "Catch-up board", project: "Internal projects & tasks", compliance: "Compliance calendar" };
 
 function ItemsBuilderModal({
@@ -1241,29 +1329,21 @@ function ItemsBuilderModal({
   onClose: () => void; onDone: () => void;
 }) {
   const fields = ITEM_FIELDS[kind];
-  const [rows, setRows] = useState<Record<string, string>[]>(existing.length ? existing.map((e) => e.data as Record<string, string>) : [Object.fromEntries(fields.map((f) => [f.k, ""]))]);
+  const blankRow = () => kind === "project" ? { task: "", cadence: "monthly", when: "" } : Object.fromEntries(fields.map((f) => [f.k, ""]));
+  const [rows, setRows] = useState<Record<string, string>[]>(existing.length ? existing.map((e) => e.data as Record<string, string>) : [blankRow()]);
   const [saving, start] = useTransition();
   const [aiBusy, setAiBusy] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
-  // project AI inputs
-  const [pStart, setPStart] = useState(""); const [pEnd, setPEnd] = useState(""); const [pCadence, setPCadence] = useState("monthly"); const [pBrief, setPBrief] = useState("");
+  const [pBrief, setPBrief] = useState(""); // project AI: plain-language task list
 
   const setCell = (i: number, k: string, v: string) => setRows((r) => r.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
-  const addRow = () => setRows((r) => [...r, Object.fromEntries(fields.map((f) => [f.k, ""]))]);
+  const addRow = () => setRows((r) => [...r, blankRow()]);
   const del = (i: number) => setRows((r) => r.filter((_, j) => j !== i));
 
   const aiCompliance = async () => { setAiBusy(true); setInfo(null); const r = await generateCompliance(runId); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type }))); };
-  const aiProjects = async () => { setAiBusy(true); setInfo(null); const r = await generateProjects(runId, pBrief, pStart, pEnd, pCadence); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ name: i.name, month: i.month, tasks: i.tasks }))); };
-  const dupAcrossPeriod = () => {
-    if (!rows.length || !pStart || !pEnd) return;
-    const base = rows[0];
-    const [sy, sm] = pStart.split("-").map(Number); const [ey, em] = pEnd.split("-").map(Number);
-    const out: Record<string, string>[] = []; let y = sy, m = sm, g = 0;
-    while ((y < ey || (y === ey && m <= em)) && g++ < 60) { out.push({ ...base, month: `${y}-${String(m).padStart(2, "0")}` }); m++; if (m > 12) { m = 1; y++; } }
-    if (out.length) { setRows(out); setInfo(`Duplicated across ${out.length} month${out.length === 1 ? "" : "s"} — edit any month as needed.`); }
-  };
+  const aiRecurring = async () => { setAiBusy(true); setInfo(null); const r = await generateRecurringTasks(runId, pBrief); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ task: i.task, cadence: CADENCES.includes(i.cadence) ? i.cadence : "monthly", when: i.when }))); };
 
-  const saveItems = (after?: "email" | "push") => start(async () => {
+  const saveItems = (after?: "email") => start(async () => {
     const items: RunItemInput[] = rows.filter((r) => Object.values(r).some((v) => v)).map((r) => ({ data: r, status: "open" }));
     const res = await saveRunItems(runId, stepId, kind, items);
     if (res.error) { setInfo(res.error); return; }
@@ -1272,7 +1352,6 @@ function ItemsBuilderModal({
       const er = await sendClientEmail(runId, "Your Finanshels compliance calendar", body);
       if (er.error) { setInfo("Saved. Email: " + er.error); return; }
     }
-    if (after === "push") { const pr = await pushToPms(runId); if (pr.error) { setInfo("Saved. Push: " + pr.error); return; } }
     onDone();
   });
 
@@ -1286,18 +1365,48 @@ function ItemsBuilderModal({
           )}
           {kind === "project" && (
             <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
-                <input type="month" value={pStart} onChange={(e) => setPStart(e.target.value)} title="Period start" style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12.5 }} />
-                <input type="month" value={pEnd} onChange={(e) => setPEnd(e.target.value)} title="Period end" style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12.5 }} />
-                <select value={pCadence} onChange={(e) => setPCadence(e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12.5 }}>{["monthly", "weekly", "daily", "quarterly"].map((c) => <option key={c}>{c}</option>)}</select>
-              </div>
-              <textarea className="notes" value={pBrief} onChange={(e) => setPBrief(e.target.value)} placeholder="In plain language: what should happen each month? (e.g. monthly close, VAT each quarter, payroll by 25th)" style={{ minHeight: 50 }} />
-              <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-                <button className="btn-ai" disabled={aiBusy || !pStart || !pEnd} onClick={aiProjects}><Icon name="sparkles" size={13} /> {aiBusy ? "Generating…" : "Generate 1 month (AI)"}</button>
-                <button className="btn-ghost" disabled={!rows[0]?.name || !pStart || !pEnd} onClick={dupAcrossPeriod}><Icon name="copy" size={13} /> Duplicate across period</button>
-              </div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Describe the recurring tasks (optional AI)</div>
+              <textarea className="notes" value={pBrief} onChange={(e) => setPBrief(e.target.value)} placeholder="e.g. Document request monthly 5th, bills & sales booking daily, salary processing monthly 25th, weekly sync meeting with client Thursday" style={{ minHeight: 56 }} />
+              <button className="btn-ai" disabled={aiBusy || !pBrief.trim()} onClick={aiRecurring} style={{ marginTop: 6 }}><Icon name="sparkles" size={13} /> {aiBusy ? "Reading…" : "Generate tasks with AI"}</button>
             </div>
           )}
+          {kind === "project" ? (
+            <table className="runs-table" style={{ border: "1px solid var(--border)", borderRadius: 8 }}>
+              <thead><tr><th style={{ minWidth: 200 }}>Task</th><th>Cadence</th><th>When</th><th></th></tr></thead>
+              <tbody>
+                {rows.map((row, i) => {
+                  const cad = row.cadence || "monthly";
+                  return (
+                    <tr key={i}>
+                      <td><input value={row.task ?? ""} onChange={(e) => setCell(i, "task", e.target.value)} placeholder="Task name" style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, width: "100%" }} /></td>
+                      <td>
+                        <select value={cad} onChange={(e) => { setCell(i, "cadence", e.target.value); setCell(i, "when", ""); }} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5 }}>
+                          {CADENCES.map((c) => <option key={c} value={c}>{c[0].toUpperCase() + c.slice(1)}</option>)}
+                        </select>
+                      </td>
+                      <td>
+                        {cad === "daily" ? (
+                          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>Every day</span>
+                        ) : cad === "monthly" ? (
+                          <select value={row.when ?? ""} onChange={(e) => setCell(i, "when", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5 }}>
+                            <option value="">Which date…</option>
+                            {Array.from({ length: 31 }, (_, d) => `${d + 1}`).map((d) => <option key={d} value={d}>{d}</option>)}
+                            <option value="Last day">Last day</option>
+                          </select>
+                        ) : (
+                          <select value={row.when ?? ""} onChange={(e) => setCell(i, "when", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5 }}>
+                            <option value="">Which day…</option>
+                            {WEEKDAYS.map((d) => <option key={d} value={d}>{d}</option>)}
+                          </select>
+                        )}
+                      </td>
+                      <td><button className="icon-btn" onClick={() => del(i)} style={{ color: "var(--red)" }}><Icon name="trash-2" size={13} /></button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
           <table className="runs-table" style={{ border: "1px solid var(--border)", borderRadius: 8 }}>
             <thead><tr>{fields.map((f) => <th key={f.k}>{f.l}</th>)}<th></th></tr></thead>
             <tbody>
@@ -1319,13 +1428,13 @@ function ItemsBuilderModal({
               ))}
             </tbody>
           </table>
+          )}
           <button className="add-link" onClick={addRow} style={{ marginTop: 8 }}><Icon name="plus" size={12} /> Add row</button>
           {info && <div style={{ fontSize: 12.5, color: "var(--amber)", marginTop: 8 }}>{info}</div>}
         </div>
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           {kind === "compliance" && <button className="btn-ghost" disabled={saving} onClick={() => saveItems("email")}><Icon name="send" size={13} /> Save & email client</button>}
-          {kind === "project" && <button className="btn-ghost" disabled={saving} onClick={() => saveItems("push")}><Icon name="upload" size={13} /> Save & push to PMS</button>}
           <button className="btn-primary" disabled={saving} onClick={() => saveItems()}>{saving ? "Saving…" : "Save & confirm"}</button>
         </div>
       </div>
@@ -1359,6 +1468,259 @@ function TriageModal({
           <button className="btn-primary" disabled={saving} onClick={() => start(async () => { const items = rows.filter((r) => r.item.trim() && r.memberId).map((r) => ({ item: r.item.trim(), memberId: r.memberId, memberName: people.find((p) => p.id === r.memberId)?.name ?? "", severity: r.severity })); const res = await assignTriage(runId, stepId, items); if (!res.error) onDone(); })}>{saving ? "Routing…" : "Assign & confirm"}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+const DECK_PHASES = [
+  { n: "01", t: "Kickoff & Discovery", d: "Understanding your business model and financial structure." },
+  { n: "02", t: "Compliance Review", d: "CT, VAT and WPS aligned to UAE law." },
+  { n: "03", t: "Software Setup", d: "Configuring and optimising your accounting platform." },
+  { n: "04", t: "Secure Data", d: "Organising and securing your financial documents." },
+  { n: "05", t: "Communication & Go-Live", d: "Channels set, full operations launched." },
+];
+const DECK_DOCS = ["Trade licence", "MOA & AOA", "Owner passports & Emirates IDs", "CT registration", "VAT certificate (if any)", "Prior financial statements", "Bank statements", "Commercial contracts"];
+
+function deckSlide(d: DeckData, idx: number): React.ReactNode {
+  const wu = d.whatWeUnderstood;
+  switch (idx) {
+    case 0:
+      return (
+        <div className="fsdeck-slide fsdeck-cover">
+          <div className="fsdeck-cover-glow" />
+          <div className="fsdeck-cover-body">
+            <div className="fsdeck-eyebrow orange">Welcome to Finanshels</div>
+            <h1 className="fsdeck-cover-title">Welcome,<br /><span className="o">{d.clientName}</span></h1>
+            <div className="fsdeck-cover-mission">{d.mission}</div>
+          </div>
+          <div className="fsdeck-cover-foot">Finanshels Onboarding · Your partner in financial growth</div>
+        </div>
+      );
+    case 1:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Agenda</div><h2 className="fsdeck-h2">Today&apos;s Agenda</h2></div></div>
+          <div className="fsdeck-grid2">
+            {d.agenda.map((a, i) => (
+              <div key={i} className="fsdeck-card"><div className="fsdeck-card-label">{a.num} · {a.label}</div><div className="fsdeck-card-val">{a.desc}</div></div>
+            ))}
+          </div>
+        </div>
+      );
+    case 2:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Roadmap</div><h2 className="fsdeck-h2">Your Onboarding Roadmap</h2></div></div>
+          <div className="fsdeck-roadmap">{DECK_PHASES.map((p) => (
+            <div key={p.n} className="fsdeck-phase"><div className="fsdeck-phase-n">{p.n}</div><div className="fsdeck-phase-t">{p.t}</div><div className="fsdeck-phase-d">{p.d}</div></div>
+          ))}</div>
+        </div>
+      );
+    case 3:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 1 · Discovery</div><h2 className="fsdeck-h2">What We Understood</h2><div className="fsdeck-sub">Please confirm this is right.</div></div></div>
+          <div className="fsdeck-grid2">{(wu.points ?? []).slice(0, 4).map((p, i) => (
+            <div key={i} className="fsdeck-card"><div className="fsdeck-card-label">{p.icon} {p.title}</div><div className="fsdeck-card-val">{p.desc}</div></div>
+          ))}</div>
+          <div className="fsdeck-understood"><div className="fsdeck-understood-k">✦ What we understood — please confirm</div><div className="fsdeck-understood-v">{wu.summary}</div>
+            <div className="fsdeck-services" style={{ marginTop: 8 }}>{(wu.tags ?? []).map((t, i) => <span key={i} className="fsdeck-svc"><span className="dot" />{t}</span>)}</div>
+          </div>
+        </div>
+      );
+    case 4:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 2</div><h2 className="fsdeck-h2">Ensuring Compliance</h2></div></div>
+          <div className="fsdeck-grid3">
+            {[["CT", "Corporate Tax", d.compliance.ct], ["VAT", "VAT Compliance", d.compliance.vat], ["WPS", "WPS / Payroll", d.compliance.wps]].map(([b, t, v]) => (
+              <div key={b} className="fsdeck-compliance"><div className="fsdeck-compliance-badge">{b}</div><div className="fsdeck-compliance-t">{t}</div><div className="fsdeck-compliance-d">{v}</div></div>
+            ))}
+          </div>
+        </div>
+      );
+    case 5:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 3</div><h2 className="fsdeck-h2">Accounting Software</h2></div></div>
+          <div className="fsdeck-twocol">
+            <div className="fsdeck-softcol"><div className="fsdeck-softcol-h">If you have existing software</div><p>{d.software.existing}</p></div>
+            <div className="fsdeck-softcol rec"><div className="fsdeck-softcol-h">Our recommendation · Zoho Books</div><p>{d.software.recommendation}</p></div>
+          </div>
+        </div>
+      );
+    case 6:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 4</div><h2 className="fsdeck-h2">Secure Data Management</h2></div></div>
+          <div className="fsdeck-twocol">
+            <div className="fsdeck-softcol rec"><div className="fsdeck-softcol-h">Our solution</div><p>A dedicated, encrypted Google Drive organised by year and document type — controlled access, easy retrieval.</p></div>
+            <div className="fsdeck-doclist"><div className="fsdeck-softcol-h">Documents we&apos;ll need</div><ul>{DECK_DOCS.map((x) => <li key={x}><span className="tick">✓</span>{x}</li>)}</ul></div>
+          </div>
+        </div>
+      );
+    case 7:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 5</div><h2 className="fsdeck-h2">How We Stay Connected</h2></div></div>
+          <div className="fsdeck-grid3">
+            {[["✉️", "Email", "Formal documentation, reports and major updates."], ["💬", "WhatsApp", "Daily operational queries and quick support."], ["⚡", "Slack", "Optional real-time collaboration if you prefer."]].map(([ic, t, dsc]) => (
+              <div key={t} className="fsdeck-channel"><div className="fsdeck-channel-ic">{ic}</div><div className="fsdeck-channel-t">{t}</div><div className="fsdeck-channel-d">{dsc}</div></div>
+            ))}
+          </div>
+        </div>
+      );
+    case 8:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Engagement</div><h2 className="fsdeck-h2">Contract Summary</h2></div></div>
+          <div className="fsdeck-contract">
+            <div className="fsdeck-contract-main"><div className="fsdeck-softcol-h">Scope of work</div><p style={{ fontSize: 16, color: "var(--fsd-ink)", lineHeight: 1.55 }}>{d.contract.scope}</p>
+              <div className="fsdeck-services" style={{ marginTop: 14 }}>{(d.contract.highlights ?? []).map((h, i) => <span key={i} className="fsdeck-svc"><span className="dot" />{h}</span>)}</div>
+            </div>
+            <div className="fsdeck-contract-side">
+              <div className="fsdeck-side-row"><span>Payment</span><b>{d.contract.payment || "Not specified"}</b></div>
+              <div className="fsdeck-side-row"><span>Duration</span><b>{d.contract.duration || "Not specified"}</b></div>
+              <div className="fsdeck-side-row"><span>Your responsibilities</span><b>{d.contract.responsibilities || "Not specified"}</b></div>
+            </div>
+          </div>
+        </div>
+      );
+    case 9:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Next</div><h2 className="fsdeck-h2">Immediate Next Steps</h2></div></div>
+          <div className="fsdeck-steps">{(d.nextSteps ?? []).map((s, i) => (
+            <div key={i} className="fsdeck-step"><div className="fsdeck-step-n">{i + 1}</div><div className="fsdeck-step-ic">{s.icon}</div><div><div className="fsdeck-step-t">{s.title}</div><div className="fsdeck-step-d">{s.desc}</div></div></div>
+          ))}</div>
+        </div>
+      );
+    default:
+      return (
+        <div className="fsdeck-slide fsdeck-cover fsdeck-thanks">
+          <div className="fsdeck-cover-glow" />
+          <div className="fsdeck-cover-body">
+            <div className="fsdeck-eyebrow orange">Onboarding recap</div>
+            <div className="fsdeck-recap">{["Business overview", "Compliance", "Software", "Data", "Contract", "Next steps"].map((c) => <span key={c} className="fsdeck-recap-item"><span className="tick">✓</span>{c}</span>)}</div>
+            <h1 className="fsdeck-cover-title"><span className="o">Thank you!</span></h1>
+            <div className="fsdeck-cover-mission">Ready to grow together. Let&apos;s begin your journey toward financial mastery with Finanshels.</div>
+          </div>
+        </div>
+      );
+  }
+}
+
+const DECK_TITLES = ["Welcome", "Agenda", "Roadmap", "What We Understood", "Compliance", "Software", "Data", "Communication", "Contract", "Next Steps", "Thank You"];
+
+function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => void; onDone: () => void }) {
+  const [deck, setDeck] = useState<DeckData | null>(null);
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"edit" | "present">("present");
+  const [idx, setIdx] = useState(0);
+  const [scale, setScale] = useState(0.6);
+  const [saving, start] = useTransition();
+  const stageRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    generateDeck(runId).then((r) => {
+      if (r.error || !r.deck) { setError(r.error ?? "Could not build the deck."); setPhase("error"); }
+      else { setDeck(r.deck); setPhase("ready"); }
+    });
+  }, [runId]);
+
+  useEffect(() => {
+    const fit = () => { const el = stageRef.current; if (!el) return; setScale(Math.min(el.clientWidth / 1200, el.clientHeight / 675)); };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [mode, phase]);
+
+  const set = (fn: (d: DeckData) => DeckData) => setDeck((d) => (d ? fn(d) : d));
+  const regen = () => { setPhase("loading"); generateDeck(runId, true).then((r) => { if (r.deck) { setDeck(r.deck); setPhase("ready"); } else { setError(r.error ?? "Failed"); setPhase("error"); } }); };
+  const saveAndConfirm = () => { if (!deck) return; start(async () => { await saveDeck(runId, deck); onDone(); }); };
+
+  return (
+    <div className="fsdeck-overlay">
+      <div className="fsdeck-bar">
+        <div className="fsdeck-bar-left">
+          <span className="fsdeck-bar-title"><Icon name="presentation" size={16} /> Onboarding deck</span>
+          <span className="fsdeck-bar-badge"><Icon name="sparkles" size={11} /> AI-drafted · editable</span>
+        </div>
+        <div className="fsdeck-bar-right">
+          <div className="fsdeck-modeseg">
+            <button className={mode === "present" ? "on" : ""} onClick={() => setMode("present")}><Icon name="play" size={12} /> Present</button>
+            <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}><Icon name="pencil" size={12} /> Edit</button>
+          </div>
+          <button className="fsdeck-btn ghost" onClick={regen} disabled={phase === "loading"}><Icon name="refresh-cw" size={12} /> Regenerate</button>
+          <button className="fsdeck-btn ghost" onClick={onClose}>Close</button>
+          <button className="fsdeck-btn primary" onClick={saveAndConfirm} disabled={!deck || saving}><Icon name="check" size={13} /> {saving ? "Saving…" : "Save & confirm step"}</button>
+        </div>
+      </div>
+
+      {phase === "loading" && <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#fff" }}><div style={{ textAlign: "center" }}><div className="ai-loading"><span className="d" /><span className="d" /><span className="d" /></div><div style={{ marginTop: 12, fontSize: 13, color: "rgba(255,255,255,0.7)" }}>Building the deck from this client&apos;s data…</div></div></div>}
+
+      {phase === "error" && <div style={{ flex: 1, display: "grid", placeItems: "center", color: "#fff" }}><div style={{ textAlign: "center", maxWidth: 420 }}><Icon name="alert-triangle" size={28} /><div style={{ marginTop: 10, fontSize: 14 }}>{error}</div><button className="fsdeck-btn ghost" style={{ marginTop: 14 }} onClick={regen}>Try again</button></div></div>}
+
+      {phase === "ready" && deck && mode === "present" && (
+        <div className="fsdeck-present">
+          <div className="fsdeck-present-stage" ref={stageRef}>
+            <div className="fsdeck-stage" style={{ transform: `scale(${scale})`, transformOrigin: "center" }}>{deckSlide(deck, idx)}</div>
+          </div>
+          <div className="fsdeck-nav">
+            <button className="fsdeck-nav-btn" disabled={idx === 0} onClick={() => setIdx((i) => Math.max(0, i - 1))}>‹</button>
+            <div className="fsdeck-dots">{DECK_TITLES.map((_, i) => <span key={i} className={"fsdeck-dot" + (i === idx ? " active" : "")} onClick={() => setIdx(i)} />)}</div>
+            <button className="fsdeck-nav-btn" disabled={idx === DECK_TITLES.length - 1} onClick={() => setIdx((i) => Math.min(DECK_TITLES.length - 1, i + 1))}>›</button>
+            <span className="fsdeck-counter">{idx + 1} / {DECK_TITLES.length}</span>
+          </div>
+        </div>
+      )}
+
+      {phase === "ready" && deck && mode === "edit" && (
+        <div className="fsdeck-editscroll">
+          <div className="fsdeck-legend"><span className="fsdeck-legend-h">Sources:</span><span className="fsdeck-conf crm"><span className="dot" />From client</span><span className="fsdeck-conf ai"><span className="dot" />AI-drafted</span><span className="fsdeck-conf client"><span className="dot" />From intake / contract</span></div>
+
+          <DeckEdit n="1" label="Welcome mission" pill="ai"><textarea className="fsdeck-edit" value={deck.mission} onChange={(e) => set((d) => ({ ...d, mission: e.target.value }))} rows={2} /></DeckEdit>
+
+          <DeckEdit n="2" label="What we understood (summary)" pill="ai"><textarea className="fsdeck-edit" value={deck.whatWeUnderstood.summary} onChange={(e) => set((d) => ({ ...d, whatWeUnderstood: { ...d.whatWeUnderstood, summary: e.target.value } }))} rows={2} /></DeckEdit>
+          {deck.whatWeUnderstood.points?.map((p, i) => (
+            <DeckEdit key={i} n={`2.${i + 1}`} label={`Point — ${p.title || "title"}`} pill="ai">
+              <input className="fsdeck-edit" value={p.title} onChange={(e) => set((d) => ({ ...d, whatWeUnderstood: { ...d.whatWeUnderstood, points: d.whatWeUnderstood.points.map((x, j) => j === i ? { ...x, title: e.target.value } : x) } }))} />
+              <textarea className="fsdeck-edit" value={p.desc} onChange={(e) => set((d) => ({ ...d, whatWeUnderstood: { ...d.whatWeUnderstood, points: d.whatWeUnderstood.points.map((x, j) => j === i ? { ...x, desc: e.target.value } : x) } }))} rows={2} />
+            </DeckEdit>
+          ))}
+
+          <DeckEdit n="3" label="Compliance · Corporate Tax" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.ct} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, ct: e.target.value } }))} rows={2} /></DeckEdit>
+          <DeckEdit n="3.2" label="Compliance · VAT" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.vat} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, vat: e.target.value } }))} rows={2} /></DeckEdit>
+          <DeckEdit n="3.3" label="Compliance · WPS" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.wps} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, wps: e.target.value } }))} rows={2} /></DeckEdit>
+
+          <DeckEdit n="4" label="Software recommendation" pill="ai"><textarea className="fsdeck-edit" value={deck.software.recommendation} onChange={(e) => set((d) => ({ ...d, software: { ...d.software, recommendation: e.target.value } }))} rows={2} /></DeckEdit>
+
+          <DeckEdit n="5" label="Contract · scope" pill="client"><textarea className="fsdeck-edit" value={deck.contract.scope} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, scope: e.target.value } }))} rows={2} /></DeckEdit>
+          <DeckEdit n="5.2" label="Contract · payment" pill="client"><input className="fsdeck-edit" value={deck.contract.payment} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, payment: e.target.value } }))} /></DeckEdit>
+          <DeckEdit n="5.3" label="Contract · duration" pill="client"><input className="fsdeck-edit" value={deck.contract.duration} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, duration: e.target.value } }))} /></DeckEdit>
+          <DeckEdit n="5.4" label="Contract · your responsibilities" pill="client"><textarea className="fsdeck-edit" value={deck.contract.responsibilities} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, responsibilities: e.target.value } }))} rows={2} /></DeckEdit>
+
+          {deck.nextSteps?.map((s, i) => (
+            <DeckEdit key={i} n={`6.${i + 1}`} label={`Next step — ${s.title || "title"}`} pill="ai">
+              <input className="fsdeck-edit" value={s.title} onChange={(e) => set((d) => ({ ...d, nextSteps: d.nextSteps.map((x, j) => j === i ? { ...x, title: e.target.value } : x) }))} />
+              <textarea className="fsdeck-edit" value={s.desc} onChange={(e) => set((d) => ({ ...d, nextSteps: d.nextSteps.map((x, j) => j === i ? { ...x, desc: e.target.value } : x) }))} rows={2} />
+            </DeckEdit>
+          ))}
+
+          <div className="fsdeck-editfoot"><Icon name="info" size={14} /> Auto-filled from this client&apos;s data, intake form and contract. Edit anything, then Present or Save &amp; confirm.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeckEdit({ n, label, pill, children }: { n: string; label: string; pill: "crm" | "ai" | "client"; children: React.ReactNode }) {
+  const pillLabel = pill === "crm" ? "From client" : pill === "client" ? "Intake / contract" : "AI-drafted";
+  return (
+    <div className="fsdeck-editcard">
+      <div className="fsdeck-editcard-h"><span className="fsdeck-editcard-n">{n}</span> {label} <span className={"fsdeck-conf " + pill} style={{ marginLeft: "auto" }}><span className="dot" />{pillLabel}</span></div>
+      <div className="fsdeck-editwrap">{children}</div>
     </div>
   );
 }
@@ -1674,7 +2036,17 @@ function DriveBuilderModal({
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [ca, setCa] = useState<ContractAnalysis | null>(null);
+  const [contractFile, setContractFile] = useState<{ link: string; name: string } | null>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
   const [saving, startSave] = useTransition();
+
+  const onContractFile = async (file: File) => {
+    setUploadingFile(true);
+    const fd = new FormData(); fd.append("file", file);
+    const r = await uploadContractFile(runId, fd);
+    setUploadingFile(false);
+    if (r.link) setContractFile({ link: r.link, name: r.name ?? file.name });
+  };
 
   const analyze = async () => {
     setAnalyzing(true);
@@ -1698,9 +2070,16 @@ function DriveBuilderModal({
         <div className="hd"><h3>Create & share Drive folders</h3><div className="sub">Paste the engagement contract — AI reads the service period and builds the Books folders for those months.</div></div>
         <div className="bd" style={{ maxHeight: "66vh" }}>
           <div className="field">
-            <label>Engagement contract (paste text — optional)</label>
+            <label>Engagement contract — attach a file or paste the text (both optional)</label>
             <textarea className="notes" value={contractText} onChange={(e) => setContractText(e.target.value)} placeholder="Paste the contract / engagement letter text…" style={{ minHeight: 80 }} />
-            <button className="btn-ai" type="button" disabled={analyzing || !contractText.trim()} onClick={analyze} style={{ marginTop: 6, alignSelf: "flex-start" }}><Icon name="sparkles" size={13} /> {analyzing ? "Reading…" : "Analyze contract with AI"}</button>
+            <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn-ai" type="button" disabled={analyzing || !contractText.trim()} onClick={analyze}><Icon name="sparkles" size={13} /> {analyzing ? "Reading…" : "Analyze text with AI"}</button>
+              <label className="btn-ghost" style={{ cursor: uploadingFile ? "default" : "pointer" }}>
+                <Icon name="paperclip" size={13} /> {uploadingFile ? "Uploading…" : contractFile ? "Replace contract file" : "Attach contract file"}
+                <input type="file" hidden disabled={uploadingFile} onChange={(e) => { const f = e.target.files?.[0]; if (f) onContractFile(f); e.target.value = ""; }} />
+              </label>
+              {contractFile && <a href={contractFile.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--orange)", fontWeight: 600 }}><Icon name="file-check" size={12} /> {contractFile.name}</a>}
+            </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div className="field"><label>Service period — start</label><input type="month" value={start} onChange={(e) => setStart(e.target.value)} /></div>
@@ -1725,7 +2104,8 @@ function DriveBuilderModal({
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn-primary" disabled={saving} onClick={() => startSave(async () => {
-            const r = await saveDrive(runId, stepId, { periodStart: start || undefined, periodEnd: end || undefined, contract: ca ? (ca as unknown as Record<string, unknown>) : null });
+            const contractData = (ca || contractFile) ? { ...((ca as unknown as Record<string, unknown>) ?? {}), ...(contractFile ? { fileLink: contractFile.link, fileName: contractFile.name } : {}) } : null;
+            const r = await saveDrive(runId, stepId, { periodStart: start || undefined, periodEnd: end || undefined, contract: contractData });
             if (!r.error) onDone();
           })}>{saving ? "Creating…" : "Create folders & share link"}</button>
         </div>

@@ -210,7 +210,15 @@ export async function markSignedAction(
   if (!session?.profile.org_id) return { error: "Not signed in." };
 
   const supabase = await createClient();
-  const amId = session.teamMember?.id ?? null;
+
+  // The Account Manager is the one assigned when the client was created. Only
+  // fall back to the person triggering the run if no AM was ever set.
+  const { data: clientRow } = await supabase
+    .from("clients")
+    .select("am_id")
+    .eq("id", clientId)
+    .maybeSingle();
+  const amId = clientRow?.am_id ?? session.teamMember?.id ?? null;
 
   // Guard: if a run already exists, just return it.
   const { data: existing } = await supabase

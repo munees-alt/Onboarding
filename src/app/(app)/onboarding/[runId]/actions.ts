@@ -4,8 +4,8 @@ import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getSession } from "@/lib/auth";
-import { createClientDriveTree, sendGmailAs, type DriveFolderNode } from "@/lib/google";
-import { templateById } from "@/lib/onboarding-templates";
+import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, type DriveFolderNode } from "@/lib/google";
+import { getTemplate } from "@/lib/templates-store";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const KIND_TO_TYPE: Record<string, string> = { ai: "ai", link: "link", doc: "form", check: "manual", person: "manual" };
@@ -42,8 +42,11 @@ async function guardStepRole(step: StepLike): Promise<string | null> {
   return `This step is reserved for ${nice(required)} or above. Your role (${nice(myRole)}) can't sign it off.`;
 }
 
-function locate(templateId: string, stepId: string) {
-  const tpl = templateById(templateId);
+async function locate(templateId: string, stepId: string) {
+  // Resolve against the DB template (same source the run view renders from) so a
+  // step added/edited in the DB editor — e.g. the new "Assign Team Lead" step —
+  // is always found, even if the static code copy is out of sync.
+  const tpl = await getTemplate(templateId);
   if (!tpl) return null;
   for (let i = 0; i < tpl.stages.length; i++) {
     const st = tpl.stages[i].steps.find((s) => s.id === stepId);
@@ -54,7 +57,7 @@ function locate(templateId: string, stepId: string) {
 
 /** Recompute stage done-counts/statuses, current stage and % from step statuses. */
 async function recompute(supabase: SupabaseClient, runId: string, templateId: string) {
-  const tpl = templateById(templateId);
+  const tpl = await getTemplate(templateId);
   if (!tpl) return;
   const { data: steps } = await supabase.from("run_steps").select("step_no,status").eq("run_id", runId);
   const status: Record<string, string> = {};
@@ -129,7 +132,7 @@ async function upsertStep(
   stepId: string,
   patch: Record<string, unknown>,
 ) {
-  const loc = locate(templateId, stepId);
+  const loc = await locate(templateId, stepId);
   if (!loc) return { error: "Unknown step." };
   const { error } = await supabase.from("run_steps").upsert(
     {
@@ -152,7 +155,7 @@ export async function completeStep(runId: string, stepId: string) {
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
-  const loc = locate(run.template_key, stepId);
+  const loc = await locate(run.template_key, stepId);
   if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
   const r = await upsertStep(supabase, runId, run.template_key, stepId, {
     status: "complete",
@@ -168,7 +171,7 @@ export async function assignStep(runId: string, stepId: string, memberId: string
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("template_key,am_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
-  const loc = locate(run.template_key, stepId);
+  const loc = await locate(run.template_key, stepId);
   if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
   const r = await upsertStep(supabase, runId, run.template_key, stepId, {
     status: "complete",
@@ -207,7 +210,7 @@ export async function assignStepMembers(
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("template_key,am_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
-  const loc = locate(run.template_key, stepId);
+  const loc = await locate(run.template_key, stepId);
   if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
 
   const names = members.map((m) => m.name).join(", ");
@@ -395,7 +398,7 @@ export async function saveCallNotes(runId: string, stepId: string, recording: st
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
-  const loc = locate(run.template_key, stepId);
+  const loc = await locate(run.template_key, stepId);
   if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
   const r = await upsertStep(supabase, runId, run.template_key, stepId, {
     status: "complete",
@@ -422,6 +425,99 @@ export async function postMessage(runId: string, body: string, taskRef?: string 
     task_ref: taskRef?.trim() || null,
   });
   if (error) return { error: error.message };
+  return {};
+}
+
+/** Attach a file to a task's chat thread (team side). Saves to the client's Drive
+    (falls back to Storage), then posts a message tagged to the task with the link. */
+export async function attachTaskFile(runId: string, taskRef: string, formData: FormData): Promise<{ error?: string; link?: string }> {
+  const session = await getSession();
+  if (!session) return { error: "Not signed in." };
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "No file selected." };
+  if (file.size > 25 * 1024 * 1024) return { error: "File is larger than 25 MB." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: client } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+  const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const buf = Buffer.from(await file.arrayBuffer());
+
+  let link: string | null = null;
+  if (session.teamMember?.id) {
+    const r = await uploadClientDocToDrive(session.teamMember.id, client?.name ?? "Client", safe, file.type || "application/octet-stream", buf);
+    if (r) link = r.link;
+  }
+  if (!link) {
+    const path = `${run.client_id}/task-${Date.now()}-${safe}`;
+    const { error: upErr } = await supabase.storage.from("client-docs").upload(path, buf, { contentType: file.type || "application/octet-stream", upsert: true });
+    if (upErr) return { error: upErr.message };
+    const { data: pub } = supabase.storage.from("client-docs").getPublicUrl(path);
+    link = pub?.publicUrl ?? path;
+  }
+  await supabase.from("run_messages").insert({
+    run_id: runId,
+    author_id: session.teamMember?.id ?? null,
+    author_name: session.teamMember?.full_name ?? session.email,
+    author_role: session.profile.role,
+    body: `📎 ${file.name} — ${link}`,
+    task_ref: taskRef?.trim() || null,
+  });
+  revalidatePath(`/onboarding/${runId}`);
+  return { link };
+}
+
+/** Upload an engagement-contract file for the run (saved to the client's Drive, falls
+    back to Storage). Returns the link so the Drive step can store it. Does not complete a step. */
+export async function uploadContractFile(runId: string, formData: FormData): Promise<{ error?: string; link?: string; name?: string }> {
+  const session = await getSession();
+  if (!session) return { error: "Not signed in." };
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "No file selected." };
+  if (file.size > 25 * 1024 * 1024) return { error: "File is larger than 25 MB." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: client } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+  const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const buf = Buffer.from(await file.arrayBuffer());
+  let link: string | null = null;
+  if (session.teamMember?.id) {
+    const r = await uploadClientDocToDrive(session.teamMember.id, client?.name ?? "Client", `Contract-${safe}`, file.type || "application/octet-stream", buf);
+    if (r) link = r.link;
+  }
+  if (!link) {
+    const path = `${run.client_id}/contract-${Date.now()}-${safe}`;
+    const { error: upErr } = await supabase.storage.from("client-docs").upload(path, buf, { contentType: file.type || "application/octet-stream", upsert: true });
+    if (upErr) return { error: upErr.message };
+    const { data: pub } = supabase.storage.from("client-docs").getPublicUrl(path);
+    link = pub?.publicUrl ?? path;
+  }
+  return { link, name: file.name };
+}
+
+/** Notify the client that a task needs their input — posts to the run chat (client sees it)
+    and drops an in-app notification. Used by the "Mention client" action on the board. */
+export async function notifyClientOnTask(runId: string, taskRef: string, message?: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("org_id,client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const body = (message?.trim()) || `We need your input on "${taskRef}". Please take a look when you can.`;
+  await supabase.from("run_messages").insert({
+    run_id: runId,
+    author_id: session.teamMember?.id ?? null,
+    author_name: session.teamMember?.full_name ?? session.email,
+    author_role: session.profile.role,
+    body,
+    task_ref: taskRef?.trim() || null,
+  });
+  await supabase.from("notifications").insert({
+    org_id: run.org_id, run_id: runId, kind: "info",
+    title: "Client notified — input needed", body: `[${taskRef}] ${body.slice(0, 120)}`,
+  });
+  revalidatePath(`/onboarding/${runId}`);
   return {};
 }
 
@@ -679,7 +775,7 @@ export async function rollbackToStage(runId: string, stageNo: number) {
   }
   const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
-  const tpl = templateById(run.template_key);
+  const tpl = await getTemplate(run.template_key);
   if (!tpl) return { error: "Template missing." };
 
   const reopenIds = tpl.stages.slice(stageNo - 1).flatMap((s) => s.steps.map((st) => st.id));

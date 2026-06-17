@@ -2,7 +2,14 @@ import Link from "next/link";
 import { Icon } from "./icon";
 import { fmtDate, type RunCardData } from "@/lib/data/runs";
 
-export function RunCard({ run }: { run: RunCardData }) {
+export interface RunCardAction {
+  stepTitle: string;
+  stageName: string;
+  mine: boolean;
+  waitingRole: string | null;
+}
+
+export function RunCard({ run, action }: { run: RunCardData; action?: RunCardAction | null }) {
   return (
     <Link
       href={`/onboarding/${run.id}`}
@@ -21,6 +28,21 @@ export function RunCard({ run }: { run: RunCardData }) {
       <div className="mw-template">
         <Icon name="route" size={12} /> {run.templateName}
       </div>
+
+      {action && (
+        <div style={{
+          marginTop: 10, borderRadius: 9, padding: "9px 11px",
+          background: action.mine ? "var(--orange-soft)" : "var(--bg)",
+          border: "1px solid " + (action.mine ? "var(--orange)" : "var(--border)"),
+        }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: action.mine ? "var(--orange)" : "var(--ink-3)", display: "flex", alignItems: "center", gap: 5 }}>
+            <Icon name={action.mine ? "hand" : "clock"} size={11} />
+            {action.mine ? "Your step now" : `Waiting on ${action.waitingRole ?? "the team"}`}
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-1)", marginTop: 3 }}>{action.stepTitle}</div>
+          <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 1 }}>{action.stageName}</div>
+        </div>
+      )}
 
       <div className="mw-progress">
         <div className="mw-progress-top">

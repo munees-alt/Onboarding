@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { confirmCoa, commentCoa, uploadDocFile, submitIntake, postPortalMessage, signOffOnboarding } from "./actions";
+import { confirmCoa, commentCoa, uploadDocFile, submitIntake, postPortalMessage, signOffOnboarding, attachPortalTaskFile } from "./actions";
 
 export interface PortalData {
   token: string;
@@ -15,7 +15,7 @@ export interface PortalData {
   status: string;
   coa: { accounts: { code: string; account: string; section: string }[]; signedOff: boolean; industry: string | null } | null;
   documents: { id: string; label: string; status: string }[];
-  tasks: { title: string; status: string; type: string; boardColumn?: string | null }[];
+  tasks: { title: string; status: string; type: string; boardColumn?: string | null; due?: string | null; ownerKind?: string }[];
   boardColumns?: string[] | null;
   team: Record<string, string>;
   teamEmail: Record<string, string>;
@@ -27,6 +27,8 @@ export interface PortalData {
   intakeEnabled: boolean;
   contract: { scope?: string; periodStart?: string; periodEnd?: string; inclusions?: string[]; exclusions?: string[]; paymentTerms?: string } | null;
   software: string | null;
+  onboardingPartner: string | null;
+  csm: { name: string; email: string | null } | null;
 }
 export interface IntakePrepView {
   enabled?: boolean;
@@ -79,9 +81,11 @@ export function PortalView({ data }: { data: PortalData }) {
   const run = (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) =>
     start(async () => { const r = await fn(); if (r.error) note(r.error); else { note(ok); router.refresh(); } });
 
+  // The intake screen always exists: with a form when one was configured, or as a
+  // documents-only step when it wasn't. The document checklist must show either way.
   const tabs: [Screen, string][] = [
     ["welcome", "Welcome"],
-    ...(data.intakeEnabled ? ([["intake", "Intake form"]] as [Screen, string][]) : []),
+    ["intake", data.intakeEnabled ? "Intake form" : "Documents"],
     ["tasks", "Task board"],
     ["live", "Live setup"],
   ];
@@ -114,8 +118,8 @@ export function PortalView({ data }: { data: PortalData }) {
         {screen === "welcome" && (
           <Welcome data={data} live={live} first={first} amInitials={amInitials} amName={amName} go={setScreen} />
         )}
-        {screen === "intake" && data.intakeEnabled && (
-          <IntakeForm data={data} busy={busy} run={run} note={note} go={setScreen} />
+        {screen === "intake" && (
+          <IntakeForm data={data} busy={busy} note={note} go={setScreen} />
         )}
         {screen === "tasks" && (
           <Tasks data={data} amInitials={amInitials} amName={amName} amEmail={amEmail} busy={busy} run={run} note={note} go={setScreen} />
@@ -147,8 +151,8 @@ function Welcome({ data, live, first, amInitials, amName, go }: {
           <h1 className="cp-hero-h">Hi {first} — let&apos;s get {data.clientName} set up.</h1>
           <p className="cp-hero-lead">Your onboarding is underway. Here&apos;s everything in one place — what we need from you, where things stand, and who&apos;s looking after your account.</p>
           <div className="cp-hero-actions">
-            <button className="obv3-pbtn primary" onClick={() => go(data.intakeEnabled ? "intake" : "tasks")}>
-              {data.intakeEnabled ? "Review your details" : "See what needs your input"} <Icon name="arrow-right" size={15} />
+            <button className="obv3-pbtn primary" onClick={() => go("intake")}>
+              {data.intakeEnabled ? "Review your details" : "Upload your documents"} <Icon name="arrow-right" size={15} />
             </button>
           </div>
         </div>
@@ -176,13 +180,11 @@ function Welcome({ data, live, first, amInitials, amName, go }: {
       </div>
 
       <div className="cp-next-nav">
-        {data.intakeEnabled && (
-          <button className="cp-nav-card" onClick={() => go("intake")}>
-            <span className="ic"><Icon name="clipboard-list" size={18} /></span>
-            <div><div className="t">Your intake form</div><div className="d">Confirm your business details</div></div>
-            <Icon name="arrow-right" size={16} />
-          </button>
-        )}
+        <button className="cp-nav-card" onClick={() => go("intake")}>
+          <span className="ic"><Icon name={data.intakeEnabled ? "clipboard-list" : "file-text"} size={18} /></span>
+          <div><div className="t">{data.intakeEnabled ? "Your intake form" : "Your documents"}</div><div className="d">{data.intakeEnabled ? "Confirm your business details" : "Upload what we need"}</div></div>
+          <Icon name="arrow-right" size={16} />
+        </button>
         <button className="cp-nav-card" onClick={() => go("tasks")}>
           <span className="ic"><Icon name="kanban-square" size={18} /></span>
           <div><div className="t">Your task board</div><div className="d">What needs your input</div></div>
@@ -283,8 +285,8 @@ function initIntake(data: PortalData): IntakeState {
   };
 }
 
-function IntakeForm({ data, busy, run, note, go }: {
-  data: PortalData; busy: boolean; run: (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) => void; note: (m: string) => void; go: (s: Screen) => void;
+function IntakeForm({ data, busy, note, go }: {
+  data: PortalData; busy: boolean; note: (m: string) => void; go: (s: Screen) => void;
 }) {
   const [f, setF] = useState<IntakeState>(() => initIntake(data));
   const set = <K extends keyof IntakeState>(k: K, v: IntakeState[K]) => setF((s) => ({ ...s, [k]: v }));
@@ -296,6 +298,7 @@ function IntakeForm({ data, busy, run, note, go }: {
 
   return (
     <div className="obv3-fade">
+      {data.intakeEnabled && (
       <div className="obv3-pcard">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div>
@@ -351,15 +354,22 @@ function IntakeForm({ data, busy, run, note, go }: {
           </Field>
         </div>
       </div>
+      )}
 
       <Documents data={data} note={note} />
 
       <div className="obv3-pbtn-row">
         <button className="obv3-pbtn secondary" onClick={() => go("welcome")}><Icon name="arrow-left" size={14} /> Back</button>
         <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
-          <button className="obv3-pbtn primary" disabled={busy} onClick={() => run(() => submitIntake(data.token, f as unknown as Record<string, unknown>), submitted ? "Updated — your team has been notified" : "Saved — your team has been notified")}>
-            Save &amp; continue <Icon name="arrow-right" size={15} />
-          </button>
+          {data.intakeEnabled ? (
+            <button className="obv3-pbtn primary" disabled={busy} onClick={() => { submitIntake(data.token, f as unknown as Record<string, unknown>).then((r) => { if (r.error) note(r.error); else { note(submitted ? "Updated — your team has been notified" : "Saved — your team has been notified"); go("tasks"); } }); }}>
+              Save &amp; continue <Icon name="arrow-right" size={15} />
+            </button>
+          ) : (
+            <button className="obv3-pbtn primary" onClick={() => go("tasks")}>
+              Continue to task board <Icon name="arrow-right" size={15} />
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -371,15 +381,19 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
   const router = useRouter();
   const [uploading, setUploading] = useState<string | null>(null);
   const received = data.documents.filter((d) => d.status === "uploaded").length;
-  const onFile = (docId: string, file: File) => {
+  const onFiles = async (docId: string, files: FileList) => {
     setUploading(docId);
-    const fd = new FormData();
-    fd.append("file", file);
-    uploadDocFile(data.token, docId, fd).then((r) => {
-      setUploading(null);
-      if (r.error) note(r.error);
-      else { note("Document received — your team has been notified"); router.refresh(); }
-    });
+    let ok = 0; let firstErr: string | null = null;
+    for (const file of Array.from(files)) {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await uploadDocFile(data.token, docId, fd);
+      if (r.error) { firstErr = r.error; } else ok++;
+    }
+    setUploading(null);
+    if (ok > 0) note(ok === 1 ? "Document received — your team has been notified" : `${ok} files received — your team has been notified`);
+    else if (firstErr) note(firstErr);
+    router.refresh();
   };
   if (data.documents.length === 0) return null;
   return (
@@ -387,7 +401,7 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div>
           <div className="obv3-pcard-h">Documents to upload</div>
-          <div className="obv3-pcard-sub">Browse and upload. Each file lands in the right folder automatically.</div>
+          <div className="obv3-pcard-sub">Browse and upload — you can attach multiple files per item. Each file lands in the right folder automatically.</div>
         </div>
         <span className="pill amber"><span className="dot" />{received} of {data.documents.length} received</span>
       </div>
@@ -403,7 +417,7 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
             ) : (
               <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
                 <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : "Upload →"}
-                <input type="file" hidden disabled={!!uploading} onChange={(e) => { const file = e.target.files?.[0]; if (file) onFile(d.id, file); e.target.value = ""; }} />
+                <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onFiles(d.id, files); e.target.value = ""; }} />
               </label>
             )}
           </div>
@@ -414,6 +428,20 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
 }
 
 /* ---------- Section 3: Task board + chat ---------- */
+/* Monday.com-style status chips for the client board. */
+const PORTAL_STATUS: Record<string, { label: string; bg: string }> = {
+  complete: { label: "Done", bg: "var(--green)" },
+  done: { label: "Done", bg: "var(--green)" },
+  in_progress: { label: "Working on it", bg: "var(--blue)" },
+  working: { label: "Working on it", bg: "var(--blue)" },
+  review: { label: "In review", bg: "var(--purple)" },
+  needs_input: { label: "Needs your input", bg: "var(--amber)" },
+  blocked: { label: "Stuck", bg: "var(--red)" },
+  not_started: { label: "Not started", bg: "var(--ink-4)" },
+};
+const GROUP_ACCENTS = ["var(--orange)", "var(--blue)", "var(--green)", "var(--purple)", "var(--teal)", "var(--amber)"];
+const MBOARD_COLS = "minmax(0,1fr) 110px 84px 150px 64px";
+
 function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
   data: PortalData; amInitials: string; amName: string; amEmail: string | null;
   busy: boolean; run: (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) => void; note: (m: string) => void; go: (s: Screen) => void;
@@ -423,6 +451,8 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
   const [chatTask, setChatTask] = useState("");
   const [comment, setComment] = useState("");
   const [showComment, setShowComment] = useState(false);
+  const [openTask, setOpenTask] = useState<string | null>(null);
+  const msgCount = (title: string) => data.messages.filter((m) => m.taskRef === title).length;
 
   // If the team set custom board columns, mirror those exactly; otherwise group
   // the client-visible tasks by status into friendly columns.
@@ -430,6 +460,7 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
   const cols = useCustom
     ? data.boardColumns!.map((c) => ({ key: c, label: c }))
     : [
+        { key: "todo", label: "To do" },
         { key: "input", label: "Needs your input" },
         { key: "progress", label: "In progress" },
         { key: "done", label: "Done" },
@@ -440,9 +471,10 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
       return data.tasks.filter((t) => (t.boardColumn && data.boardColumns!.includes(t.boardColumn) ? t.boardColumn : first) === key);
     }
     return data.tasks.filter((t) =>
-      key === "input" ? t.status === "needs_input"
-        : key === "progress" ? (t.status === "in_progress" || t.status === "working")
-          : (t.status === "complete" || t.status === "done"));
+      key === "input" ? (t.status === "needs_input" || t.status === "blocked")
+        : key === "progress" ? (t.status === "in_progress" || t.status === "working" || t.status === "review")
+          : key === "done" ? (t.status === "complete" || t.status === "done")
+            : (t.status === "not_started" || !["needs_input", "blocked", "in_progress", "working", "review", "complete", "done"].includes(t.status)));
   };
 
   const send = () => {
@@ -471,24 +503,45 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
 
       <div className="obv3-pcard">
         <div className="obv3-pcard-h">Your task board — {data.clientName}</div>
-        <div className="obv3-pcard-sub" style={{ marginBottom: 18 }}>Only the items relevant to you are shown. Your team handles the rest behind the scenes.</div>
+        <div className="obv3-pcard-sub" style={{ marginBottom: 18 }}>Only the items relevant to you are shown, grouped exactly as your team tracks them. Open any task to chat or attach documents.</div>
         {data.tasks.length === 0 ? (
           <div className="cp-empty">Nothing needs your input right now — your team is working behind the scenes.</div>
         ) : (
-          <div className="cp-board">
-            {cols.map((col) => {
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            {cols.map((col, ci) => {
               const items = itemsFor(col.key);
+              if (!items.length) return null;
+              const accent = GROUP_ACCENTS[ci % GROUP_ACCENTS.length];
               return (
-                <div key={col.key} className="cp-board-col">
-                  <div className="cp-board-col-h">{col.label}<span className="cp-board-count">{items.length}</span></div>
-                  {items.length === 0 && <div className="cp-empty" style={{ padding: "6px 0" }}>—</div>}
-                  {items.map((t, i) => (
-                    <div key={i} className="cp-board-card">
-                      <span className="cp-board-dot" data-col={col.key} />
-                      <span style={{ flex: 1 }}>{t.title}</span>
-                      {t.type === "milestone" && <span className="pill purple" style={{ fontSize: 10 }}>Milestone</span>}
+                <div key={col.key}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ color: accent, fontWeight: 800, fontSize: 13.5 }}>{col.label}</span>
+                    <span style={{ fontSize: 11, color: "var(--ink-3)", background: "var(--bg-soft)", borderRadius: 999, padding: "1px 8px" }}>{items.length}</span>
+                  </div>
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: MBOARD_COLS, gap: 8, padding: "8px 12px", background: "var(--bg-soft)", borderBottom: "1px solid var(--border)", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)" }}>
+                      <span>Task</span><span>Owner</span><span>Due</span><span>Status</span><span style={{ textAlign: "right" }}>Chat</span>
                     </div>
-                  ))}
+                    {items.map((t, i) => {
+                      const st = PORTAL_STATUS[t.status] ?? { label: t.status.replace(/_/g, " "), bg: "var(--ink-4)" };
+                      return (
+                        <div key={i} style={{ display: "grid", gridTemplateColumns: MBOARD_COLS, gap: 8, padding: "10px 12px", borderTop: i ? "1px solid var(--border)" : "none", borderLeft: `3px solid ${accent}`, alignItems: "center", fontSize: 12.5 }}>
+                          <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
+                            {t.type === "milestone" && <span className="pill purple" style={{ fontSize: 9, flexShrink: 0 }}>Milestone</span>}
+                          </span>
+                          <span style={{ color: "var(--ink-2)" }}>{t.ownerKind === "client" ? "You" : "Finanshels"}</span>
+                          <span style={{ color: "var(--ink-3)" }}>{t.due || "—"}</span>
+                          <span><span style={{ display: "inline-block", background: st.bg, color: "#fff", fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 6, whiteSpace: "nowrap" }}>{st.label}</span></span>
+                          <span style={{ textAlign: "right" }}>
+                            <button type="button" onClick={() => setOpenTask(t.title)} title="Open task chat" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, color: "var(--orange)", background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+                              <Icon name="message-square" size={13} />{msgCount(t.title) ? ` ${msgCount(t.title)}` : ""}
+                            </button>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               );
             })}
@@ -567,8 +620,76 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
       </div>
 
       <div className="obv3-pbtn-row">
-        <button className="obv3-pbtn secondary" onClick={() => go(data.intakeEnabled ? "intake" : "welcome")}><Icon name="arrow-left" size={14} /> Back</button>
+        <button className="obv3-pbtn secondary" onClick={() => go("intake")}><Icon name="arrow-left" size={14} /> Back</button>
         <button className="obv3-pbtn primary" onClick={() => go("live")}>Next — your live setup <Icon name="arrow-right" size={15} /></button>
+      </div>
+
+      {openTask && (
+        <PortalTaskChat token={data.token} task={openTask} amName={amName}
+          messages={data.messages.filter((m) => m.taskRef === openTask)}
+          onClose={() => setOpenTask(null)} note={note} />
+      )}
+    </div>
+  );
+}
+
+/* Per-task chat — same thread the team sees, filtered to one task. Supports file attachments
+   which save to the client's Drive (or storage) and post as a link. */
+function PortalTaskChat({ token, task, amName, messages, onClose, note }: {
+  token: string; task: string; amName: string; messages: PortalData["messages"]; onClose: () => void; note: (m: string) => void;
+}) {
+  const router = useRouter();
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const send = () => {
+    const body = text.trim();
+    if (!body) return;
+    setText("");
+    postPortalMessage(token, body, task).then((r) => { if (r.error) note(r.error); else router.refresh(); });
+  };
+  const attach = async (files: FileList) => {
+    setBusy(true);
+    let ok = 0; let err: string | null = null;
+    for (const file of Array.from(files)) {
+      const fd = new FormData(); fd.append("file", file);
+      const r = await attachPortalTaskFile(token, task, fd);
+      if (r.error) err = r.error; else ok++;
+    }
+    setBusy(false);
+    if (ok) note(ok === 1 ? "File attached" : `${ok} files attached`); else if (err) note(err);
+    router.refresh();
+  };
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 520, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>{task}</h3><div className="sub">Follow up with {amName} on this task. Attach documents if needed.</div></div>
+        <div className="bd" style={{ maxHeight: "56vh" }}>
+          <div className="cp-chat">
+            {messages.length === 0 && <div className="cp-empty">No messages on this task yet — start the thread.</div>}
+            {messages.map((m, i) => {
+              const mine = m.role === "Client"; const system = m.role === "System";
+              return (
+                <div key={i} className={"cp-chat-row" + (mine ? " mine" : "") + (system ? " system" : "")}>
+                  {!mine && !system && <span className="cp-chat-av">{m.author.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}</span>}
+                  <div className="cp-chat-bubble">
+                    {!mine && !system && <div className="cp-chat-who">{m.author}{m.role ? ` · ${m.role}` : ""}</div>}
+                    <div className="cp-chat-text">{m.body}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="ft" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+          <div className="cp-add-row">
+            <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); send(); } }} placeholder={`Message about "${task}"…`} />
+            <button type="button" onClick={send} disabled={!text.trim()}><Icon name="send" size={13} /> Send</button>
+          </div>
+          <label className="obv3-pbtn secondary" style={{ cursor: busy ? "default" : "pointer", justifyContent: "center" }}>
+            <Icon name="paperclip" size={14} /> {busy ? "Attaching…" : "Attach documents"}
+            <input type="file" hidden multiple disabled={busy} onChange={(e) => { const f = e.target.files; if (f && f.length) attach(f); e.target.value = ""; }} />
+          </label>
+        </div>
       </div>
     </div>
   );
@@ -598,6 +719,7 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
           <div className="cp-poc-role">Account Manager — for scope, billing or anything else</div>
           {amEmail && <div className="cp-poc-meta"><Icon name="mail" size={13} /> {amEmail}</div>}
           <div className="cp-poc-meta"><Icon name="message-circle" size={13} /> WhatsApp preferred · mornings</div>
+          {data.onboardingPartner && <div className="cp-poc-meta"><Icon name="user-check" size={13} /> Onboarding Partner · {data.onboardingPartner}</div>}
         </div>
         <div className="obv3-pcard cp-live-book">
           <div className="cp-poc-eyebrow">Accounting book</div>
@@ -635,18 +757,30 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
         </div>
       )}
 
-      <div className="obv3-pcard" style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.9 }}>
-        <div className="obv3-pcard-h" style={{ marginBottom: 8 }}>Escalation path</div>
-        First, your <strong>Team Lead</strong>{teamLead ? ` (${teamLead}${teamLeadEmail ? ` · ${teamLeadEmail}` : ""})` : ""}. If unresolved, your <strong>Customer Relationship Manager</strong> ({amName}{amEmail ? ` · ${amEmail}` : ""}). Email is the default channel for both.
+      <div className="obv3-pcard" style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7 }}>
+        <div className="obv3-pcard-h" style={{ marginBottom: 10 }}>Escalation path</div>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
+          <span style={{ width: 22, height: 22, borderRadius: 999, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 11, flexShrink: 0 }}>1</span>
+          <div><div style={{ fontWeight: 700, color: "var(--ink-1)" }}>{amName}</div><div style={{ color: "var(--ink-3)" }}>Account Manager{amEmail ? ` · ${amEmail}` : ""}</div></div>
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <span style={{ width: 22, height: 22, borderRadius: 999, background: "var(--bg)", color: "var(--ink-3)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 11, flexShrink: 0, border: "1.5px solid var(--border-strong)" }}>2</span>
+          <div><div style={{ fontWeight: 700, color: "var(--ink-1)" }}>{data.csm?.name ?? "Customer Success Manager"}</div><div style={{ color: "var(--ink-3)" }}>Customer Success Manager{data.csm?.email ? ` · ${data.csm.email}` : ""}</div></div>
+        </div>
       </div>
 
       {/* Sign-off */}
       <div className={"cp-signoff-card" + (data.signedOff ? " done" : "")}>
         {data.signedOff ? (
-          <div className="cp-signoff-head">
-            <span className="ic done"><Icon name="check" size={20} strokeWidth={3} /></span>
-            <div><div className="t">You&apos;re all set — onboarding signed off</div><div className="d">Thank you{data.ownerName ? `, ${data.ownerName.split(" ")[0]}` : ""}. Your team has been notified and your recurring service is live.</div></div>
-          </div>
+          <>
+            <div className="cp-signoff-head">
+              <span className="ic done"><Icon name="check" size={20} strokeWidth={3} /></span>
+              <div><div className="t">You&apos;re all set — onboarding signed off</div><div className="d">Thank you{data.ownerName ? `, ${data.ownerName.split(" ")[0]}` : ""}. Your team has been notified and your recurring service is live.</div></div>
+            </div>
+            <a className="cp-signoff-btn" href="https://www.trustpilot.com/review/finanshels.com" target="_blank" rel="noreferrer" style={{ textDecoration: "none", marginTop: 14 }}>
+              <Icon name="star" size={16} /> Loved your onboarding? Leave us a review on Trustpilot
+            </a>
+          </>
         ) : (
           <>
             <div className="cp-signoff-head">

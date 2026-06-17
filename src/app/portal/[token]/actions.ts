@@ -173,6 +173,52 @@ export async function postPortalMessage(token: string, body: string, taskRef?: s
   return { ok: true };
 }
 
+/** Client attaches a file to a task's chat thread. Saves to the client's Drive
+    (falls back to Storage), then posts a message tagged to the task with the link. */
+export async function attachPortalTaskFile(token: string, taskRef: string, formData: FormData): Promise<{ error?: string; ok?: boolean }> {
+  const link = await resolve(token);
+  if (!link?.run_id) return { error: "Link invalid or expired." };
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "No file selected." };
+  if (file.size > 25 * 1024 * 1024) return { error: "File is larger than 25 MB." };
+  const admin = createAdminClient();
+  const { data: client } = await admin.from("clients").select("name").eq("id", link.client_id).maybeSingle();
+  const clientName = client?.name ?? "Client";
+  const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const buf = Buffer.from(await file.arrayBuffer());
+
+  // Prefer the run's connected member's Drive (Cadence/<client>); fall back to Storage.
+  let fileLink: string | null = null;
+  const { data: rt } = await admin.from("run_team").select("team_member_id").eq("run_id", link.run_id);
+  const ids = (rt ?? []).map((r) => r.team_member_id).filter(Boolean);
+  if (ids.length) {
+    const { data: conn } = await admin.from("member_connections")
+      .select("team_member_id").eq("provider", "google").eq("connected", true).in("team_member_id", ids).limit(1);
+    const memberId = (conn ?? [])[0]?.team_member_id as string | undefined;
+    if (memberId) {
+      const r = await uploadClientDocToDrive(memberId, clientName, safe, file.type || "application/octet-stream", buf);
+      if (r) fileLink = r.link;
+    }
+  }
+  if (!fileLink) {
+    const path = `${link.client_id}/task-${Date.now()}-${safe}`;
+    const { error: upErr } = await admin.storage.from("client-docs").upload(path, buf, { contentType: file.type || "application/octet-stream", upsert: true });
+    if (upErr) return { error: upErr.message };
+    const { data: pub } = admin.storage.from("client-docs").getPublicUrl(path);
+    fileLink = pub?.publicUrl ?? path;
+  }
+  await admin.from("run_messages").insert({
+    run_id: link.run_id, author_name: clientName, author_role: "Client",
+    body: `📎 ${file.name} — ${fileLink}`, task_ref: taskRef?.trim() || null,
+  });
+  await admin.from("notifications").insert({
+    org_id: link.org_id, run_id: link.run_id, kind: "info",
+    title: "Client attached a file", body: `[${taskRef}] ${file.name}`,
+  });
+  revalidatePath(`/portal/${token}`);
+  return { ok: true };
+}
+
 /** Client signs off their onboarding — notifies the team in-app and in the run chat. */
 export async function signOffOnboarding(token: string): Promise<{ error?: string; ok?: boolean }> {
   const link = await resolve(token);

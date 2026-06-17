@@ -190,6 +190,31 @@ export async function generateProjects(
   }
 }
 
+/** Parses a plain-language list of recurring tasks into structured rows.
+    e.g. "document request monthly 5th, bills daily, salary monthly 25th, sync meeting Thursday" */
+export async function generateRecurringTasks(
+  runId: string, text: string,
+): Promise<{ error?: string; items?: { task: string; cadence: string; when: string }[] }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  if (!text.trim()) return { error: "Describe the tasks first." };
+  try {
+    const out = await runAi(session.profile.org_id, "handover_summary", {
+      runId,
+      system: "You convert a plain-language list of recurring delivery tasks into structured JSON. Output ONLY a JSON array. Do not invent tasks the user did not mention.",
+      prompt:
+        `Parse this into a JSON array [{"task":"","cadence":"daily|weekly|biweekly|monthly","when":""}]. ` +
+        `Rules: "when" = day-of-month for monthly (e.g. "5th", "25th"), day-of-week for weekly/biweekly (e.g. "Thursday"), empty "" for daily. ` +
+        `If a cadence isn't stated, infer the most sensible one. Keep task names short. ` +
+        `Tasks: ${text.trim()}`,
+    });
+    const arr = parseArray(out) as { task?: string; cadence?: string; when?: string }[];
+    return { items: arr.map((i) => ({ task: String(i.task ?? ""), cadence: String(i.cadence ?? "monthly").toLowerCase(), when: String(i.when ?? "") })).filter((i) => i.task) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "AI failed" };
+  }
+}
+
 export interface ContractAnalysis {
   periodStart?: string; // YYYY-MM
   periodEnd?: string;
@@ -240,6 +265,100 @@ export async function generateBusinessDescription(runId: string): Promise<{ erro
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI failed" };
   }
+}
+
+export interface DeckData {
+  clientName: string;
+  mission: string;
+  agenda: { num: string; label: string; desc: string }[];
+  whatWeUnderstood: { summary: string; tags: string[]; points: { icon: string; title: string; desc: string }[] };
+  compliance: { ct: string; vat: string; wps: string };
+  software: { recommendation: string; existing: string };
+  contract: { scope: string; highlights: string[]; payment: string; duration: string; responsibilities: string };
+  nextSteps: { icon: string; title: string; desc: string }[];
+}
+
+/** Build (or load) the branded onboarding deck for the micro-team flow. Auto-filled
+ *  from client data → intake form → contract; editable after. Persisted in run_items 'deck'. */
+export async function generateDeck(runId: string, force = false): Promise<{ error?: string; deck?: DeckData }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+
+  if (!force) {
+    const { data: existing } = await supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "deck").maybeSingle();
+    if (existing?.data && (existing.data as DeckData).clientName) return { deck: existing.data as DeckData };
+  }
+
+  const { data: client } = await supabase.from("clients").select("*").eq("id", run.client_id).maybeSingle();
+  if (!client) return { error: "Client not found." };
+  const [{ data: intake }, { data: contractRow }] = await Promise.all([
+    supabase.from("intake_forms").select("submitted,prefilled").eq("run_id", runId).maybeSingle(),
+    supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "contract").maybeSingle(),
+  ]);
+  const intakeData = (intake?.submitted ?? intake?.prefilled ?? {}) as Record<string, unknown>;
+  const contract = (contractRow?.data ?? null) as Record<string, unknown> | null;
+  const businessDesc =
+    (intakeData.description as string) ||
+    `${client.name} — ${client.industry ?? "business"} (${client.entity_type ?? "UAE entity"}). Revenue: ${(client.revenue_channels ?? []).join(", ") || "n/a"}.`;
+
+  const system =
+    "You are an onboarding consultant for Finanshels (UAE accounting & tax). Return ONLY valid JSON (no markdown). " +
+    "Use the REAL details provided — never invent client names, figures or placeholder text. If a contract is given, use its real scope/terms; if a field is missing say 'Not specified'.";
+  const prompt =
+    `Client: ${client.name}. Industry: ${client.industry ?? "n/a"}. Entity: ${client.entity_type ?? "n/a"}. ` +
+    `VAT: ${client.vat_registered ?? "?"}, CT: ${client.ct_registered ?? "?"}. Business: ${businessDesc}. ` +
+    (contract ? `Contract details: ${JSON.stringify(contract).slice(0, 2500)}. ` : "No contract provided — base the contract section on the business, mark unknowns 'Not specified'. ") +
+    `Return JSON: {"mission": "1-2 sentence welcome mission for this client", ` +
+    `"agenda":[{"num":"01","label":"","desc":""} ... 6 items], ` +
+    `"whatWeUnderstood":{"summary":"2 specific sentences about THIS business","tags":["3-5 short attributes"],"points":[{"icon":"emoji","title":"","desc":""} x4]}, ` +
+    `"compliance":{"ct":"CT note specific to this client","vat":"VAT note","wps":"WPS note"}, ` +
+    `"software":{"recommendation":"why Zoho Books suits them","existing":"one line on reviewing existing tools"}, ` +
+    `"contract":{"scope":"","highlights":["",""],"payment":"","duration":"","responsibilities":""}, ` +
+    `"nextSteps":[{"icon":"emoji","title":"","desc":""} x3]}`;
+
+  let parsed: Partial<DeckData> & { mission?: string };
+  try {
+    const out = await runAi(session.profile.org_id, "handover_summary", { runId, system, prompt });
+    const s = out.indexOf("{"), e = out.lastIndexOf("}");
+    parsed = JSON.parse(out.slice(s, e + 1));
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "AI failed. Check your AI key in Settings." };
+  }
+
+  const deck: DeckData = {
+    clientName: client.name,
+    mission: parsed.mission || "We're thrilled to have you on board. Our mission is to automate and strengthen your financial operations so you can focus on growth.",
+    agenda: parsed.agenda?.length ? parsed.agenda : [
+      { num: "01", label: "Introductions", desc: "Meet your Finanshels team" },
+      { num: "02", label: "What We Understood", desc: "Our view of your business — confirm with us" },
+      { num: "03", label: "Onboarding Roadmap", desc: "The 5-phase journey" },
+      { num: "04", label: "Compliance Review", desc: "CT, VAT & WPS" },
+      { num: "05", label: "Software Setup", desc: "Accounting platform" },
+      { num: "06", label: "Next Steps", desc: "What happens after this call" },
+    ],
+    whatWeUnderstood: parsed.whatWeUnderstood ?? { summary: businessDesc, tags: [client.industry ?? "SME", "UAE-based"], points: [] },
+    compliance: parsed.compliance ?? { ct: "", vat: "", wps: "" },
+    software: parsed.software ?? { recommendation: "", existing: "" },
+    contract: parsed.contract ?? { scope: "", highlights: [], payment: "", duration: "", responsibilities: "" },
+    nextSteps: parsed.nextSteps?.length ? parsed.nextSteps : [],
+  };
+
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "deck");
+  await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "deck", data: deck, status: "open" });
+  return { deck };
+}
+
+/** Persist edits to the deck. */
+export async function saveDeck(runId: string, deck: DeckData): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "deck");
+  await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "deck", data: deck, status: "open" });
+  return {};
 }
 
 /** Saves AI text into the step payload and completes the step. */

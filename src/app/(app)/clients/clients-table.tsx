@@ -90,7 +90,7 @@ export function ClientsTable({
   const [picking, setPicking] = useState<{ clientId: string; name: string } | null>(null);
   const [signing, setSigning] = useState<{ name: string; step: number } | null>(null);
   const [toast, setToast] = useState<{ msg: string; kind: string } | null>(null);
-  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [menuFor, setMenuFor] = useState<{ id: string; x: number; y: number } | null>(null);
   const [confirmDel, setConfirmDel] = useState<{ kind: "client" | "run"; id: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -282,15 +282,15 @@ export function ClientsTable({
                             <button
                               className="btn-ghost"
                               style={{ padding: "6px 8px" }}
-                              onClick={() => setMenuFor(menuFor === c.id ? null : c.id)}
+                              onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMenuFor(menuFor?.id === c.id ? null : { id: c.id, x: r.right, y: r.bottom }); }}
                               aria-label="More actions"
                             >
                               <Icon name="more-horizontal" size={16} />
                             </button>
-                            {menuFor === c.id && (
+                            {menuFor?.id === c.id && (
                               <>
-                                <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setMenuFor(null)} />
-                                <div className="menu-pop" style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 41, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,.12)", padding: 6, minWidth: 196, textAlign: "left" }}>
+                                <div style={{ position: "fixed", inset: 0, zIndex: 60 }} onClick={() => setMenuFor(null)} />
+                                <div className="menu-pop" style={{ position: "fixed", right: Math.max(8, window.innerWidth - menuFor.x), top: menuFor.y + 4, zIndex: 61, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,.12)", padding: 6, minWidth: 196, textAlign: "left" }}>
                                   {canManageStatus && (
                                     <>
                                       {c.status !== "hold" && (

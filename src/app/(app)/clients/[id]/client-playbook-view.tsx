@@ -34,9 +34,15 @@ export interface PlaybookData {
 }
 
 const TABS = [
-  "Workflows", "Tasks & Projects", "Templates & SOPs", "Compliance Calendar",
-  "Communication", "Client Data", "COA", "Tools & Access", "Escalation History", "Runs",
+  "Client Data", "Runs", "Workflows", "Tasks & Projects", "Templates & SOPs",
+  "Compliance Calendar", "Communication", "COA", "Tools & Access", "Escalation History",
 ] as const;
+const TAB_ICON: Record<string, string> = {
+  "Client Data": "database", "Runs": "activity", "Workflows": "workflow",
+  "Tasks & Projects": "folder-kanban", "Templates & SOPs": "layers",
+  "Compliance Calendar": "calendar", "Communication": "message-circle",
+  "COA": "list-tree", "Tools & Access": "wrench", "Escalation History": "alert-triangle",
+};
 
 export function ClientPlaybook({ data }: { data: PlaybookData }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Client Data");
@@ -56,9 +62,11 @@ export function ClientPlaybook({ data }: { data: PlaybookData }) {
         </div>
 
         {/* Tabs */}
-        <div className="tabs-row" style={{ marginTop: 16, overflowX: "auto", flexWrap: "nowrap" }}>
+        <div className="cpb-tabs" style={{ marginTop: 16 }}>
           {TABS.map((t) => (
-            <button key={t} className={"tab-btn" + (tab === t ? " active" : "")} onClick={() => setTab(t)} style={{ whiteSpace: "nowrap" }}>{t}</button>
+            <button key={t} className={"cpb-tab" + (tab === t ? " active" : "")} onClick={() => setTab(t)}>
+              <Icon name={TAB_ICON[t] ?? "circle"} size={12} /> {t}
+            </button>
           ))}
         </div>
 
@@ -78,7 +86,7 @@ export function ClientPlaybook({ data }: { data: PlaybookData }) {
           </div>
         )}
 
-        <div style={{ marginTop: 14 }}>
+        <div className="cpb-content" style={{ marginTop: 14 }}>
           {tab === "Client Data" && <ClientData data={data} />}
           {tab === "COA" && <Coa data={data} />}
           {tab === "Tasks & Projects" && <TasksProjects data={data} />}
@@ -97,15 +105,15 @@ export function ClientPlaybook({ data }: { data: PlaybookData }) {
 
 function Panel({ title, children, empty }: { title: string; children?: React.ReactNode; empty?: string }) {
   return (
-    <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: 18, marginBottom: 14 }}>
-      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{title}</div>
-      {children ?? <div style={{ fontSize: 13, color: "var(--ink-3)" }}>{empty ?? "Nothing here yet."}</div>}
+    <div className="cpb-card" style={{ marginBottom: 14 }}>
+      <div className="cpb-card-head">{title}</div>
+      {children ?? <div className="cpb-empty">{empty ?? "Nothing here yet."}</div>}
     </div>
   );
 }
 function Row({ k, v }: { k: string; v: unknown }) {
   const val = Array.isArray(v) ? v.join(", ") : v == null || v === "" ? "—" : String(v);
-  return <div style={{ display: "flex", gap: 12, padding: "6px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}><span style={{ width: 200, color: "var(--ink-3)" }}>{k}</span><span style={{ flex: 1, color: "var(--ink-1)" }}>{val}</span></div>;
+  return <div className="cpb-detail-row"><span className="cpb-detail-label">{k}</span><span style={{ color: "var(--ink-1)", textAlign: "right" }}>{val}</span></div>;
 }
 
 function ClientData({ data }: { data: PlaybookData }) {
@@ -191,9 +199,9 @@ function downloadCsv(filename: string, rows: string[][]) {
 
 function TasksProjects({ data }: { data: PlaybookData }) {
   const exportProjects = () => {
-    const rows: string[][] = [["Project", "Month", "Tasks", "Owner"]];
-    data.projects.forEach((p) => rows.push([String(p.name ?? ""), String(p.month ?? ""), String(p.tasks ?? ""), String(p.owner ?? "")]));
-    downloadCsv(`${data.name.replace(/[^a-z0-9]+/gi, "-")}-internal-projects.csv`, rows);
+    const rows: string[][] = [["Task", "Cadence", "When"]];
+    data.projects.forEach((p) => rows.push([String(p.task ?? p.name ?? ""), String(p.cadence ?? ""), String(p.when ?? p.month ?? "")]));
+    downloadCsv(`${data.name.replace(/[^a-z0-9]+/gi, "-")}-internal-tasks.csv`, rows);
   };
   return (
     <>
@@ -213,10 +221,10 @@ function TasksProjects({ data }: { data: PlaybookData }) {
           {data.projects.length > 0 && <button className="btn-ghost" onClick={exportProjects}><Icon name="download" size={13} /> Download CSV</button>}
         </div>
         {data.projects.length ? (
-          <table className="runs-table"><thead><tr><th>Project</th><th>Month</th><th>Tasks</th></tr></thead>
-            <tbody>{data.projects.map((p, i) => (<tr key={i}><td style={{ fontWeight: 600 }}>{String(p.name ?? "—")}</td><td>{String(p.month ?? "—")}</td><td>{String(p.tasks ?? "—")}</td></tr>))}</tbody>
+          <table className="runs-table"><thead><tr><th>Task</th><th>Cadence</th><th>When</th></tr></thead>
+            <tbody>{data.projects.map((p, i) => (<tr key={i}><td style={{ fontWeight: 600 }}>{String(p.task ?? p.name ?? "—")}</td><td style={{ textTransform: "capitalize" }}>{String(p.cadence ?? "—")}</td><td>{String(p.when ?? p.month ?? "—")}</td></tr>))}</tbody>
           </table>
-        ) : <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No internal projects created yet.</div>}
+        ) : <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No internal tasks created yet.</div>}
       </div>
 
       {/* Catch-up — separate board */}

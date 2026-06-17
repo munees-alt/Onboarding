@@ -59,6 +59,23 @@ export async function createRunFromTemplate(
     );
   }
 
+  // The Onboarding Partner is Munees by default for every client. Seed it so the
+  // portal/playbook can show it alongside the (client-selected) Account Manager.
+  const { data: partner } = await supabase
+    .from("team_members")
+    .select("id")
+    .eq("org_id", opts.orgId)
+    .ilike("full_name", "munees%")
+    .eq("active", true)
+    .limit(1)
+    .maybeSingle();
+  if (partner?.id && partner.id !== opts.amId) {
+    await supabase.from("run_team").upsert(
+      { run_id: runId, team_member_id: partner.id, role_in_run: "onboarding_partner" },
+      { onConflict: "run_id,team_member_id" },
+    );
+  }
+
   const stages = tpl.stages.map((s, i) => ({
     run_id: runId,
     stage_no: i + 1,

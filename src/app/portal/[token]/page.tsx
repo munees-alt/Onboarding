@@ -37,11 +37,11 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
   }
 
   const [{ data: client }, { data: run }, { data: coa }, { data: docs }, { data: tasks }, { data: team }, { data: intake }, { data: messages }] = await Promise.all([
-    admin.from("clients").select("name,owner_name,accounting_software,vat_trn").eq("id", link.client_id).maybeSingle(),
+    admin.from("clients").select("name,owner_name,accounting_software,vat_trn,am_id,org_id").eq("id", link.client_id).maybeSingle(),
     link.run_id ? admin.from("onboarding_runs").select("progress,current_stage,status,template_key").eq("id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
     link.run_id ? admin.from("coa_instances").select("accounts,client_signed_off,status,base_industry").eq("run_id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
     admin.from("documents").select("id,label,status").eq("client_id", link.client_id).order("created_at"),
-    link.run_id ? admin.from("tasks").select("title,status,type,service,board_column").eq("run_id", link.run_id).eq("client_visible", true).order("sort") : Promise.resolve({ data: [] }),
+    link.run_id ? admin.from("tasks").select("title,status,type,service,board_column,owner_kind").eq("run_id", link.run_id).eq("client_visible", true).order("sort") : Promise.resolve({ data: [] }),
     link.run_id ? admin.from("run_team").select("role_in_run,team_members(full_name,email)").eq("run_id", link.run_id) : Promise.resolve({ data: [] }),
     link.run_id ? admin.from("intake_forms").select("submitted,status,prefilled").eq("run_id", link.run_id).maybeSingle() : Promise.resolve({ data: null }),
     link.run_id ? admin.from("run_messages").select("author_name,author_role,body,created_at,task_ref").eq("run_id", link.run_id).order("created_at") : Promise.resolve({ data: [] }),
@@ -71,6 +71,25 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     if (tm) { teamMap[t.role_in_run] = tm.full_name; if (tm.email) emailMap[t.role_in_run] = tm.email; }
   });
 
+  // Account Manager is authoritatively the AM chosen when the client was created
+  // (clients.am_id) — not whoever triggered the run.
+  if (client?.am_id) {
+    const { data: am } = await admin.from("team_members").select("full_name,email").eq("id", client.am_id).maybeSingle();
+    if (am) { teamMap.am = am.full_name; if (am.email) emailMap.am = am.email; }
+  }
+  // Onboarding Partner = Munees, default for all clients.
+  let onboardingPartner = teamMap.onboarding_partner ?? null;
+  if (!onboardingPartner && client?.org_id) {
+    const { data: p } = await admin.from("team_members").select("full_name").eq("org_id", client.org_id).ilike("full_name", "munees%").eq("active", true).limit(1).maybeSingle();
+    onboardingPartner = p?.full_name ?? "Munees KV";
+  }
+  // Customer Success Manager (escalation second line) — resolved from the org chart.
+  let csm: { name: string; email: string | null } | null = null;
+  if (client?.org_id) {
+    const { data: c } = await admin.from("team_members").select("full_name,email").eq("org_id", client.org_id).ilike("title", "%customer success%").eq("active", true).limit(1).maybeSingle();
+    if (c) csm = { name: c.full_name, email: c.email ?? null };
+  }
+
   const data: PortalData = {
     token,
     clientName: client?.name ?? "Your company",
@@ -81,7 +100,7 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     status: run?.status ?? "active",
     coa: coa ? { accounts: (coa.accounts ?? []) as NonNullable<PortalData["coa"]>["accounts"], signedOff: coa.client_signed_off, industry: coa.base_industry } : null,
     documents: (docs ?? []).map((d) => ({ id: d.id, label: d.label, status: d.status })),
-    tasks: (tasks ?? []).map((t) => ({ title: t.title, status: t.status, type: t.type, boardColumn: t.board_column ?? null })),
+    tasks: (tasks ?? []).map((t) => ({ title: t.title, status: t.status, type: t.type, boardColumn: t.board_column ?? null, due: (t as { service?: string | null }).service ?? null, ownerKind: (t as { owner_kind?: string }).owner_kind ?? "team" })),
     boardColumns: boardCols,
     team: teamMap,
     teamEmail: emailMap,
@@ -93,6 +112,8 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     intakeEnabled: prep ? prep.enabled !== false : intakeFields.length > 0,
     contract,
     software: client?.accounting_software ?? null,
+    onboardingPartner,
+    csm,
   };
 
   return <PortalView data={data} />;

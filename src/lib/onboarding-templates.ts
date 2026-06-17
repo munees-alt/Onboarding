@@ -161,8 +161,9 @@ const MEDIUM_TEAM: OnbTemplate = {
   desc: "Streamlined onboarding for smaller teams — role assignment, magic-link intake, senior-led COA prep with AM sign-off, kickoff call with AI minutes, catch-up and handover.",
   color: "blue", live: true, usedBy: 0,
   stages: [
-    { id: "t1", name: "Assign Roles", desc: "AM assigns the Senior and Junior who will run this onboarding. Defaults pre-selected from the team roster.", steps: [
+    { id: "t1", name: "Assign Roles", desc: "AM assigns the Team Lead, Senior and Junior who will run this onboarding. Defaults pre-selected from the team roster.", steps: [
       { id: "t1.1", title: "Run auto-created from template", kind: "ai", who: ["System"], pre: true, note: "Created the moment the client was marked signed." },
+      { id: "t1.1b", title: "Assign Team Lead", kind: "person", who: ["AM"], note: "Owns delivery quality for this client. AM can override the default.", act: { type: "assign", role: "Team Lead" } },
       { id: "t1.2", title: "Assign Senior Accountant", kind: "person", who: ["AM"], note: "Default: most-available senior. AM can override.", act: { type: "assign", role: "Senior" } },
       { id: "t1.3", title: "Assign Junior Accountant", kind: "person", who: ["AM"], note: "Default: most-available junior. AM can override.", act: { type: "assign", role: "Junior" } },
     ] },
@@ -243,8 +244,9 @@ const MICRO_TEAM: OnbTemplate = {
   desc: "Fast onboarding for smaller clients — same disciplined flow as Medium Team PLUS a branded, contract-scoped onboarding deck for the call and urgent-compliance routing.",
   color: "orange", live: true, usedBy: 0,
   stages: [
-    { id: "m1", name: "Assign Roles", desc: "AM assigns the Senior and Junior who will run this onboarding.", steps: [
+    { id: "m1", name: "Assign Roles", desc: "AM assigns the Team Lead, Senior and Junior who will run this onboarding.", steps: [
       { id: "m1.1", title: "Run auto-created from template", kind: "ai", who: ["System"], pre: true, note: "Created the moment the client was marked signed — the Drive folder is auto-provisioned at the same time." },
+      { id: "m1.1b", title: "Assign Team Lead", kind: "person", who: ["AM"], note: "Owns delivery quality for this client. AM can override the default.", act: { type: "assign", role: "Team Lead" } },
       { id: "m1.2", title: "Assign Senior Accountant", kind: "person", who: ["AM"], note: "Default: most-available senior. AM can override.", act: { type: "assign", role: "Senior" } },
       { id: "m1.3", title: "Assign Junior Accountant", kind: "person", who: ["AM"], note: "Default: most-available junior. AM can override.", act: { type: "assign", role: "Junior" } },
     ] },
