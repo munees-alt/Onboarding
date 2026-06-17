@@ -30,6 +30,7 @@ export interface PlaybookData {
   documents: { label: string; status: string }[];
   messages: { author_name: string; author_role: string; body: string; created_at: string }[];
   escalations: { title: string; body: string | null; kind: string; created_at: string }[];
+  zohoConnected: boolean;
 }
 
 const TABS = [
@@ -111,6 +112,35 @@ function ClientData({ data }: { data: PlaybookData }) {
   const p = data.profile;
   return (
     <>
+      {/* Live figures come from Zoho Books once connected. */}
+      <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ width: 30, height: 30, borderRadius: 8, background: data.zohoConnected ? "var(--green-soft)" : "var(--bg)", color: data.zohoConnected ? "var(--green)" : "var(--ink-3)", display: "grid", placeItems: "center" }}><Icon name="book-open" size={16} /></span>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>Live accounting data (Zoho Books)</div>
+              <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
+                {data.zohoConnected
+                  ? "Connected — transactions, invoices and balances sync from Zoho Books."
+                  : "Not connected. Connect Zoho Books in Settings to pull live transactions, invoices and balances here."}
+              </div>
+            </div>
+          </div>
+          <span className={"pill " + (data.zohoConnected ? "green" : "gray")} style={{ fontSize: 11 }}>
+            <span className="dot" /> {data.zohoConnected ? "Connected" : "Not connected"}
+          </span>
+        </div>
+        {data.zohoConnected && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginTop: 14 }}>
+            {["Transactions this month", "Invoices issued", "Bank accounts"].map((l) => (
+              <div key={l} style={{ background: "var(--bg-soft)", borderRadius: 10, padding: 12 }}>
+                <div style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>{l}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4, color: "var(--ink-2)" }}>—<span style={{ fontSize: 11, fontWeight: 500, color: "var(--ink-4)" }}> syncing</span></div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       <Panel title="Company">
         <Row k="Company" v={data.name} />
         <Row k="Owner" v={p.owner_name} />
@@ -150,21 +180,52 @@ function Coa({ data }: { data: PlaybookData }) {
   );
 }
 
+function downloadCsv(filename: string, rows: string[][]) {
+  const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function TasksProjects({ data }: { data: PlaybookData }) {
+  const exportProjects = () => {
+    const rows: string[][] = [["Project", "Month", "Tasks", "Owner"]];
+    data.projects.forEach((p) => rows.push([String(p.name ?? ""), String(p.month ?? ""), String(p.tasks ?? ""), String(p.owner ?? "")]));
+    downloadCsv(`${data.name.replace(/[^a-z0-9]+/gi, "-")}-internal-projects.csv`, rows);
+  };
   return (
     <>
-      <Panel title="Task board">
+      {/* Client task board — kept separate from internal work */}
+      <Panel title="Client task board">
         {data.tasks.length ? (
           <table className="runs-table"><thead><tr><th>Task</th><th>Type</th><th>Client sees</th><th>Status</th></tr></thead>
             <tbody>{data.tasks.map((t, i) => (<tr key={i}><td>{t.title}</td><td>{t.type.replace("_", " ")}</td><td>{t.client_visible ? "Yes" : "No"}</td><td>{t.status.replace("_", " ")}</td></tr>))}</tbody>
           </table>
         ) : <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No tasks yet.</div>}
       </Panel>
-      <Panel title="Internal projects" empty={data.projects.length ? undefined : "No internal projects created yet."}>
-        {data.projects.length ? data.projects.map((p, i) => <Row key={i} k={String(p.name ?? p.month ?? "Project")} v={p.month ?? p.owner ?? ""} />) : undefined}
-      </Panel>
+
+      {/* Internal projects — separate + downloadable */}
+      <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>Internal projects &amp; tasks</div>
+          {data.projects.length > 0 && <button className="btn-ghost" onClick={exportProjects}><Icon name="download" size={13} /> Download CSV</button>}
+        </div>
+        {data.projects.length ? (
+          <table className="runs-table"><thead><tr><th>Project</th><th>Month</th><th>Tasks</th></tr></thead>
+            <tbody>{data.projects.map((p, i) => (<tr key={i}><td style={{ fontWeight: 600 }}>{String(p.name ?? "—")}</td><td>{String(p.month ?? "—")}</td><td>{String(p.tasks ?? "—")}</td></tr>))}</tbody>
+          </table>
+        ) : <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No internal projects created yet.</div>}
+      </div>
+
+      {/* Catch-up — separate board */}
       <Panel title="Catch-up board" empty={data.catchup.length ? undefined : "No catch-up backlog."}>
-        {data.catchup.length ? data.catchup.map((c, i) => <Row key={i} k={String(c.title ?? "Task")} v={`${c.owner ?? ""} · ${c.due ?? ""} · ${c._status ?? ""}`} />) : undefined}
+        {data.catchup.length ? (
+          <table className="runs-table"><thead><tr><th>Task</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead>
+            <tbody>{data.catchup.map((c, i) => (<tr key={i}><td>{String(c.title ?? "Task")}</td><td>{String(c.owner ?? "—")}</td><td>{String(c.due ?? "—")}</td><td>{String(c._status ?? c.status ?? "—")}</td></tr>))}</tbody>
+          </table>
+        ) : undefined}
       </Panel>
     </>
   );
@@ -179,15 +240,29 @@ function Compliance({ data }: { data: PlaybookData }) {
   </Panel>;
 }
 
+const DIAGRAM_NODE: Record<string, { bg: string; label: string }> = {
+  start: { bg: "var(--green)", label: "Start" },
+  step: { bg: "var(--blue)", label: "Step" },
+  decision: { bg: "var(--amber)", label: "Decision" },
+  end: { bg: "var(--red)", label: "End" },
+};
+
 function Workflows({ data }: { data: PlaybookData }) {
   if (!data.diagrams.length) return <Panel title="Workflows" empty="No workflow diagrams drawn yet." />;
   return <>{data.diagrams.map((d, i) => (
     <Panel key={i} title={d.name}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-        {d.nodes.map((n, j) => (<span key={n.id} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-          <span className="pill" style={{ background: "var(--bg)", color: "var(--ink-2)", fontSize: 11 }}>{n.label}</span>
-          {j < d.nodes.length - 1 && <Icon name="arrow-right" size={12} style={{ color: "var(--ink-4)" }} />}
-        </span>))}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 0, padding: "8px 0" }}>
+        {d.nodes.map((n, j) => {
+          const s = DIAGRAM_NODE[n.type] ?? DIAGRAM_NODE.step;
+          return (
+            <div key={n.id} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+              <div style={{ background: s.bg, color: "#fff", fontSize: 12.5, fontWeight: 600, padding: "9px 16px", borderRadius: n.type === "decision" ? 4 : 9, transform: n.type === "decision" ? "rotate(0deg)" : "none", maxWidth: 280, textAlign: "center", boxShadow: "0 1px 3px rgba(0,0,0,.08)" }}>
+                {n.label}
+              </div>
+              {j < d.nodes.length - 1 && <span style={{ color: "var(--ink-4)", margin: "2px 0" }}><Icon name="arrow-down" size={16} /></span>}
+            </div>
+          );
+        })}
       </div>
     </Panel>
   ))}</>;

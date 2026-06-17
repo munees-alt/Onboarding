@@ -10,6 +10,14 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
   const { data: client } = await supabase.from("clients").select("*").eq("id", id).maybeSingle();
   if (!client) notFound();
 
+  // Is Zoho Books connected anywhere in the org? (live client figures come from there)
+  const { count: zohoCount } = await supabase
+    .from("member_connections")
+    .select("id", { count: "exact", head: true })
+    .eq("provider", "zoho")
+    .eq("connected", true);
+  const zohoConnected = (zohoCount ?? 0) > 0;
+
   const { data: runs } = await supabase
     .from("onboarding_runs")
     .select("id,status,progress,current_stage,template_key,started_at,target_completion,created_at")
@@ -67,6 +75,7 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
     documents: (((docs as { data: unknown }).data ?? []) as { label: string; status: string }[]),
     messages: (((messages as { data: unknown }).data ?? []) as PlaybookData["messages"]),
     escalations: (((escalations as { data: unknown }).data ?? []) as PlaybookData["escalations"]),
+    zohoConnected,
   };
 
   return <ClientPlaybook data={data} />;
