@@ -1940,6 +1940,124 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
 
 const DECK_TITLES = ["Welcome", "Agenda", "Roadmap", "What We Understood", "Compliance", "Software", "Data", "Communication", "Contract", "Next Steps", "Thank You"];
 
+// Load pptxgenjs from CDN (no npm dep) to export the deck as a real .pptx.
+let pptxPromise: Promise<unknown> | null = null;
+function loadPptxgen(): Promise<unknown> {
+  const w = window as unknown as { PptxGenJS?: unknown };
+  if (w.PptxGenJS) return Promise.resolve(w.PptxGenJS);
+  if (!pptxPromise) {
+    pptxPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js";
+      s.onload = () => resolve((window as unknown as { PptxGenJS: unknown }).PptxGenJS);
+      s.onerror = () => reject(new Error("Could not load the PowerPoint exporter."));
+      document.head.appendChild(s);
+    });
+  }
+  return pptxPromise;
+}
+
+const PPTX = { navy: "082032", orange: "F97316", cream: "FFF7E9", white: "FFFFFF", ink: "1B2733", ink2: "51606E", line: "ECE3D2" };
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+async function downloadDeckPptx(deck: DeckData) {
+  const Pptx = (await loadPptxgen()) as any;
+  const p = new Pptx();
+  p.defineLayout({ name: "FS", width: 13.333, height: 7.5 });
+  p.layout = "FS";
+  const brand = (s: any, dark = false) => s.addText("FINANSHELS", { x: 10.7, y: 7.0, w: 2.3, fontSize: 9, color: dark ? "FFFFFF" : PPTX.ink2, align: "right", bold: true, charSpacing: 2 });
+  const head = (s: any, phase: string, title: string) => {
+    s.addText(phase.toUpperCase(), { x: 0.7, y: 0.55, fontSize: 12, color: PPTX.orange, bold: true, charSpacing: 2 });
+    s.addText(title, { x: 0.7, y: 0.95, w: 12, fontSize: 30, bold: true, color: PPTX.navy });
+    s.addShape("rect", { x: 0.7, y: 1.65, w: 0.7, h: 0.06, fill: { color: PPTX.orange } });
+  };
+
+  // 1. Cover
+  let s = p.addSlide(); s.background = { color: PPTX.navy };
+  s.addText("WELCOME TO FINANSHELS", { x: 0.7, y: 1.4, fontSize: 14, color: PPTX.orange, bold: true, charSpacing: 3 });
+  s.addText([{ text: "Welcome, ", options: { color: PPTX.white } }, { text: deck.clientName, options: { color: PPTX.orange } }], { x: 0.7, y: 2.0, w: 12, fontSize: 44, bold: true });
+  s.addText(deck.mission || "", { x: 0.7, y: 3.9, w: 11.5, fontSize: 18, color: "D6DEE6" });
+  brand(s, true);
+
+  // 2. Agenda
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Agenda", "Today's Agenda");
+  s.addText((deck.agenda || []).map((a) => ({ text: `${a.num}  ${a.label}`, options: { bold: true, color: PPTX.navy, fontSize: 15, bullet: false, breakLine: true } })).flatMap((t, i) => [t, { text: deck.agenda[i].desc, options: { color: PPTX.ink2, fontSize: 12, breakLine: true, paraSpaceAfter: 8 } }]), { x: 0.7, y: 2.0, w: 12, fontSize: 14 });
+
+  // 3. Roadmap
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Roadmap", "Your Onboarding Roadmap");
+  DECK_PHASES.forEach((ph, i) => {
+    const x = 0.7 + i * 2.45;
+    s.addShape("roundRect", { x, y: 2.2, w: 2.25, h: 3.2, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+    s.addText(ph.n, { x, y: 2.4, w: 2.25, align: "center", fontSize: 26, bold: true, color: PPTX.orange });
+    s.addText(ph.t, { x: x + 0.15, y: 3.1, w: 1.95, align: "center", fontSize: 13, bold: true, color: PPTX.navy });
+    s.addText(ph.d, { x: x + 0.15, y: 3.9, w: 1.95, align: "center", fontSize: 10, color: PPTX.ink2 });
+  });
+
+  // 4. What We Understood
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 1 · Discovery", "What We Understood");
+  s.addText((deck.whatWeUnderstood?.points || []).map((pt) => ({ text: `${pt.title}: ${pt.desc}`, options: { bullet: { code: "2022" }, color: PPTX.ink, fontSize: 13, breakLine: true, paraSpaceAfter: 6 } })), { x: 0.7, y: 2.0, w: 12 });
+  s.addShape("roundRect", { x: 0.7, y: 5.1, w: 12, h: 1.6, fill: { color: PPTX.navy }, rectRadius: 0.1 });
+  s.addText("WHAT WE UNDERSTOOD — PLEASE CONFIRM", { x: 0.9, y: 5.25, fontSize: 10, color: PPTX.orange, bold: true });
+  s.addText(deck.whatWeUnderstood?.summary || "", { x: 0.9, y: 5.6, w: 11.6, fontSize: 13, color: PPTX.white });
+
+  // 5. Compliance
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 2", "Ensuring Compliance");
+  [["Corporate Tax", deck.compliance?.ct], ["VAT", deck.compliance?.vat], ["WPS / Payroll", deck.compliance?.wps]].forEach(([t, v], i) => {
+    const x = 0.7 + i * 4.1;
+    s.addShape("roundRect", { x, y: 2.2, w: 3.85, h: 3.6, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+    s.addText(String(t), { x: x + 0.25, y: 2.45, w: 3.4, fontSize: 16, bold: true, color: PPTX.navy });
+    s.addText(String(v || "Not specified"), { x: x + 0.25, y: 3.1, w: 3.4, fontSize: 12, color: PPTX.ink2 });
+  });
+
+  // 6. Software
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 3", "Accounting Software");
+  s.addShape("roundRect", { x: 0.7, y: 2.2, w: 5.9, h: 3.6, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+  s.addText("If you have existing software", { x: 0.95, y: 2.45, fontSize: 13, bold: true, color: PPTX.orange });
+  s.addText(deck.software?.existing || "", { x: 0.95, y: 3.0, w: 5.4, fontSize: 12, color: PPTX.ink });
+  s.addShape("roundRect", { x: 6.85, y: 2.2, w: 5.85, h: 3.6, fill: { color: PPTX.navy }, rectRadius: 0.1 });
+  s.addText("Our recommendation · Zoho Books", { x: 7.1, y: 2.45, fontSize: 13, bold: true, color: PPTX.orange });
+  s.addText(deck.software?.recommendation || "", { x: 7.1, y: 3.0, w: 5.35, fontSize: 12, color: PPTX.white });
+
+  // 7. Data
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 4", "Secure Data Management");
+  s.addText(DECK_DOCS.map((d) => ({ text: d, options: { bullet: { code: "2713" }, color: PPTX.ink, fontSize: 13, breakLine: true, paraSpaceAfter: 5 } })), { x: 0.7, y: 2.1, w: 12 });
+
+  // 8. Communication
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 5", "How We Stay Connected");
+  [["Email", "Formal documentation, reports and major updates."], ["WhatsApp", "Daily operational queries and quick support."], ["Slack", "Optional real-time collaboration if you prefer."]].forEach(([t, d], i) => {
+    const x = 0.7 + i * 4.1;
+    s.addShape("roundRect", { x, y: 2.4, w: 3.85, h: 3.0, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+    s.addText(String(t), { x: x + 0.25, y: 2.7, fontSize: 16, bold: true, color: PPTX.navy });
+    s.addText(String(d), { x: x + 0.25, y: 3.3, w: 3.4, fontSize: 12, color: PPTX.ink2 });
+  });
+
+  // 9. Contract
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Engagement", "Contract Summary");
+  s.addText("Scope", { x: 0.7, y: 2.0, fontSize: 13, bold: true, color: PPTX.orange });
+  s.addText(deck.contract?.scope || "Not specified", { x: 0.7, y: 2.4, w: 7.6, fontSize: 12, color: PPTX.ink });
+  s.addText((deck.contract?.highlights || []).map((h) => ({ text: h, options: { bullet: { code: "2022" }, fontSize: 12, color: PPTX.ink, breakLine: true } })), { x: 0.7, y: 3.6, w: 7.6 });
+  s.addShape("roundRect", { x: 8.5, y: 2.0, w: 4.2, h: 4.4, fill: { color: PPTX.navy }, rectRadius: 0.1 });
+  s.addText("PAYMENT", { x: 8.75, y: 2.3, fontSize: 10, bold: true, color: PPTX.orange });
+  s.addText(deck.contract?.payment || "Not specified", { x: 8.75, y: 2.6, w: 3.7, fontSize: 12, color: PPTX.white });
+  s.addText("DURATION", { x: 8.75, y: 3.55, fontSize: 10, bold: true, color: PPTX.orange });
+  s.addText(deck.contract?.duration || "Not specified", { x: 8.75, y: 3.85, w: 3.7, fontSize: 12, color: PPTX.white });
+  s.addText("YOUR RESPONSIBILITIES", { x: 8.75, y: 4.8, fontSize: 10, bold: true, color: PPTX.orange });
+  s.addText(deck.contract?.responsibilities || "Not specified", { x: 8.75, y: 5.1, w: 3.7, fontSize: 12, color: PPTX.white });
+
+  // 10. Next steps
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Next", "Immediate Next Steps");
+  s.addText((deck.nextSteps || []).flatMap((n) => ([{ text: n.title, options: { bold: true, color: PPTX.navy, fontSize: 15, breakLine: true } }, { text: n.desc, options: { color: PPTX.ink2, fontSize: 12, breakLine: true, paraSpaceAfter: 10 } }])), { x: 0.7, y: 2.0, w: 12 });
+
+  // 11. Thank you
+  s = p.addSlide(); s.background = { color: PPTX.navy };
+  s.addText("Thank you!", { x: 0.7, y: 2.6, fontSize: 48, bold: true, color: PPTX.orange });
+  s.addText("Ready to grow together. Let's begin your journey with Finanshels.", { x: 0.7, y: 4.0, w: 11, fontSize: 18, color: "D6DEE6" });
+  brand(s, true);
+
+  await p.writeFile({ fileName: `${(deck.clientName || "client").replace(/[^a-z0-9]+/gi, "-")}-onboarding-deck.pptx` });
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => void; onDone: () => void }) {
   const [deck, setDeck] = useState<DeckData | null>(null);
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
@@ -1964,9 +2082,11 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
     return () => window.removeEventListener("resize", fit);
   }, [mode, phase]);
 
+  const [exporting, setExporting] = useState(false);
   const set = (fn: (d: DeckData) => DeckData) => setDeck((d) => (d ? fn(d) : d));
   const regen = () => { setPhase("loading"); generateDeck(runId, true).then((r) => { if (r.deck) { setDeck(r.deck); setPhase("ready"); } else { setError(r.error ?? "Failed"); setPhase("error"); } }); };
   const saveAndConfirm = () => { if (!deck) return; start(async () => { await saveDeck(runId, deck); onDone(); }); };
+  const exportPptx = async () => { if (!deck) return; setExporting(true); try { await downloadDeckPptx(deck); } catch (e) { setError(e instanceof Error ? e.message : "Export failed"); } finally { setExporting(false); } };
 
   return (
     <div className="fsdeck-overlay">
@@ -1981,7 +2101,7 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
             <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}><Icon name="pencil" size={12} /> Edit</button>
           </div>
           <button className="fsdeck-btn ghost" onClick={regen} disabled={phase === "loading"}><Icon name="refresh-cw" size={12} /> Regenerate</button>
-          <button className="fsdeck-btn ghost" onClick={() => window.print()} disabled={!deck}><Icon name="download" size={12} /> Download</button>
+          <button className="fsdeck-btn ghost" onClick={exportPptx} disabled={!deck || exporting}><Icon name="download" size={12} /> {exporting ? "Exporting…" : "Download PPTX"}</button>
           <button className="fsdeck-btn ghost" onClick={onClose}>Close</button>
           <button className="fsdeck-btn primary" onClick={saveAndConfirm} disabled={!deck || saving}><Icon name="check" size={13} /> {saving ? "Saving…" : "Save & confirm step"}</button>
         </div>
