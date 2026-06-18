@@ -8,7 +8,7 @@ import { useIdentity } from "@/components/identity-context";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, uploadContractFile, type DiagramInput, type RunItemInput, type IntakePrep } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, uploadContractFile, getDocumentUrl, requestDocReupload, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -138,7 +138,6 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
             {chatUnread && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: "50%", background: "var(--red)", border: "1.5px solid #fff" }} />}
           </button>
           <button className="btn-ghost" style={{ color: "var(--red)" }}><Icon name="ban" size={13} /> Void</button>
-          <button className="btn-ghost"><Icon name="settings" size={13} /> Settings</button>
         </div>
         <div className="tabs-row" style={{ marginTop: 10, marginBottom: -12, borderBottom: "none" }}>
           {TABS.map((t) => (
@@ -259,6 +258,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
                           people={detail.assignPeople}
                           busy={busy}
                           onOpenAct={() => openAct(step)}
+                          onRollback={() => run(() => rollbackStep(detail.runId, step.id), "Step reopened")}
                           onAssignMembers={(members) => run(() => assignStepMembers(detail.runId, step.id, members), members.length ? `Assigned ${members.length} ${members.length === 1 ? "person" : "people"}` : "Step skipped")}
                         />
                       ))}
@@ -745,7 +745,7 @@ function AssignPicker({
 }
 
 function StepBox({
-  step, assignRole, status, isActive, canEdit, assignedName, people, busy, onOpenAct, onAssignMembers,
+  step, assignRole, status, isActive, canEdit, assignedName, people, busy, onOpenAct, onRollback, onAssignMembers,
 }: {
   step: TemplateStep;
   assignRole: string | null;
@@ -756,11 +756,13 @@ function StepBox({
   people: { id: string; name: string; role: string }[];
   busy: boolean;
   onOpenAct: () => void;
+  onRollback: () => void;
   onAssignMembers: (members: { id: string; name: string; role: string }[]) => void;
 }) {
   const ki = KIND_ICON[step.kind] ?? KIND_ICON.person;
   const done = status === "complete";
   const isAssign = step.act?.type === "assign";
+  const isAuto = !!step.pre; // System "Run auto-created" steps need no human action
 
   return (
     <div
@@ -795,7 +797,12 @@ function StepBox({
 
           {/* Actions: any incomplete step the current role may edit (own + below),
               regardless of whether earlier steps are done. */}
-          {!done && canEdit && (
+          {!done && isAuto && (
+            <div style={{ marginTop: 10, fontSize: 12, color: "var(--ink-3)", display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name="check-circle" size={12} /> Done automatically
+            </div>
+          )}
+          {!done && !isAuto && canEdit && (
             <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               {isAssign ? (
                 <AssignPicker
@@ -812,9 +819,22 @@ function StepBox({
               )}
             </div>
           )}
-          {!done && !canEdit && (
+          {!done && !isAuto && !canEdit && (
             <div style={{ marginTop: 10, fontSize: 12, color: "var(--ink-3)", display: "flex", alignItems: "center", gap: 6 }}>
               <Icon name="lock" size={12} /> {stepRequiredRole(step) ? `${ROLE_NICE[stepRequiredRole(step)!] ?? stepRequiredRole(step)}'s step — view only` : "View only"}
+            </div>
+          )}
+          {/* Completed steps stay viewable — and editable for anyone allowed; the team is notified on change. */}
+          {done && (
+            <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {step.act?.type && !["assign", "confirm"].includes(step.act.type) && (
+                <button className="btn-ghost" disabled={busy} onClick={onOpenAct}>
+                  <Icon name="eye" size={13} /> {canEdit ? "View / edit" : "View"}
+                </button>
+              )}
+              <button className="btn-ghost" disabled={busy} onClick={onRollback} title="Reopen just this step (AM+ only)">
+                <Icon name="rotate-ccw" size={13} /> Roll back step
+              </button>
             </div>
           )}
         </div>
@@ -913,20 +933,45 @@ function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat
         )}
       </div>
 
-      {/* Documents */}
+      {/* Documents — review what the client uploaded; request a re-upload if wrong */}
       {docs.length > 0 && (
         <div className="runs-card" style={{ padding: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Documents</div>
-          {docs.map((d, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13 }}>
-              <span style={{ color: d.status === "uploaded" ? "var(--green)" : "var(--ink-4)" }}><Icon name={d.status === "uploaded" ? "check-circle" : "circle"} size={14} /></span>
-              <span style={{ flex: 1 }}>{d.label}</span>
-              <span className={"pill " + (d.status === "uploaded" ? "green" : "gray")} style={{ fontSize: 10 }}>{d.status === "uploaded" ? "Received" : "Pending"}</span>
-            </div>
-          ))}
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Documents received</div>
+          {docs.map((d) => <DocReviewRow key={d.id} runId={detail.runId} doc={d} />)}
         </div>
       )}
     </>
+  );
+}
+
+function DocReviewRow({ runId, doc }: { runId: string; doc: RunDetail["playbook"]["documents"][number] }) {
+  const router = useRouter();
+  const [busy, start] = useTransition();
+  const [flagging, setFlagging] = useState(false);
+  const [note, setNote] = useState("");
+  const uploaded = doc.status === "uploaded";
+  const rejected = doc.status === "rejected";
+
+  const view = async () => { const r = await getDocumentUrl(doc.id); if (r.url) window.open(r.url, "_blank", "noopener"); };
+  const send = () => start(async () => { await requestDocReupload(runId, doc.id, note); setFlagging(false); setNote(""); router.refresh(); });
+
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", padding: "7px 0" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+        <span style={{ color: uploaded ? "var(--green)" : rejected ? "var(--red)" : "var(--ink-4)" }}><Icon name={uploaded ? "check-circle" : rejected ? "rotate-ccw" : "circle"} size={14} /></span>
+        <span style={{ flex: 1 }}>{doc.label}</span>
+        {(uploaded || rejected) && doc.storagePath && <button className="btn-ghost" style={{ padding: "3px 8px" }} onClick={view}><Icon name="eye" size={13} /> View</button>}
+        {uploaded && <button className="btn-ghost" style={{ padding: "3px 8px", color: "var(--red)" }} onClick={() => setFlagging((v) => !v)}><Icon name="flag" size={13} /> Request re-upload</button>}
+        <span className={"pill " + (uploaded ? "green" : rejected ? "red" : "gray")} style={{ fontSize: 10 }}>{uploaded ? "Received" : rejected ? "Re-upload asked" : "Pending"}</span>
+      </div>
+      {rejected && doc.reviewNote && <div style={{ marginLeft: 22, marginTop: 4, fontSize: 12, color: "var(--red)" }}>Asked to re-upload: {doc.reviewNote}</div>}
+      {flagging && (
+        <div style={{ marginLeft: 22, marginTop: 8, display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <textarea className="notes" value={note} onChange={(e) => setNote(e.target.value)} placeholder="What's wrong with it? (the client sees this)" style={{ flex: 1, minHeight: 44, fontSize: 12.5 }} />
+          <button className="btn-primary" disabled={busy} onClick={send}>{busy ? "Sending…" : "Send"}</button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1233,73 +1278,181 @@ const NODE_STYLE: Record<string, { bg: string; color: string; label: string }> =
   end: { bg: "var(--red)", color: "#fff", label: "End" },
 };
 
+const DIAG_NODE_W = 156;
+const DIAG_NODE_H = 54;
+
 function DiagramBuilderModal({
   runId, stepId, onClose, onDone,
 }: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
-  const [diagrams, setDiagrams] = useState<DiagramInput[]>([{ name: "Monthly Close", nodes: [{ id: "n1", label: "Bank feed imported", type: "start" }, { id: "n2", label: "Junior books transactions", type: "step" }, { id: "n3", label: "Reconciled?", type: "decision" }, { id: "n4", label: "Senior review & close", type: "end" }] }]);
+  const [diagrams, setDiagrams] = useState<DiagramInput[]>([{
+    name: "Monthly Close",
+    nodes: [
+      { id: "n1", label: "Bank feed imported", type: "start", x: 60, y: 30 },
+      { id: "n2", label: "Junior books transactions", type: "step", x: 60, y: 140 },
+      { id: "n3", label: "Reconciled?", type: "decision", x: 60, y: 250 },
+      { id: "n4", label: "Senior review & close", type: "end", x: 60, y: 360 },
+    ],
+    edges: [{ from: "n1", to: "n2" }, { from: "n2", to: "n3" }, { from: "n3", to: "n4" }],
+  }]);
   const [sel, setSel] = useState(0);
   const [saving, start] = useTransition();
   const [aiBrief, setAiBrief] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
+  const [mode, setMode] = useState<"select" | "connect">("select");
+  const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [selNode, setSelNode] = useState<string | null>(null);
+  const [drag, setDrag] = useState<{ id: string; dx: number; dy: number } | null>(null);
   const d = diagrams[sel];
+  const edges = d.edges ?? [];
 
   const update = (fn: (x: DiagramInput) => DiagramInput) => setDiagrams((arr) => arr.map((x, i) => (i === sel ? fn(x) : x)));
-  const aiGen = async () => { setAiBusy(true); const r = await generateDiagram(runId, aiBrief); setAiBusy(false); if (r.nodes?.length) update((x) => ({ ...x, nodes: r.nodes! })); };
-  const addNode = () => update((x) => ({ ...x, nodes: [...x.nodes, { id: crypto.randomUUID().slice(0, 8), label: "New step", type: "step" }] }));
-  const setNode = (i: number, k: "label" | "type", v: string) => update((x) => ({ ...x, nodes: x.nodes.map((n, j) => (j === i ? { ...n, [k]: v } : n)) }));
-  const move = (i: number, dir: number) => update((x) => { const a = [...x.nodes]; const j = i + dir; if (j < 0 || j >= a.length) return x; [a[i], a[j]] = [a[j], a[i]]; return { ...x, nodes: a }; });
-  const delNode = (i: number) => update((x) => ({ ...x, nodes: x.nodes.filter((_, j) => j !== i) }));
+  const setNodes = (fn: (ns: DiagramNode[]) => DiagramNode[]) => update((x) => ({ ...x, nodes: fn(x.nodes) }));
+  const setEdges = (fn: (es: { from: string; to: string }[]) => { from: string; to: string }[]) => update((x) => ({ ...x, edges: fn(x.edges ?? []) }));
+
+  const aiGen = async () => {
+    setAiBusy(true);
+    const r = await generateDiagram(runId, aiBrief);
+    setAiBusy(false);
+    if (r.nodes?.length) {
+      const nodes: DiagramNode[] = r.nodes.map((n, i) => ({ ...n, x: 60 + (i % 2) * 230, y: 30 + i * 92 }));
+      const newEdges = nodes.slice(1).map((n, i) => ({ from: nodes[i].id, to: n.id }));
+      update((x) => ({ ...x, nodes, edges: newEdges }));
+    }
+  };
+  const addNode = () => { const id = crypto.randomUUID().slice(0, 8); setNodes((ns) => [...ns, { id, label: "New step", type: "step", x: 90, y: 70 }]); setSelNode(id); };
+  const setNode = (id: string, k: "label" | "type", v: string) => setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, [k]: v } : n)));
+  const delNode = (id: string) => { setNodes((ns) => ns.filter((n) => n.id !== id)); setEdges((es) => es.filter((e) => e.from !== id && e.to !== id)); if (selNode === id) setSelNode(null); };
+  const delEdge = (from: string, to: string) => setEdges((es) => es.filter((e) => !(e.from === from && e.to === to)));
+
+  const onNodeDown = (e: React.PointerEvent, n: DiagramNode) => {
+    e.stopPropagation();
+    if (mode === "connect") {
+      if (!connectFrom) { setConnectFrom(n.id); return; }
+      if (connectFrom !== n.id) setEdges((es) => es.some((x) => x.from === connectFrom && x.to === n.id) ? es : [...es, { from: connectFrom, to: n.id }]);
+      setConnectFrom(null);
+      return;
+    }
+    setSelNode(n.id);
+    const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+    setDrag({ id: n.id, dx: e.clientX - rect.left - (n.x ?? 0), dy: e.clientY - rect.top - (n.y ?? 0) });
+  };
+  const onCanvasMove = (e: React.PointerEvent) => {
+    if (!drag) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.round(e.clientX - rect.left - drag.dx));
+    const y = Math.max(0, Math.round(e.clientY - rect.top - drag.dy));
+    setNodes((ns) => ns.map((n) => (n.id === drag.id ? { ...n, x, y } : n)));
+  };
+  const ctr = (n: DiagramNode) => ({ x: (n.x ?? 0) + DIAG_NODE_W / 2, y: (n.y ?? 0) + DIAG_NODE_H / 2 });
+  const byId = (id: string) => d.nodes.find((n) => n.id === id);
+  const selected = selNode ? byId(selNode) : null;
+  const canvasH = Math.max(440, ...d.nodes.map((n) => (n.y ?? 0) + DIAG_NODE_H + 40));
 
   return (
     <div className="modal-overlay open" onClick={onClose}>
-      <div className="modal" style={{ width: 820, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
-        <div className="hd"><h3>Build workflow diagrams</h3><div className="sub">Map the delivery / monthly-close process. Saved to the client playbook → Workflows.</div></div>
-        <div className="bd" style={{ maxHeight: "66vh" }}>
-          <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+      <div className="modal" style={{ width: 900, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>Build workflow diagrams</h3><div className="sub">Drag the boxes to arrange them. Use Connect to link steps. Saved to the client playbook → Workflows.</div></div>
+        <div className="bd" style={{ maxHeight: "70vh" }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
             {diagrams.map((dg, i) => (
-              <button key={i} className={"tab-pill" + (i === sel ? " active" : "")} onClick={() => setSel(i)}>{dg.name || `Diagram ${i + 1}`}</button>
+              <button key={i} className={"tab-pill" + (i === sel ? " active" : "")} onClick={() => { setSel(i); setSelNode(null); setConnectFrom(null); }}>{dg.name || `Diagram ${i + 1}`}</button>
             ))}
-            <button className="tab-pill" onClick={() => { setDiagrams((a) => [...a, { name: `Diagram ${a.length + 1}`, nodes: [] }]); setSel(diagrams.length); }}>+ Add diagram</button>
+            <button className="tab-pill" onClick={() => { setDiagrams((a) => [...a, { name: `Diagram ${a.length + 1}`, nodes: [], edges: [] }]); setSel(diagrams.length); }}>+ Add diagram</button>
           </div>
 
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <input value={aiBrief} onChange={(e) => setAiBrief(e.target.value)} placeholder="Describe the process in plain language → AI draws it" style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", fontSize: 13 }} />
-            <button className="btn-ai" disabled={aiBusy || !aiBrief.trim()} onClick={aiGen}><Icon name="sparkles" size={13} /> {aiBusy ? "Drawing…" : "Generate with AI"}</button>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input value={d.name} onChange={(e) => update((x) => ({ ...x, name: e.target.value }))} placeholder="Diagram name" style={{ width: 180, border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", fontSize: 13 }} />
+            <button className="btn-ghost" onClick={addNode}><Icon name="plus" size={13} /> Add node</button>
+            <button className={mode === "connect" ? "btn-primary" : "btn-ghost"} onClick={() => { setMode((m) => (m === "connect" ? "select" : "connect")); setConnectFrom(null); }}>
+              <Icon name="spline" size={13} /> {mode === "connect" ? (connectFrom ? "Pick target…" : "Connecting — pick source") : "Connect"}
+            </button>
+            <div style={{ flex: 1 }} />
+            <input value={aiBrief} onChange={(e) => setAiBrief(e.target.value)} placeholder="Describe the process → AI draws it" style={{ width: 240, border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", fontSize: 13 }} />
+            <button className="btn-ai" disabled={aiBusy || !aiBrief.trim()} onClick={aiGen}><Icon name="sparkles" size={13} /> {aiBusy ? "Drawing…" : "Generate"}</button>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 240px", gap: 16 }}>
-            {/* Editor */}
-            <div>
-              <div className="field"><label>Diagram name</label><input value={d.name} onChange={(e) => update((x) => ({ ...x, name: e.target.value }))} /></div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-                {d.nodes.map((n, i) => (
-                  <div key={n.id} className="builder-step">
-                    <input type="text" value={n.label} onChange={(e) => setNode(i, "label", e.target.value)} style={{ flex: 1 }} />
-                    <select value={n.type} onChange={(e) => setNode(i, "type", e.target.value)}>{NODE_TYPES.map((t) => <option key={t} value={t}>{NODE_STYLE[t].label}</option>)}</select>
-                    <button className="icon-btn" onClick={() => move(i, -1)}><Icon name="chevron-up" size={13} /></button>
-                    <button className="icon-btn" onClick={() => move(i, 1)}><Icon name="chevron-down" size={13} /></button>
-                    <button className="icon-btn" onClick={() => delNode(i)} style={{ color: "var(--red)" }}><Icon name="trash-2" size={13} /></button>
-                  </div>
-                ))}
-                <button className="add-link" onClick={addNode}><Icon name="plus" size={12} /> Add node</button>
+          {/* Canvas */}
+          <div
+            onPointerMove={onCanvasMove}
+            onPointerUp={() => setDrag(null)}
+            onPointerLeave={() => setDrag(null)}
+            onClick={() => { setSelNode(null); setConnectFrom(null); }}
+            style={{
+              position: "relative", height: canvasH, borderRadius: 10, overflow: "hidden",
+              border: "1px solid var(--border)", background: "var(--bg-soft)",
+              backgroundImage: "radial-gradient(var(--border) 1px, transparent 1px)", backgroundSize: "20px 20px",
+              cursor: mode === "connect" ? "crosshair" : "default", touchAction: "none",
+            }}
+          >
+            <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+              <defs>
+                <marker id="diag-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--ink-3)" />
+                </marker>
+              </defs>
+              {edges.map((e, i) => {
+                const a = byId(e.from), b = byId(e.to);
+                if (!a || !b) return null;
+                const p = ctr(a), q = ctr(b);
+                return <line key={i} x1={p.x} y1={p.y} x2={q.x} y2={q.y} stroke="var(--ink-3)" strokeWidth={2} markerEnd="url(#diag-arrow)" />;
+              })}
+            </svg>
+
+            {d.nodes.length === 0 && (
+              <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", color: "var(--ink-3)", fontSize: 13 }}>
+                Add a node or generate with AI to start.
               </div>
-            </div>
+            )}
 
-            {/* Preview */}
-            <div style={{ background: "var(--bg-soft)", borderRadius: 10, padding: 14, display: "flex", flexDirection: "column", alignItems: "center", gap: 0 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 8 }}>Preview</div>
-              {d.nodes.length === 0 && <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Add nodes to see the flow.</div>}
-              {d.nodes.map((n, i) => {
-                const s = NODE_STYLE[n.type];
+            {d.nodes.map((n) => {
+              const s = NODE_STYLE[n.type] ?? NODE_STYLE.step;
+              const isSel = selNode === n.id, isFrom = connectFrom === n.id;
+              return (
+                <div
+                  key={n.id}
+                  onPointerDown={(e) => onNodeDown(e, n)}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    position: "absolute", left: n.x ?? 0, top: n.y ?? 0, width: DIAG_NODE_W, minHeight: DIAG_NODE_H,
+                    background: s.bg, color: s.color, borderRadius: n.type === "decision" ? 4 : 10,
+                    border: isSel || isFrom ? "2px solid var(--orange)" : "1px solid rgba(0,0,0,0.08)",
+                    padding: "8px 10px", fontSize: 12, fontWeight: 600, textAlign: "center",
+                    display: "grid", placeItems: "center", boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                    cursor: mode === "connect" ? "crosshair" : "grab", userSelect: "none",
+                    transform: n.type === "decision" ? "skewX(-6deg)" : "none",
+                  }}
+                >
+                  {n.label}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Selected-node inspector */}
+          {selected && (
+            <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", background: "#fff", border: "1px solid var(--border)", borderRadius: 10, padding: 10 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase" }}>Node</span>
+              <input value={selected.label} onChange={(e) => setNode(selected.id, "label", e.target.value)} style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 8, padding: "6px 9px", fontSize: 13 }} />
+              <select value={selected.type} onChange={(e) => setNode(selected.id, "type", e.target.value)}>{NODE_TYPES.map((t) => <option key={t} value={t}>{NODE_STYLE[t].label}</option>)}</select>
+              <button className="icon-btn" style={{ color: "var(--red)" }} onClick={() => delNode(selected.id)}><Icon name="trash-2" size={14} /></button>
+            </div>
+          )}
+
+          {/* Connections list (for deleting links) */}
+          {edges.length > 0 && (
+            <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {edges.map((e, i) => {
+                const a = byId(e.from), b = byId(e.to);
+                if (!a || !b) return null;
                 return (
-                  <div key={n.id} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                    <div style={{ background: s.bg, color: s.color, fontSize: 11, fontWeight: 600, padding: "7px 12px", borderRadius: n.type === "decision" ? 4 : 8, transform: n.type === "decision" ? "rotate(0deg)" : "none", maxWidth: 200, textAlign: "center" }}>{n.label}</div>
-                    {i < d.nodes.length - 1 && <span style={{ color: "var(--ink-4)" }}><Icon name="arrow-down" size={14} /></span>}
-                  </div>
+                  <span key={i} className="pill" style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    {a.label} → {b.label}
+                    <button className="icon-btn" style={{ width: 16, height: 16, color: "var(--red)" }} onClick={() => delEdge(e.from, e.to)}><Icon name="x" size={11} /></button>
+                  </span>
                 );
               })}
             </div>
-          </div>
+          )}
         </div>
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
@@ -2092,6 +2245,19 @@ function DriveBuilderModal({
               {ca.inclusions?.length ? <div><strong>Included:</strong> {ca.inclusions.join(", ")}</div> : null}
               {ca.exclusions?.length ? <div><strong>Excluded:</strong> {ca.exclusions.join(", ")}</div> : null}
               {ca.paymentTerms && <div><strong>Payment:</strong> {ca.paymentTerms}</div>}
+              <div style={{ marginTop: 10 }}>
+                <strong>What we deliver &amp; when</strong>
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 6 }}>Standard deadlines pre-filled — edit per the client&apos;s request. This is what the client sees in their portal.</div>
+                {(ca.deliverables ?? []).map((dv, i) => (
+                  <div key={i} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+                    <input value={dv.item} placeholder="Deliverable" onChange={(e) => setCa((c) => ({ ...c!, deliverables: (c!.deliverables ?? []).map((x, j) => (j === i ? { ...x, item: e.target.value } : x)) }))} style={{ flex: 3, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
+                    <input value={dv.frequency} placeholder="Frequency" onChange={(e) => setCa((c) => ({ ...c!, deliverables: (c!.deliverables ?? []).map((x, j) => (j === i ? { ...x, frequency: e.target.value } : x)) }))} style={{ width: 90, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
+                    <input value={dv.deadline} placeholder="Deadline" onChange={(e) => setCa((c) => ({ ...c!, deliverables: (c!.deliverables ?? []).map((x, j) => (j === i ? { ...x, deadline: e.target.value } : x)) }))} style={{ flex: 3, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
+                    <button className="icon-btn" style={{ color: "var(--red)" }} onClick={() => setCa((c) => ({ ...c!, deliverables: (c!.deliverables ?? []).filter((_, j) => j !== i) }))}><Icon name="x" size={12} /></button>
+                  </div>
+                ))}
+                <button className="add-link" style={{ marginTop: 6 }} onClick={() => setCa((c) => ({ ...c!, deliverables: [...(c!.deliverables ?? []), { item: "New deliverable", frequency: "Monthly", deadline: "By the 15th of the following month" }] }))}><Icon name="plus" size={12} /> Add deliverable</button>
+              </div>
             </div>
           )}
           <div style={{ marginTop: 12 }}>

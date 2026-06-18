@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { confirmCoa, commentCoa, uploadDocFile, submitIntake, postPortalMessage, signOffOnboarding, attachPortalTaskFile } from "./actions";
+import { confirmCoa, commentCoa, uploadDocFile, uploadDocsBatch, submitIntake, postPortalMessage, signOffOnboarding, attachPortalTaskFile, documentViewUrl } from "./actions";
 
 export interface PortalData {
   token: string;
@@ -14,7 +14,7 @@ export interface PortalData {
   currentStage: number;
   status: string;
   coa: { accounts: { code: string; account: string; section: string }[]; signedOff: boolean; industry: string | null } | null;
-  documents: { id: string; label: string; status: string }[];
+  documents: { id: string; label: string; status: string; reviewNote?: string | null }[];
   tasks: { title: string; status: string; type: string; boardColumn?: string | null; due?: string | null; ownerKind?: string }[];
   boardColumns?: string[] | null;
   team: Record<string, string>;
@@ -25,7 +25,7 @@ export interface PortalData {
   intakeSubmitted: Record<string, unknown> | null;
   intakePrep: IntakePrepView | null;
   intakeEnabled: boolean;
-  contract: { scope?: string; periodStart?: string; periodEnd?: string; inclusions?: string[]; exclusions?: string[]; paymentTerms?: string } | null;
+  contract: { scope?: string; periodStart?: string; periodEnd?: string; inclusions?: string[]; exclusions?: string[]; paymentTerms?: string; deliverables?: { item: string; frequency: string; deadline: string }[] } | null;
   software: string | null;
   onboardingPartner: string | null;
   csm: { name: string; email: string | null } | null;
@@ -293,7 +293,7 @@ function IntakeForm({ data, busy, note, go }: {
   const submitted = data.intakeSubmitted && data.intakeSubmitted !== null && Object.keys(data.intakeSubmitted).length > 0;
 
   const filled = (v: unknown) => (Array.isArray(v) ? v.length > 0 : !!(typeof v === "string" && v.trim()));
-  const checks = [f.desc, f.revenue, f.expense, f.employees, f.pains, f.stakeholders, f.reports, f.acctSw, f.banks, f.gateways];
+  const checks = [f.desc, f.revenue, f.expense, f.employees, f.pains, f.acctSw, f.banks, f.gateways];
   const done = checks.filter(filled).length + 1; // +1 for the locked company details
 
   return (
@@ -303,7 +303,7 @@ function IntakeForm({ data, busy, note, go }: {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div>
             <div className="obv3-pcard-h">Your intake form</div>
-            <div className="obv3-pcard-sub">We pre-filled what we already knew — everything below is yours to edit. Add channels, stakeholders and reports as needed.</div>
+            <div className="obv3-pcard-sub">We pre-filled what we already knew — everything below is yours to edit. Add channels and details as needed.</div>
           </div>
           <span className="pill amber"><span className="dot" />{done} of {checks.length + 1} complete</span>
         </div>
@@ -331,14 +331,6 @@ function IntakeForm({ data, busy, note, go }: {
 
           <Field label="Pain points" src="client">
             <ChipList items={f.pains} addLabel="Add a pain point…" onChange={(v) => set("pains", v)} />
-          </Field>
-
-          <Field label="Stakeholders" src="client">
-            <ChipList items={f.stakeholders} addLabel="Add a stakeholder…" onChange={(v) => set("stakeholders", v)} />
-          </Field>
-
-          <Field label="Reports you need" src="client">
-            <ChipList items={f.reports} addLabel="Add a report…" onChange={(v) => set("reports", v)} />
           </Field>
 
           <Field label="Accounting software" src="client" suggested>
@@ -395,33 +387,68 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
     else if (firstErr) note(firstErr);
     router.refresh();
   };
+  const view = async (docId: string) => {
+    const r = await documentViewUrl(data.token, docId);
+    if (r.url) window.open(r.url, "_blank", "noopener"); else if (r.error) note(r.error);
+  };
+  const onUploadAll = async (files: FileList) => {
+    setUploading("__all__");
+    const fd = new FormData();
+    Array.from(files).forEach((f) => fd.append("files", f));
+    const r = await uploadDocsBatch(data.token, fd);
+    setUploading(null);
+    if (r.error) note(r.error);
+    else note(`${r.uploaded ?? 0} file${(r.uploaded ?? 0) === 1 ? "" : "s"} received — your team has been notified`);
+    router.refresh();
+  };
+  const pendingCount = data.documents.filter((d) => d.status !== "uploaded").length;
   if (data.documents.length === 0) return null;
   return (
     <div className="obv3-pcard">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div>
           <div className="obv3-pcard-h">Documents to upload</div>
-          <div className="obv3-pcard-sub">Browse and upload — you can attach multiple files per item. Each file lands in the right folder automatically.</div>
+          <div className="obv3-pcard-sub">Upload everything in one go with the button on the right, or use the Upload button on each item — whichever is easier for you. You can attach multiple files per item, view what you sent, and re-upload anything we flag.</div>
         </div>
-        <span className="pill amber"><span className="dot" />{received} of {data.documents.length} received</span>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+          <span className="pill amber"><span className="dot" />{received} of {data.documents.length} received</span>
+          {pendingCount > 0 && (
+            <label className="obv3-pbtn primary" style={{ cursor: uploading ? "default" : "pointer" }}>
+              <Icon name="upload-cloud" size={14} /> {uploading === "__all__" ? "Uploading…" : "Upload all at once"}
+              <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onUploadAll(files); e.target.value = ""; }} />
+            </label>
+          )}
+        </div>
       </div>
       <div style={{ marginTop: 16 }}>
-        {data.documents.map((d) => (
-          <div key={d.id} className="obv3-doc">
-            <span className={"dstate " + (d.status === "uploaded" ? "done" : "pending")}>
-              {d.status === "uploaded" ? <Icon name="check" size={13} strokeWidth={2.6} /> : <Icon name="upload" size={12} />}
-            </span>
-            <span className="dname">{d.label}</span>
-            {d.status === "uploaded" ? (
-              <span className="pill green" style={{ fontSize: 10.5, height: 18 }}><span className="dot" />Received</span>
-            ) : (
-              <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
-                <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : "Upload →"}
-                <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onFiles(d.id, files); e.target.value = ""; }} />
-              </label>
-            )}
-          </div>
-        ))}
+        {data.documents.map((d) => {
+          const rejected = d.status === "rejected";
+          const uploaded = d.status === "uploaded";
+          return (
+            <div key={d.id} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8, marginBottom: 8 }}>
+              <div className="obv3-doc" style={{ borderBottom: "none", paddingBottom: 0, marginBottom: 0 }}>
+                <span className={"dstate " + (uploaded ? "done" : "pending")} style={rejected ? { background: "var(--red-soft)", color: "var(--red)" } : undefined}>
+                  {uploaded ? <Icon name="check" size={13} strokeWidth={2.6} /> : rejected ? <Icon name="rotate-ccw" size={12} /> : <Icon name="upload" size={12} />}
+                </span>
+                <span className="dname">{d.label}</span>
+                {uploaded && <button type="button" className="obv3-doc-upload" onClick={() => view(d.id)} style={{ cursor: "pointer" }}><Icon name="eye" size={12} /> View</button>}
+                {uploaded ? (
+                  <span className="pill green" style={{ fontSize: 10.5, height: 18 }}><span className="dot" />Received</span>
+                ) : (
+                  <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
+                    <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : rejected ? "Re-upload →" : "Upload →"}
+                    <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onFiles(d.id, files); e.target.value = ""; }} />
+                  </label>
+                )}
+              </div>
+              {rejected && d.reviewNote && (
+                <div style={{ marginTop: 6, marginLeft: 32, fontSize: 12, color: "var(--red)", background: "var(--red-soft)", borderRadius: 8, padding: "6px 10px", display: "flex", gap: 6, alignItems: "flex-start" }}>
+                  <Icon name="alert-circle" size={13} /> <span><strong>Please re-upload:</strong> {d.reviewNote}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -730,6 +757,35 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
           <div className="cp-book-foot"><span className="pill green" style={{ fontSize: 10.5, height: 18 }}><span className="dot" />{live ? "Live" : "Setting up"}</span> VAT quarterly · CT annual</div>
         </div>
       </div>
+
+      {/* What we deliver — from the contract analysis, with standard deadlines */}
+      {(() => {
+        const deliverables = data.contract?.deliverables?.length
+          ? data.contract.deliverables
+          : [
+              { item: "Monthly management reports (P&L, balance sheet, cash flow)", frequency: "Monthly", deadline: "By the 15th of the following month" },
+              { item: "Bookkeeping & reconciliations", frequency: "Monthly", deadline: "By the 15th of the following month" },
+              { item: "VAT return preparation & submission", frequency: "Quarterly", deadline: "Within 28 days of quarter end" },
+              { item: "Corporate Tax return", frequency: "Annual", deadline: "Within 9 months of year end" },
+            ];
+        return (
+          <div className="obv3-pcard">
+            <div className="obv3-pcard-h">What we deliver</div>
+            <div className="obv3-pcard-sub" style={{ marginBottom: 12 }}>Your reports and filings, and when you&apos;ll get them. {data.contract?.scope ? "" : "These are our standard timelines — your team will confirm any client-specific dates."}</div>
+            {data.contract?.scope && <div style={{ fontSize: 13, color: "var(--ink-1)", marginBottom: 12 }}>{data.contract.scope}</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {deliverables.map((dv, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", border: "1px solid var(--border)", borderRadius: 10, background: "#fff" }}>
+                  <span style={{ color: "var(--green)" }}><Icon name="calendar-check" size={15} /></span>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{dv.item}</span>
+                  <span className="pill" style={{ fontSize: 10.5 }}>{dv.frequency}</span>
+                  <span style={{ fontSize: 12, color: "var(--ink-3)", minWidth: 180, textAlign: "right" }}>{dv.deadline}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {(senior || junior || teamLead) && (
         <div className="obv3-pcard">

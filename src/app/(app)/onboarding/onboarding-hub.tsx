@@ -72,7 +72,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, canDelete = fal
             </div>
             <div className="section-head" style={{ marginTop: 24 }}><div><h2 style={{ fontSize: 16 }}>Active runs</h2></div></div>
             {runs.length ? (
-              <div className="mywork-grid">{runs.map((r) => <RunCard key={r.id} run={r} />)}</div>
+              <div className="mywork-grid mw-grid-dense">{runs.map((r) => <RunCard key={r.id} run={r} dense />)}</div>
             ) : <Empty msg="No active onboarding runs." />}
           </>
         )}

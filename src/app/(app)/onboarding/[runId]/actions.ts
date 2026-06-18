@@ -3,6 +3,7 @@
 import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getSession } from "@/lib/auth";
 import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, type DriveFolderNode } from "@/lib/google";
 import { getTemplate } from "@/lib/templates-store";
@@ -63,19 +64,19 @@ async function recompute(supabase: SupabaseClient, runId: string, templateId: st
   const status: Record<string, string> = {};
   (steps ?? []).forEach((s) => (status[s.step_no] = s.status));
 
-  let totalDone = 0;
-  let totalSteps = 0;
+  // Optional stages (e.g. Handover) don't count toward progress or block completion.
+  let requiredDone = 0;
+  let requiredTotal = 0;
   let activeFound = false;
   let activeStage = tpl.stages.length;
 
   for (let i = 0; i < tpl.stages.length; i++) {
     const stage = tpl.stages[i];
     const done = stage.steps.filter((st) => status[st.id] === "complete").length;
-    totalDone += done;
-    totalSteps += stage.steps.length;
+    if (!stage.optional) { requiredDone += done; requiredTotal += stage.steps.length; }
     let stStatus: string;
     if (done >= stage.steps.length) stStatus = "complete";
-    else if (!activeFound) {
+    else if (!stage.optional && !activeFound) {
       stStatus = "active";
       activeFound = true;
       activeStage = i + 1;
@@ -83,8 +84,8 @@ async function recompute(supabase: SupabaseClient, runId: string, templateId: st
     await supabase.from("run_stages").update({ status: stStatus, step_done: done }).eq("run_id", runId).eq("stage_no", i + 1);
   }
 
-  const progress = totalSteps ? Math.round((totalDone / totalSteps) * 100) : 0;
-  const allDone = totalDone >= totalSteps;
+  const progress = requiredTotal ? Math.round((requiredDone / requiredTotal) * 100) : 0;
+  const allDone = requiredDone >= requiredTotal;
   await supabase
     .from("onboarding_runs")
     .update({ current_stage: activeStage, progress, status: allDone ? "complete" : "in_progress" })
@@ -569,7 +570,9 @@ export async function assignTriage(runId: string, stepId: string, items: { item:
   return {};
 }
 
-export interface DiagramInput { name: string; nodes: { id: string; label: string; type: string }[] }
+export interface DiagramNode { id: string; label: string; type: string; x?: number; y?: number }
+export interface DiagramEdge { from: string; to: string }
+export interface DiagramInput { name: string; nodes: DiagramNode[]; edges?: DiagramEdge[] }
 
 export async function saveDiagrams(runId: string, stepId: string, diagrams: DiagramInput[]) {
   const supabase = await createClient();
@@ -578,7 +581,7 @@ export async function saveDiagrams(runId: string, stepId: string, diagrams: Diag
   await supabase.from("run_diagrams").delete().eq("run_id", runId);
   if (diagrams.length) {
     const { error } = await supabase.from("run_diagrams").insert(
-      diagrams.map((d, i) => ({ run_id: runId, client_id: run.client_id, name: d.name, nodes: d.nodes, sort: i })),
+      diagrams.map((d, i) => ({ run_id: runId, client_id: run.client_id, name: d.name, nodes: d.nodes, edges: d.edges ?? [], sort: i })),
     );
     if (error) return { error: error.message };
   }
@@ -622,6 +625,43 @@ export async function saveBoardColumns(runId: string, columns: string[]): Promis
   if (!clean.length) return { error: "Keep at least one column." };
   await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "board_columns");
   await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "board_columns", data: { columns: clean }, status: "open" });
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Returns a viewable URL for an uploaded document (Drive link as-is, or a signed Storage URL). */
+export async function getDocumentUrl(docId: string): Promise<{ error?: string; url?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: doc } = await supabase.from("documents").select("storage_path").eq("id", docId).maybeSingle();
+  if (!doc?.storage_path) return { error: "No file uploaded yet." };
+  if (/^https?:\/\//.test(doc.storage_path)) return { url: doc.storage_path };
+  const admin = createAdminClient();
+  const { data, error } = await admin.storage.from("client-docs").createSignedUrl(doc.storage_path, 3600);
+  if (error) return { error: error.message };
+  return { url: data.signedUrl };
+}
+
+/** Team flags an uploaded doc as wrong → client is asked to re-upload (with a reason). */
+export async function requestDocReupload(runId: string, docId: string, note: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: doc } = await supabase.from("documents").select("label").eq("id", docId).maybeSingle();
+  if (!doc) return { error: "Document not found." };
+  const reason = note.trim() || "The file needs to be corrected — please re-upload.";
+  const { error } = await supabase.from("documents").update({ status: "rejected", review_note: reason }).eq("id", docId);
+  if (error) return { error: error.message };
+  // Tell the client in the shared thread (they see it in their portal).
+  await supabase.from("run_messages").insert({
+    run_id: runId,
+    author_id: session.teamMember?.id ?? null,
+    author_name: session.teamMember?.full_name ?? session.email,
+    author_role: session.profile.role,
+    body: `📎 Please re-upload "${doc.label}": ${reason}`,
+    task_ref: doc.label,
+  });
   revalidatePath(`/onboarding/${runId}`);
   return {};
 }
@@ -786,6 +826,27 @@ export async function rollbackToStage(runId: string, stageNo: number) {
       .eq("run_id", runId)
       .in("step_no", reopenIds);
   }
+  await recompute(supabase, runId, run.template_key);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Roll back a SINGLE step (reopen it) without touching the rest of the stage. AM+ only. */
+export async function rollbackStep(runId: string, stepId: string) {
+  const supabase = await createClient();
+  const session = await getSession();
+  const myRole = session?.teamMember?.role ?? session?.profile.role;
+  if ((ROLE_RANK[myRole ?? ""] ?? 0) < ROLE_RANK.am) {
+    return { error: "Only an Account Manager or above can roll back a completed step." };
+  }
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { error } = await supabase
+    .from("run_steps")
+    .update({ status: "pending", completed_at: null })
+    .eq("run_id", runId)
+    .eq("step_no", stepId);
+  if (error) return { error: error.message };
   await recompute(supabase, runId, run.template_key);
   revalidatePath(`/onboarding/${runId}`);
   return {};

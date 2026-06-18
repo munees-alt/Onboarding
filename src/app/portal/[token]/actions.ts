@@ -285,7 +285,7 @@ export async function uploadDocFile(token: string, docId: string, formData: Form
   }
   const { error } = await admin
     .from("documents")
-    .update({ status: "uploaded", uploaded_at: new Date().toISOString(), storage_path: driveLink ?? storagePath })
+    .update({ status: "uploaded", uploaded_at: new Date().toISOString(), storage_path: driveLink ?? storagePath, review_note: null })
     .eq("id", docId)
     .eq("client_id", link.client_id);
   if (error) return { error: error.message };
@@ -295,6 +295,77 @@ export async function uploadDocFile(token: string, docId: string, formData: Form
   });
   revalidatePath(`/portal/${token}`);
   return { ok: true };
+}
+
+/**
+ * "Upload all at once" — the client picks several files in one go; we assign them to the
+ * still-pending checklist items in order, uploading each to Drive (or Storage) like a single upload.
+ */
+export async function uploadDocsBatch(token: string, formData: FormData): Promise<{ error?: string; uploaded?: number }> {
+  const link = await resolve(token);
+  if (!link?.client_id) return { error: "Link invalid or expired." };
+  const files = formData.getAll("files").filter((f): f is File => f instanceof File && f.size > 0);
+  if (!files.length) return { error: "No files selected." };
+  const admin = createAdminClient();
+  const { data: client } = await admin.from("clients").select("name").eq("id", link.client_id).maybeSingle();
+  const clientName = client?.name ?? "Client";
+
+  // Resolve the connected Drive member once for the whole batch.
+  let memberId: string | undefined;
+  if (link.run_id) {
+    const { data: rt } = await admin.from("run_team").select("team_member_id").eq("run_id", link.run_id);
+    const ids = (rt ?? []).map((r) => r.team_member_id).filter(Boolean);
+    if (ids.length) {
+      const { data: conn } = await admin.from("member_connections")
+        .select("team_member_id").eq("provider", "google").eq("connected", true).in("team_member_id", ids).limit(1);
+      memberId = (conn ?? [])[0]?.team_member_id as string | undefined;
+    }
+  }
+  // Pending checklist items, in order, take the incoming files one-by-one.
+  const { data: pending } = await admin.from("documents")
+    .select("id").eq("client_id", link.client_id).neq("status", "uploaded").order("created_at");
+  const slots = (pending ?? []).map((d) => d.id);
+  let uploaded = 0;
+  for (let i = 0; i < files.length && i < slots.length; i++) {
+    const file = files[i];
+    if (file.size > 25 * 1024 * 1024) continue;
+    const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const buf = Buffer.from(await file.arrayBuffer());
+    let storagePath: string | null = null, driveLink: string | null = null;
+    if (memberId) {
+      const r = await uploadClientDocToDrive(memberId, clientName, safe, file.type || "application/octet-stream", buf);
+      if (r) driveLink = r.link;
+    }
+    if (!driveLink) {
+      const path = `${link.client_id}/${slots[i]}-${Date.now()}-${safe}`;
+      const { error: upErr } = await admin.storage.from("client-docs").upload(path, buf, { contentType: file.type || "application/octet-stream", upsert: true });
+      if (upErr) continue;
+      storagePath = path;
+    }
+    await admin.from("documents").update({ status: "uploaded", uploaded_at: new Date().toISOString(), storage_path: driveLink ?? storagePath, review_note: null }).eq("id", slots[i]).eq("client_id", link.client_id);
+    uploaded++;
+  }
+  if (uploaded) {
+    await admin.from("notifications").insert({
+      org_id: link.org_id, run_id: link.run_id, kind: "info",
+      title: "Client uploaded documents", body: `${uploaded} file${uploaded === 1 ? "" : "s"} received via the portal.`,
+    });
+  }
+  revalidatePath(`/portal/${token}`);
+  return { uploaded };
+}
+
+/** Client views one of their own uploaded documents (Drive link or signed Storage URL). */
+export async function documentViewUrl(token: string, docId: string): Promise<{ error?: string; url?: string }> {
+  const link = await resolve(token);
+  if (!link?.client_id) return { error: "Link invalid or expired." };
+  const admin = createAdminClient();
+  const { data: doc } = await admin.from("documents").select("storage_path").eq("id", docId).eq("client_id", link.client_id).maybeSingle();
+  if (!doc?.storage_path) return { error: "No file uploaded yet." };
+  if (/^https?:\/\//.test(doc.storage_path)) return { url: doc.storage_path };
+  const { data, error } = await admin.storage.from("client-docs").createSignedUrl(doc.storage_path, 3600);
+  if (error) return { error: error.message };
+  return { url: data.signedUrl };
 }
 
 export async function uploadDoc(token: string, docId: string): Promise<{ error?: string; ok?: boolean }> {

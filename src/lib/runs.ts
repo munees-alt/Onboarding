@@ -82,7 +82,7 @@ export async function createRunFromTemplate(
     name: s.name,
     status: i === 0 ? "active" : "upcoming",
     step_total: s.steps.length,
-    step_done: 0,
+    step_done: s.steps.filter((st) => st.pre).length, // auto/System steps start done
     sort: i + 1,
   }));
   const { error: se } = await supabase.from("run_stages").insert(stages);
@@ -99,7 +99,10 @@ export async function createRunFromTemplate(
         title: st.title,
         description: st.note ?? null,
         type: KIND_TO_TYPE[st.kind] ?? "manual",
-        status: "pending",
+        // Auto/System "pre" steps (e.g. "Run auto-created") are done from the start —
+        // the first thing a human does is the assignment, not a Mark-done.
+        status: st.pre ? "complete" : "pending",
+        completed_at: st.pre ? new Date().toISOString() : null,
         assignee_id: null,
         ai_generated: isAuto,
         is_approval: isApproval,

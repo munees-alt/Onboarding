@@ -9,7 +9,27 @@ export interface RunCardAction {
   waitingRole: string | null;
 }
 
-export function RunCard({ run, action }: { run: RunCardData; action?: RunCardAction | null }) {
+export function RunCard({ run, action, dense }: { run: RunCardData; action?: RunCardAction | null; dense?: boolean }) {
+  if (dense) {
+    return (
+      <Link href={`/onboarding/${run.id}`} className="mywork-card mw-dense" style={{ textDecoration: "none", color: "inherit" }}>
+        <div className="mw-top">
+          <h4 style={{ margin: 0, fontSize: 14 }}>{run.clientName}</h4>
+          <span className="mw-due">{run.progress}%</span>
+        </div>
+        <div className="mw-template" style={{ marginTop: 2 }}><Icon name="route" size={11} /> {run.templateName}</div>
+        <div className="progress orange" style={{ marginTop: 8 }}><i style={{ width: `${run.progress}%` }} /></div>
+        <div className="mw-foot" style={{ marginTop: 8 }}>
+          <div className="mw-stages">
+            {Array.from({ length: run.stageCount }).map((_, i) => (
+              <span key={i} className={"stage-pip" + (i < run.stagesDone ? " done" : i === run.stagesDone ? " active" : "")} />
+            ))}
+          </div>
+          <span className="mw-current-name" style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{run.currentStage}. {run.currentStageName ?? "—"}</span>
+        </div>
+      </Link>
+    );
+  }
   return (
     <Link
       href={`/onboarding/${run.id}`}

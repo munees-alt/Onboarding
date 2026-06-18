@@ -50,7 +50,7 @@ export interface RunDetail {
     profile: Record<string, unknown>;
     intake: Record<string, unknown> | null;
     coa: { accounts: { code: string; account: string; section: string }[]; signedOff: boolean } | null;
-    documents: { label: string; status: string }[];
+    documents: { id: string; label: string; status: string; storagePath: string | null; reviewNote: string | null }[];
     diagrams: { name: string; nodes: { id: string; label: string; type: string }[] }[];
     team: { role: string; name: string }[];
   };
@@ -59,6 +59,7 @@ export interface RunDetail {
 export async function getRunDetail(
   supabase: SupabaseClient,
   runId: string,
+  viewer?: { id: string | null; role: string },
 ): Promise<RunDetail | null> {
   const { data: run } = await supabase
     .from("onboarding_runs")
@@ -80,14 +81,14 @@ export async function getRunDetail(
     supabase.from("run_steps").select("step_no,status,assignee_id,payload").eq("run_id", runId),
     supabase.from("team_members").select("id,full_name").eq("org_id", run.org_id).in("role", ["senior", "team_lead"]).eq("active", true).order("full_name").limit(40),
     supabase.from("team_members").select("id,full_name").eq("org_id", run.org_id).in("role", ["junior", "associate"]).eq("active", true).order("full_name").limit(40),
-    supabase.from("team_members").select("id,full_name,role").eq("org_id", run.org_id).in("role", ["team_lead", "senior", "junior", "associate", "intern"]).eq("active", true).order("full_name").limit(200),
+    supabase.from("team_members").select("id,full_name,role,reports_to").eq("org_id", run.org_id).in("role", ["team_lead", "senior", "junior", "associate", "intern"]).eq("active", true).order("full_name").limit(400),
     supabase.from("tasks").select("id,title,owner_id,owner_kind,client_visible,type,status,service,board_column").eq("run_id", runId).order("sort"),
     supabase.from("run_items").select("id,kind,data,status,sort").eq("run_id", runId).order("sort"),
     run.am_id ? supabase.from("team_members").select("full_name").eq("id", run.am_id).maybeSingle() : Promise.resolve({ data: null }),
     supabase.from("clients").select("industry,entity_type,owner_name,primary_contact_email,vat_registered,ct_registered,revenue_channels,payment_gateways,accounting_software").eq("id", run.client_id).maybeSingle(),
     supabase.from("intake_forms").select("submitted").eq("run_id", runId).maybeSingle(),
     supabase.from("coa_instances").select("accounts,client_signed_off").eq("run_id", runId).maybeSingle(),
-    supabase.from("documents").select("label,status").eq("run_id", runId).order("created_at"),
+    supabase.from("documents").select("id,label,status,storage_path,review_note").eq("run_id", runId).order("created_at"),
     supabase.from("run_diagrams").select("name,nodes").eq("run_id", runId).order("sort"),
     supabase.from("run_team").select("role_in_run,team_members(full_name)").eq("run_id", runId),
     supabase.from("magic_links").select("token,email").eq("run_id", runId).eq("purpose", "portal").maybeSingle(),
@@ -139,13 +140,32 @@ export async function getRunDetail(
     profile: pbClient ?? {},
     intake: (pbIntake?.submitted as Record<string, unknown>) ?? null,
     coa: pbCoa ? { accounts: (pbCoa.accounts ?? []) as { code: string; account: string; section: string }[], signedOff: pbCoa.client_signed_off } : null,
-    documents: (pbDocs ?? []).map((d) => ({ label: d.label, status: d.status })),
+    documents: (pbDocs ?? []).map((d) => ({ id: d.id, label: d.label, status: d.status, storagePath: d.storage_path ?? null, reviewNote: d.review_note ?? null })),
     diagrams: (pbDiag ?? []).map((d) => ({ name: d.name, nodes: (d.nodes ?? []) as { id: string; label: string; type: string }[] })),
     team: (pbTeam ?? []).map((t: { role_in_run: string; team_members: { full_name: string } | { full_name: string }[] | null }) => {
       const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members;
       return { role: t.role_in_run, name: tm?.full_name ?? "—" };
     }),
   };
+
+  // Org-chart scoping: a non-admin/ops viewer can only assign people who report
+  // to them (directly or indirectly). Admin/Ops Head oversee everyone.
+  const apsRows = (aps ?? []) as { id: string; full_name: string; role: string; reports_to: string | null }[];
+  let assignablePool = apsRows;
+  if (viewer?.id && viewer.role !== "admin" && viewer.role !== "ops_head") {
+    const childrenByParent: Record<string, string[]> = {};
+    apsRows.forEach((m) => { if (m.reports_to) (childrenByParent[m.reports_to] ||= []).push(m.id); });
+    const descendants = new Set<string>();
+    const queue = [...(childrenByParent[viewer.id] ?? [])];
+    while (queue.length) {
+      const id = queue.shift()!;
+      if (descendants.has(id)) continue;
+      descendants.add(id);
+      (childrenByParent[id] ?? []).forEach((c) => queue.push(c));
+    }
+    const filtered = apsRows.filter((m) => descendants.has(m.id));
+    if (filtered.length) assignablePool = filtered; // fall back to full pool if the org chart isn't wired yet
+  }
 
   return {
     tasks,
@@ -166,7 +186,7 @@ export async function getRunDetail(
     stepState,
     seniors: (srs ?? []).map((m) => ({ id: m.id, name: m.full_name })),
     juniors: (jrs ?? []).map((m) => ({ id: m.id, name: m.full_name })),
-    assignPeople: (aps ?? []).map((m) => ({ id: m.id, name: m.full_name, role: m.role })),
+    assignPeople: assignablePool.map((m) => ({ id: m.id, name: m.full_name, role: m.role })),
     portalLink: portalLinkRow ? { token: portalLinkRow.token as string, email: (portalLinkRow.email as string | null) ?? null } : null,
     lastMessageAt: (lastMsgRow?.created_at as string | undefined) ?? null,
   };

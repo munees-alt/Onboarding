@@ -4049,3 +4049,8 @@ select:focus-visible,
   .sst-grid { grid-template-columns: 1fr; }
   .sst-summary { flex-direction: column; align-items: flex-start; }
 }
+
+/* Dense dashboard run cards — scales to many active runs */
+.mw-grid-dense { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 12px; }
+.mywork-card.mw-dense { padding: 14px 16px; }
+.mywork-card.mw-dense h4 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

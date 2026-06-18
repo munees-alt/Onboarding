@@ -48,6 +48,7 @@ export interface TemplateStage {
   steps: TemplateStep[];
   gate?: TemplateGate;
   assignRole?: string; // default assignee role for all steps in this stage
+  optional?: boolean; // optional stage (e.g. Handover) — does not block run completion
 }
 
 // Roles assignable to a stage/step, in hierarchy order (AM → Lead → Senior → Junior → Intern).
@@ -122,7 +123,7 @@ const MEDIUM_ENTERPRISE: OnbTemplate = {
       { id: "e7.2", title: "Team configures tasks + due dates", kind: "person", who: ["AM"] },
       { id: "e7.3", title: "Client-visible toggles set per task", kind: "person", who: ["AM"] },
     ] },
-    { id: "e8", name: "Handover", desc: "Enforced, structured handover. Run does not close until every item is confirmed.", steps: [
+    { id: "e8", name: "Handover", optional: true, desc: "Optional structured handover. Recommended for a clean transition, but the run can be completed without it.", steps: [
       { id: "e8.1", title: "Handover checklist auto-generated", kind: "ai", who: ["System"] },
       { id: "e8.2", title: "AM completes checklist", kind: "person", who: ["AM"] },
       { id: "e8.3", title: "Regular team confirms receipt", kind: "person", who: ["Senior"] },
@@ -136,7 +137,6 @@ const MEDIUM_ENTERPRISE: OnbTemplate = {
     { id: "me-i5", label: "Accounting software & historical months", source: "client" },
     { id: "me-i6", label: "VAT / CT registration & TRN", source: "pms" },
     { id: "me-i7", label: "Employee count & WPS", source: "client" },
-    { id: "me-i8", label: "Reports needed", source: "client" },
   ],
   uploads: [
     { id: "me-u1", label: "Trade licence", who: "client" },
@@ -175,7 +175,7 @@ const MEDIUM_TEAM: OnbTemplate = {
       { id: "t2.5", title: "Dispatch magic link to client", kind: "link", who: ["System"], note: "Sends the magic link (+ Drive link) to the client's email and Fincore chat. 7-day expiry.", act: { type: "dispatch", btn: "Dispatch magic link" } },
     ], gate: { label: "AM Approval", after: "t2.3", sop: "Review the intake form (if used), the document list and the client task board, then confirm before the magic link is dispatched." } },
     { id: "t3", name: "COA Prep · Zoho Books", desc: "Senior Accountant prepares the chart of accounts and sets up Zoho Books. AM signs off before it goes to the client.", steps: [
-      { id: "t3.1", title: "Confirm all details received", kind: "person", who: ["Senior"], note: "Cross off each item before COA prep. Attach the engagement contract to auto-detect any catch-up backlog.", act: { type: "checklist", btn: "Confirm received", contract: true, items: ["Documents all collected", "Intake form completed", "Registrations confirmed (CT / VAT / WPS)", "Bank statements received"] } },
+      { id: "t3.1", title: "Client data received — checklist", kind: "person", who: ["Senior"], note: "Cross off each item before COA prep. Attach the engagement contract to auto-detect any catch-up backlog.", act: { type: "checklist", btn: "Confirm received", contract: true, items: ["Documents all collected", "Intake form completed", "Registrations confirmed (CT / VAT / WPS)", "Bank statements received"] } },
       { id: "t3.1b", title: "Urgent compliance triage", kind: "person", who: ["AM", "Senior"], note: "Flag penalty-risk items (CT / VAT / WPS / AML). For each, pick a person — it lands in their My Work with the task template ready.", act: { type: "triage", btn: "Assign urgent items" } },
       { id: "t3.2", title: "Prepare COA", kind: "person", who: ["Senior"], approval: { by: "AM" }, note: "Auto-populated from the industry, then edited and sent to the AM for review.", act: { type: "coa", btn: "Build COA" } },
       { id: "t3.3", title: "Set up Zoho Books & import COA", kind: "person", who: ["Senior"], approval: { by: "AM" }, note: "Connect Zoho Books, import the approved COA and confirm.", act: { type: "zoho", btn: "Import COA into Zoho" } },
@@ -195,7 +195,7 @@ const MEDIUM_TEAM: OnbTemplate = {
       { id: "t6.1", title: "Create internal projects & monthly tasks", kind: "person", who: ["AM"], note: "Internal delivery — choose the months, the tasks for each, set due dates and link templates / SOPs. Not shown to the client.", act: { type: "project", btn: "Create projects & tasks", reopen: true } },
       { id: "t6.2", title: "Build the workflow diagrams", kind: "person", who: ["AM", "Senior"], note: "Map the delivery / monthly-close process. Add as many diagrams as you need — they land in the client playbook → Workflows.", act: { type: "diagram", btn: "Confirm diagrams built", toast: "Workflow diagrams saved to playbook" } },
     ] },
-    { id: "t7", name: "Handover", desc: "Structured handover to the recurring medium team: checklist, handover call, then dual sign-off. The run does not close until both the Onboarding AM and the Medium-team Lead confirm.", steps: [
+    { id: "t7", name: "Handover", optional: true, desc: "Optional structured handover to the recurring medium team: checklist, handover call, then dual sign-off. Recommended, but the run can be completed without it.", steps: [
       { id: "t7.1", title: "Handover checklist", kind: "person", who: ["AM", "Senior"], note: "Confirm everything is in place before the handover call.", act: { type: "checklist", btn: "Checklist complete →", items: ["Access all shared via Zoho Vault", "Catch-up done (if any)", "Project & tasks created", "Drive shared"] } },
       { id: "t7.2", title: "Handover call to Medium Team", kind: "person", who: ["AM", "Senior"], note: "Hold the handover call. Add the recording link and the meeting notes once done.", act: { type: "call", memo: true, memoTitle: "Onboarding → Medium Team" } },
       { id: "t7.3", title: "Sign-off — Onboarding AM", kind: "person", who: ["AM"], note: "The onboarding AM signs off the handover. Can be sent back to any earlier handover step for rework.", act: { type: "approve", role: "Onboarding AM", btn: "Sign off — Onboarding AM", rework: true, reworkSteps: [{ id: "t7.1", title: "Handover checklist" }, { id: "t7.2", title: "Handover call to Medium Team" }] } },
@@ -210,8 +210,6 @@ const MEDIUM_TEAM: OnbTemplate = {
     { id: "mt-i4", label: "Major expense channels", source: "client" },
     { id: "mt-i5", label: "Employee details / attach employee documents", source: "client" },
     { id: "mt-i6", label: "Pain points", source: "client" },
-    { id: "mt-i7", label: "Stakeholders", source: "client" },
-    { id: "mt-i8", label: "Reports they need", source: "client" },
     { id: "mt-i9", label: "Accounting software & historical months", source: "client", suggested: true },
     { id: "mt-i10", label: "Bank & payment gateways", source: "client", suggested: true },
     { id: "mt-i11", label: "VAT / CT status & fiscal year end", source: "client", suggested: true },
@@ -230,7 +228,7 @@ const MEDIUM_TEAM: OnbTemplate = {
   ],
   taskboard: [
     { id: "mt-t1", title: "Send magic link", owner: "AM", due: "Day 1", clientVisible: false, needsClient: false, chat: [] },
-    { id: "mt-t2", title: "Confirm all details received", owner: "Senior", due: "Day 4", clientVisible: true, needsClient: true, chat: [{ who: "Senior", text: "Hi — we're still missing your trade licence and last 3 months of bank statements.", t: "2 days ago" }] },
+    { id: "mt-t2", title: "Client data received — checklist", owner: "Senior", due: "Day 4", clientVisible: true, needsClient: true, chat: [{ who: "Senior", text: "Hi — we're still missing your trade licence and last 3 months of bank statements.", t: "2 days ago" }] },
     { id: "mt-t3", title: "Prepare COA", owner: "Senior", due: "Day 6", clientVisible: false, needsClient: false, approval: "AM", chat: [] },
     { id: "mt-t4", title: "Meeting with client", owner: "AM", due: "Day 8", clientVisible: true, needsClient: true, chat: [] },
     { id: "mt-t6", title: "Create projects and tasks", owner: "AM", due: "Day 16", clientVisible: false, needsClient: false, chat: [] },
@@ -258,7 +256,7 @@ const MICRO_TEAM: OnbTemplate = {
       { id: "m2.5", title: "Dispatch magic link to client", kind: "link", who: ["System"], note: "Sends the magic link (+ Drive link). 7-day expiry.", act: { type: "dispatch", btn: "Dispatch magic link" } },
     ], gate: { label: "AM Approval", after: "m2.3", sop: "Review the intake form (if used), the document list and the client task board, then confirm." } },
     { id: "m3", name: "COA Prep · Zoho Books", desc: "Senior prepares the COA and sets up Zoho Books. Penalty-risk compliance is triaged first. AM signs off.", steps: [
-      { id: "m3.1", title: "Confirm all details received", kind: "person", who: ["Senior"], note: "Cross off each item before COA prep. Attach the engagement contract to auto-detect catch-up backlog.", act: { type: "checklist", btn: "Confirm received", contract: true, items: ["Documents all collected", "Intake form completed (if used)", "Registrations confirmed (CT / VAT / WPS)", "Bank statements received"] } },
+      { id: "m3.1", title: "Client data received — checklist", kind: "person", who: ["Senior"], note: "Cross off each item before COA prep. Attach the engagement contract to auto-detect catch-up backlog.", act: { type: "checklist", btn: "Confirm received", contract: true, items: ["Documents all collected", "Intake form completed (if used)", "Registrations confirmed (CT / VAT / WPS)", "Bank statements received"] } },
       { id: "m3.1b", title: "Urgent compliance triage", kind: "person", who: ["AM", "Senior"], note: "Flag penalty-risk items if any.", act: { type: "triage", btn: "Assign urgent items" } },
       { id: "m3.2", title: "Prepare COA", kind: "person", who: ["Senior"], approval: { by: "AM" }, note: "Auto-populated from the industry, then edited and sent to the AM.", act: { type: "coa", btn: "Build COA" } },
       { id: "m3.3", title: "Set up Zoho Books & import COA", kind: "person", who: ["Senior"], approval: { by: "AM" }, note: "Connect Zoho Books, import the approved COA and confirm.", act: { type: "zoho", btn: "Import COA into Zoho" } },
@@ -280,7 +278,7 @@ const MICRO_TEAM: OnbTemplate = {
       { id: "m6.1", title: "Create internal projects & monthly tasks", kind: "person", who: ["AM"], note: "Internal delivery — not shown to the client.", act: { type: "project", btn: "Create projects & tasks", reopen: true } },
       { id: "m6.2", title: "Build the workflow diagrams", kind: "person", who: ["AM", "Senior"], note: "Map the delivery / monthly-close process.", act: { type: "diagram", btn: "Confirm diagrams built", toast: "Workflow diagrams saved to playbook" } },
     ] },
-    { id: "m7", name: "Handover", desc: "Structured handover to the recurring team: checklist, handover call, then dual sign-off.", steps: [
+    { id: "m7", name: "Handover", optional: true, desc: "Optional structured handover to the recurring team: checklist, handover call, then dual sign-off. Recommended, but the run can be completed without it.", steps: [
       { id: "m7.1", title: "Handover checklist", kind: "person", who: ["AM", "Senior"], note: "Confirm everything is in place before the handover call.", act: { type: "checklist", btn: "Checklist complete →", items: ["Access all shared via Zoho Vault", "Catch-up done (if any)", "Project & tasks created", "Drive shared"] } },
       { id: "m7.2", title: "Handover call to recurring team", kind: "person", who: ["AM", "Senior"], note: "Hold the handover call.", act: { type: "call", memo: true, memoTitle: "Onboarding → Recurring Team" } },
       { id: "m7.3", title: "Sign-off — Onboarding AM", kind: "person", who: ["AM"], note: "The onboarding AM signs off.", act: { type: "approve", role: "Onboarding AM", btn: "Sign off — Onboarding AM", rework: true, reworkSteps: [{ id: "m7.1", title: "Handover checklist" }, { id: "m7.2", title: "Handover call to recurring team" }] } },
@@ -292,7 +290,7 @@ const MICRO_TEAM: OnbTemplate = {
     { id: "mc-i1", label: "PMS-synced company data", source: "pms", hint: "Name, owner, TRN, entity" },
     { id: "mc-i2", label: "AI business description", source: "ai", hint: "Generated from the email domain" },
     { id: "mc-i3", label: "Primary revenue & expense channels", source: "client" },
-    { id: "mc-i4", label: "Key stakeholders & preferred contact", source: "client" },
+    { id: "mc-i4", label: "Preferred contact method", source: "client" },
     { id: "mc-i5", label: "Anything urgent we should know before the call", source: "client" },
   ],
   uploads: [

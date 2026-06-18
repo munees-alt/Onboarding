@@ -215,6 +215,7 @@ export async function generateRecurringTasks(
   }
 }
 
+export interface Deliverable { item: string; frequency: string; deadline: string }
 export interface ContractAnalysis {
   periodStart?: string; // YYYY-MM
   periodEnd?: string;
@@ -222,9 +223,19 @@ export interface ContractAnalysis {
   inclusions?: string[];
   exclusions?: string[];
   paymentTerms?: string;
+  deliverables?: Deliverable[]; // what we deliver + when (defaults applied, team-editable)
 }
 
-/** AI-extracts scope / period / inclusions / exclusions / payment terms from a pasted engagement contract. */
+/** Finanshels standard delivery cadence (UAE) — used when the contract doesn't specify timelines.
+ *  NOT exported: a "use server" file may only export async functions. */
+const DEFAULT_DELIVERABLES: Deliverable[] = [
+  { item: "Monthly management reports (P&L, balance sheet, cash flow)", frequency: "Monthly", deadline: "By the 15th of the following month" },
+  { item: "Bookkeeping & reconciliations", frequency: "Monthly", deadline: "By the 15th of the following month" },
+  { item: "VAT return preparation & submission", frequency: "Quarterly", deadline: "Within 28 days of quarter end" },
+  { item: "Corporate Tax return", frequency: "Annual", deadline: "Within 9 months of financial year end" },
+];
+
+/** AI-extracts scope / period / inclusions / exclusions / payment terms / deliverables from a pasted engagement contract. */
 export async function analyzeContract(runId: string, text: string): Promise<{ error?: string; result?: ContractAnalysis }> {
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in." };
@@ -234,11 +245,13 @@ export async function analyzeContract(runId: string, text: string): Promise<{ er
       runId,
       system: "You extract structured data from UAE accounting engagement contracts. Output ONLY JSON.",
       prompt:
-        `From this engagement contract, return ONLY JSON: {"periodStart":"YYYY-MM","periodEnd":"YYYY-MM","scope":"1-2 sentence summary","inclusions":["..."],"exclusions":["..."],"paymentTerms":"..."}. ` +
+        `From this engagement contract, return ONLY JSON: {"periodStart":"YYYY-MM","periodEnd":"YYYY-MM","scope":"1-2 sentence summary","inclusions":["..."],"exclusions":["..."],"paymentTerms":"...","deliverables":[{"item":"...","frequency":"Monthly|Quarterly|Annual|One-off","deadline":"plain-English due date"}]}. ` +
+        `For "deliverables", list every report or service we must deliver and WHEN. If the contract names a timeline, use it exactly. If it does not, apply Finanshels UAE defaults: monthly management reports & bookkeeping by the 15th of the FOLLOWING month; VAT return quarterly within 28 days of quarter-end; Corporate Tax annually within 9 months of year-end. ` +
         `periodStart/periodEnd are the service period. If a field is unknown use null/empty.\n\nContract:\n${text.slice(0, 8000)}`,
     });
     const start = out.indexOf("{"), end = out.lastIndexOf("}");
     const parsed = start >= 0 ? (JSON.parse(out.slice(start, end + 1)) as ContractAnalysis) : {};
+    if (!parsed.deliverables || parsed.deliverables.length === 0) parsed.deliverables = DEFAULT_DELIVERABLES;
     return { result: parsed };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI failed" };
@@ -400,7 +413,10 @@ export async function generateCoa(
     `accounting software ${client.accounting_software ?? "n/a"}.\n\n` +
     `Base "${tplIndustry}" chart of accounts (code | account | tag):\n` +
     accounts.map((a) => `${a.code} | ${a.account} | ${a.tag}`).join("\n") +
-    `\n\nReturn ONLY a JSON object: {"rationale":"2-3 sentences on why this COA fits the client",` +
+    `\n\nIMPORTANT — classify by the CLIENT'S OWN primary business activity, NOT the industry of their customers. ` +
+    `Example: a marketing agency serving F&B clients is a marketing / professional-services business (service revenue, no inventory/COGS) — it is NOT an F&B business. ` +
+    `If the client spans multiple activities, choose the broader fit and add accounts for each material revenue line. The base template above is only a starting point — adapt it to what this client actually does. ` +
+    `\n\nReturn ONLY a JSON object: {"industry":"the effective industry classification you used (e.g. 'Professional Services — Marketing')","rationale":"2-3 sentences on why this COA fits the client",` +
     `"accounts":[{"code":"","account":"","section":"","note":""}]}. ` +
     `Include every Mandatory account plus the optional ones relevant to this client's channels, gateways and VAT status. ` +
     `Add any client-specific accounts needed (e.g. payment-gateway clearing). ` +
@@ -410,7 +426,7 @@ export async function generateCoa(
   try {
     aiText = await runAi(session.profile.org_id, "coa", {
       runId,
-      system: "You are a UAE chart-of-accounts expert for an accounting firm. Be precise and FTA-compliant.",
+      system: "You are a UAE chart-of-accounts expert for an accounting firm. Be precise and FTA-compliant. When the client's industry is ambiguous or cross-industry, classify by their OWN primary activity (the service they provide), use the closest broad category, and never force a niche template that doesn't fit.",
       prompt,
     });
   } catch (e) {
@@ -429,7 +445,7 @@ export async function generateCoa(
   return {
     accounts: parsed.accounts.map((a) => ({ ...a, include: a.include !== false })),
     rationale: parsed.rationale ?? "",
-    industry: tplIndustry,
+    industry: (parsed as { industry?: string }).industry || tplIndustry,
   };
 }
 
@@ -444,8 +460,12 @@ export async function saveCoa(
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in." };
   const supabase = await createClient();
-  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
+
+  // Was this COA already prepared/signed off? If so, saving again is an EDIT — notify the team.
+  const { data: prior } = await supabase.from("coa_instances").select("status,client_signed_off").eq("run_id", runId).maybeSingle();
+  const isEdit = !!prior && (prior.client_signed_off || prior.status === "sa_adjusted" || prior.status === "signed_off");
 
   const { error } = await supabase.from("coa_instances").upsert(
     {
@@ -456,6 +476,14 @@ export async function saveCoa(
   );
   if (error) return { error: error.message };
 
-  await completeStep(runId, stepId);
+  if (isEdit) {
+    await supabase.from("notifications").insert({
+      org_id: run.org_id, run_id: runId, kind: "info",
+      title: "Chart of accounts edited",
+      body: `${session.teamMember?.full_name ?? session.email} updated the chart of accounts after it was finalised.`,
+    });
+  } else {
+    await completeStep(runId, stepId);
+  }
   return {};
 }

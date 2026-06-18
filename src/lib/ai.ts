@@ -37,46 +37,63 @@ function resolveModel(provider: Provider, model: string, apiKey: string) {
   return createGoogleGenerativeAI({ apiKey })(model);
 }
 
-function pickDefault(cfg: AiConfig): FeatureModel | null {
-  for (const p of ["anthropic", "openai", "google"] as Provider[]) {
-    if (cfg.keys[p]) return { provider: p, model: PROVIDER_MODELS[p].models[0] };
-  }
-  return null;
+/**
+ * Builds the ordered list of providers to try: the feature's configured provider
+ * first (if it has a key), then the remaining available providers in preference
+ * order (Anthropic → OpenAI → Google). Only providers with a saved key are kept.
+ */
+function candidateChain(cfg: AiConfig, feature: AiFeature): FeatureModel[] {
+  const order: Provider[] = ["anthropic", "openai", "google"];
+  const chain: FeatureModel[] = [];
+  const seen = new Set<Provider>();
+  const add = (p: Provider, model?: string) => {
+    if (seen.has(p) || !cfg.keys[p]) return;
+    seen.add(p);
+    chain.push({ provider: p, model: model ?? PROVIDER_MODELS[p].models[0] });
+  };
+  const configured = cfg.models[feature];
+  if (configured) add(configured.provider, configured.model);
+  order.forEach((p) => add(p));
+  return chain;
 }
 
-/** Runs an AI feature server-side using the org's configured provider/model. */
+/** Runs an AI feature server-side. Prefers Claude (or the feature's configured provider), falling back to any other connected provider on missing key or error. */
 export async function runAi(
   orgId: string,
   feature: AiFeature,
   opts: { system?: string; prompt: string; runId?: string | null },
 ): Promise<string> {
   const cfg = await getAiConfig(orgId);
-  const fm = cfg.models[feature] ?? pickDefault(cfg);
-  if (!fm) throw new Error("No AI provider key configured. Add one in Settings → AI.");
-  const key = cfg.keys[fm.provider];
-  if (!key) throw new Error(`No API key set for ${fm.provider}. Add it in Settings → AI.`);
+  const chain = candidateChain(cfg, feature);
+  if (!chain.length) throw new Error("No AI provider key configured. Add one in Settings → AI.");
 
   const admin = createAdminClient();
-  try {
-    const { text, usage } = await generateText({
-      model: resolveModel(fm.provider, fm.model, key),
-      system: opts.system,
-      prompt: opts.prompt,
-    });
-    const u = usage as { inputTokens?: number; outputTokens?: number; totalTokens?: number };
-    await admin.from("ai_generations").insert({
-      org_id: orgId, run_id: opts.runId ?? null, feature,
-      provider: fm.provider, model: fm.model,
-      prompt_tokens: u?.inputTokens ?? null, completion_tokens: u?.outputTokens ?? null,
-      total_tokens: u?.totalTokens ?? null, status: "ok",
-    });
-    return text;
-  } catch (e) {
-    await admin.from("ai_generations").insert({
-      org_id: orgId, run_id: opts.runId ?? null, feature,
-      provider: fm.provider, model: fm.model, status: "error",
-      error: e instanceof Error ? e.message : "unknown",
-    });
-    throw e;
+  let lastErr: unknown = null;
+  for (const fm of chain) {
+    const key = cfg.keys[fm.provider]!;
+    try {
+      const { text, usage } = await generateText({
+        model: resolveModel(fm.provider, fm.model, key),
+        system: opts.system,
+        prompt: opts.prompt,
+      });
+      const u = usage as { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+      await admin.from("ai_generations").insert({
+        org_id: orgId, run_id: opts.runId ?? null, feature,
+        provider: fm.provider, model: fm.model,
+        prompt_tokens: u?.inputTokens ?? null, completion_tokens: u?.outputTokens ?? null,
+        total_tokens: u?.totalTokens ?? null, status: "ok",
+      });
+      return text;
+    } catch (e) {
+      lastErr = e;
+      await admin.from("ai_generations").insert({
+        org_id: orgId, run_id: opts.runId ?? null, feature,
+        provider: fm.provider, model: fm.model, status: "error",
+        error: e instanceof Error ? e.message : "unknown",
+      });
+      // try the next provider in the chain
+    }
   }
+  throw lastErr instanceof Error ? lastErr : new Error("All AI providers failed.");
 }
