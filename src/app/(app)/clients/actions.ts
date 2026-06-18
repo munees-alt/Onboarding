@@ -158,6 +158,43 @@ export async function deleteClientAction(clientId: string): Promise<{ error?: st
   return {};
 }
 
+/** Bulk status change across selected clients. AM and up. */
+export async function bulkSetClientStatus(ids: string[], status: ManualClientStatus): Promise<{ error?: string; count?: number }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!["am", "team_lead", "ops_head", "admin"].includes(role)) return { error: "Only an AM or above can change client status." };
+  if (!ids.length) return { error: "Nothing selected." };
+  const supabase = await createClient();
+  const { error } = await supabase.from("clients").update({ status }).in("id", ids).eq("org_id", session.profile.org_id);
+  if (error) return { error: error.message };
+  await supabase.from("audit_events").insert({
+    org_id: session.profile.org_id, actor: session.teamMember?.full_name ?? session.email, actor_role: session.profile.role,
+    action: "client_status_changed_bulk", module: "clients", resource_ref: `${ids.length} clients set to ${status}`, resource_type: "client", details: { ids, status },
+  });
+  revalidatePath("/clients");
+  return { count: ids.length };
+}
+
+/** Bulk delete selected clients (runs cascade). Admin / Ops Head only. */
+export async function bulkDeleteClients(ids: string[]): Promise<{ error?: string; count?: number }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!["ops_head", "admin"].includes(role)) return { error: "Only the Master Admin or Ops Head can delete clients." };
+  if (!ids.length) return { error: "Nothing selected." };
+  const supabase = await createClient();
+  const { error } = await supabase.from("clients").delete().in("id", ids).eq("org_id", session.profile.org_id);
+  if (error) return { error: error.message };
+  await supabase.from("audit_events").insert({
+    org_id: session.profile.org_id, actor: session.teamMember?.full_name ?? session.email, actor_role: session.profile.role,
+    action: "client_deleted_bulk", module: "clients", resource_ref: `Deleted ${ids.length} clients and their runs`, resource_type: "client", details: { ids },
+  });
+  revalidatePath("/clients");
+  revalidatePath("/onboarding");
+  return { count: ids.length };
+}
+
 /** Permanently delete a single onboarding run (its steps/tasks cascade). Admin / Ops Head only. */
 export async function deleteRunAction(runId: string): Promise<{ error?: string }> {
   const session = await getSession();

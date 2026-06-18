@@ -6,9 +6,10 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
 import { useIdentity } from "@/components/identity-context";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
+import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, accessTypeById, type AccessItem } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, postMessage, saveDocuments, saveIntakePrep, saveDrive, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, uploadContractFile, getDocumentUrl, requestDocReupload, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, getBoardCols, saveBoardCols, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -40,7 +41,7 @@ function canEditStep(myRole: string, step: TemplateStep): boolean {
 const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior", junior: "Junior", team_lead: "Team Lead", ops_head: "Ops", intern: "Intern" };
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
-import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, generateCompliance, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
+import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
 
 const KIND_ICON: Record<string, { icon: string; color: string }> = {
   ai: { icon: "sparkles", color: "var(--purple)" },
@@ -79,8 +80,47 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
 
   if (!tpl) return <div className="page">Template not found.</div>;
 
-  // People who can own a task (seniors+team-leads and juniors+associates are already merged in detail).
-  const taskOwners = [...detail.seniors, ...detail.juniors];
+  // Task owners = the people actually assigned to THIS run (AM, Team Lead, Seniors, Juniors).
+  // Falls back to the senior/junior pool if no team is assigned yet. No unrelated org people.
+  const taskOwners = (() => {
+    const base = detail.assignedTeam.length
+      ? detail.assignedTeam.map((m) => ({ id: m.id, name: m.name }))
+      : [...detail.seniors, ...detail.juniors];
+    const seen = new Set<string>();
+    return base.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+  })();
+
+  // ── Org-chart cascade for the Assign Roles steps ──
+  // Team Lead options = the AM's reports; Senior options = the assigned Team
+  // Lead's reports; Junior options = the assigned Senior's reports. Anchored on
+  // the run's AM (detail.amId) and on each slot-step's actual assignee — so it's
+  // scoped to the selected AM's org subtree, not whoever is viewing.
+  const orgChildren: Record<string, { id: string; name: string; role: string }[]> = {};
+  detail.orgPeople.forEach((p) => { if (p.reportsTo) (orgChildren[p.reportsTo] ||= []).push({ id: p.id, name: p.name, role: p.role }); });
+  const descendantsOf = (anchorId: string | null): { id: string; name: string; role: string }[] => {
+    if (!anchorId) return [];
+    const out: { id: string; name: string; role: string }[] = [];
+    const seen = new Set<string>();
+    const queue = [...(orgChildren[anchorId] ?? [])];
+    while (queue.length) { const p = queue.shift()!; if (seen.has(p.id)) continue; seen.add(p.id); out.push(p); (orgChildren[p.id] ?? []).forEach((c) => queue.push(c)); }
+    return out;
+  };
+  // Map each assign slot (by its act.role) to the person currently assigned there.
+  const assigneeBySlot: Record<string, string | null> = {};
+  tpl.stages.forEach((s) => s.steps.forEach((st) => {
+    if (st.act?.type === "assign" && st.act.role) assigneeBySlot[st.act.role.trim().toLowerCase()] = detail.stepState[st.id]?.assigneeId ?? null;
+  }));
+  const eligibleForAssign = (step: TemplateStep): { id: string; name: string; role: string }[] => {
+    const role = (step.act?.role ?? "").trim().toLowerCase();
+    let anchor: string | null;
+    if (role.includes("team lead")) anchor = detail.amId;
+    else if (role.includes("senior")) anchor = assigneeBySlot["team lead"] ?? null;
+    else if (role.includes("junior")) anchor = assigneeBySlot["senior"] ?? null;
+    else anchor = detail.amId;
+    if (!anchor) return [];
+    const direct = orgChildren[anchor] ?? [];
+    return direct.length ? direct : descendantsOf(anchor); // flat-org fallback
+  };
 
   // Opening a step's action: the task-board step jumps to the board instead of a modal.
   const openAct = (step: TemplateStep) => {
@@ -255,13 +295,22 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
                           isActive={actId === step.id}
                           canEdit={canEditStep(effectiveRole, step)}
                           assignedName={detail.stepState[step.id]?.assignedName ?? null}
-                          people={detail.assignPeople}
+                          people={step.act?.type === "assign" ? eligibleForAssign(step) : detail.assignPeople}
                           busy={busy}
                           onOpenAct={() => openAct(step)}
                           onRollback={() => run(() => rollbackStep(detail.runId, step.id), "Step reopened")}
                           onAssignMembers={(members) => run(() => assignStepMembers(detail.runId, step.id, members), members.length ? `Assigned ${members.length} ${members.length === 1 ? "person" : "people"}` : "Step skipped")}
                         />
                       ))}
+                      {/Handover/i.test(stage.name) && detail.status !== "complete" && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, padding: "10px 12px", background: "var(--green-soft)", borderRadius: 10, flexWrap: "wrap" }}>
+                          <Icon name="flag" size={14} style={{ color: "var(--green)" }} />
+                          <span style={{ fontSize: 12.5, color: "var(--ink-2)", flex: 1, minWidth: 180 }}>No handover needed? Complete the onboarding now — marks every step done and moves the client live.</span>
+                          <button className="btn-primary" disabled={busy} onClick={() => { if (confirm("Complete this onboarding now and skip the remaining handover steps?")) run(() => completeOnboarding(detail.runId), "Onboarding completed — client is live"); }}>
+                            <Icon name="check-circle" size={13} /> Complete onboarding now
+                          </button>
+                        </div>
+                      )}
                       {stage.gate && (
                         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, padding: "10px 12px", background: "var(--orange-soft)", borderRadius: 10, color: "var(--orange)", fontWeight: 700, fontSize: 12.5 }}>
                           <Icon name="diamond" size={14} /> {stage.gate.label}
@@ -323,6 +372,8 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
           stepId={actStep.id}
           kind={actStep.act.type === "catchup" ? "catchup" : actStep.act.type === "project" ? "project" : "compliance"}
           existing={detail.items[actStep.act.type === "catchup" ? "catchup" : actStep.act.type === "project" ? "project" : "compliance"] ?? []}
+          people={detail.assignPeople}
+          assignedTeam={detail.assignedTeam}
           onClose={() => setActStep(null)}
           onDone={() => { setActStep(null); showToast("Saved"); router.refresh(); }}
         />
@@ -378,13 +429,35 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         <TriageModal
           runId={detail.runId}
           stepId={actStep.id}
-          people={[...detail.seniors, ...detail.juniors]}
+          people={(() => {
+            const ams = detail.assignPeople.filter((p) => p.role === "am" || /account manager/i.test(p.role)).map((p) => ({ id: p.id, name: p.name }));
+            if (ams.length) return ams;
+            return detail.amId ? [{ id: detail.amId, name: detail.amName ?? "Account Manager" }] : [];
+          })()}
           onClose={() => setActStep(null)}
-          onDone={() => { setActStep(null); showToast("Urgent items routed"); router.refresh(); }}
+          onDone={() => { setActStep(null); showToast("Run(s) created for the AM — they'll configure & assign"); router.refresh(); }}
         />
       )}
 
-      {actStep && !["coa", "diagram", "catchup", "project", "calendar", "triage", "agenda", "ai", "mom", "deck", "uploads", "intake", "drivelink"].includes(actStep.act?.type ?? "") && (
+      {actStep && actStep.act?.type === "access" && (
+        <AccessBuilderModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Access requests configured & shared in the portal"); router.refresh(); }}
+        />
+      )}
+
+      {actStep && actStep.act?.type === "contract" && (
+        <ContractBuilderModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Contract analysed — scope & deliverables shared in the portal"); router.refresh(); }}
+        />
+      )}
+
+      {actStep && !["coa", "diagram", "catchup", "project", "calendar", "triage", "agenda", "ai", "mom", "deck", "uploads", "intake", "drivelink", "access", "contract"].includes(actStep.act?.type ?? "") && (
         <RunStepModal
           runId={detail.runId}
           step={actStep}
@@ -618,6 +691,10 @@ function CoaBuilderModal({
   const [industry, setIndustry] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
+  const [openSec, setOpenSec] = useState<Record<string, boolean>>({});
+  const SEC_SECONDARY = ["Assets", "Liabilities", "Equity"];
+  const SEC_ORDER = ["Income", "Revenue", "Cost of Goods", "COGS", "Expenses", "Assets", "Liabilities", "Equity"];
+  const secOpen = (sec: string) => openSec[sec] ?? !SEC_SECONDARY.includes(sec);
 
   const generate = async () => {
     setPhase("loading");
@@ -635,7 +712,10 @@ function CoaBuilderModal({
     setPhase("review");
   };
 
-  const sections = [...new Set(lines.map((l) => l.section))];
+  const sections = [...new Set(lines.map((l) => l.section))].sort((a, b) => {
+    const ia = SEC_ORDER.indexOf(a), ib = SEC_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
 
   return (
     <div className="modal-overlay open" onClick={onClose}>
@@ -663,10 +743,18 @@ function CoaBuilderModal({
             <>
               {rationale && <div className="ai-response"><div className="hdr"><Icon name="sparkles" size={13} /> AI rationale</div>{rationale}</div>}
               {error && <div style={{ fontSize: 12, color: "var(--amber)", margin: "8px 0" }}>{error}</div>}
-              {sections.map((sec) => (
+              {sections.map((sec) => {
+                const count = lines.filter((l) => l.section === sec).length;
+                const on = lines.filter((l) => l.section === sec && l.include).length;
+                const open = secOpen(sec);
+                return (
                 <div key={sec} style={{ marginTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 6 }}>{sec}</div>
-                  {lines.map((l, i) => l.section === sec && (
+                  <button onClick={() => setOpenSec((s) => ({ ...s, [sec]: !open }))} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: 6 }}>
+                    <Icon name={open ? "chevron-down" : "chevron-right"} size={14} />
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)" }}>{sec}</span>
+                    <span className="pill" style={{ fontSize: 9.5 }}>{on}/{count}</span>
+                  </button>
+                  {open && lines.map((l, i) => l.section === sec && (
                     <div key={l.code + i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
                       <input type="checkbox" checked={l.include} onChange={(e) => setLines((arr) => arr.map((x, j) => (j === i ? { ...x, include: e.target.checked } : x)))} style={{ accentColor: "var(--orange)" }} />
                       <input value={l.code} onChange={(e) => setLines((arr) => arr.map((x, j) => (j === i ? { ...x, code: e.target.value } : x)))} style={{ fontFamily: "DM Mono, monospace", fontSize: 11, width: 56, border: "1px solid var(--border)", borderRadius: 6, padding: "4px 6px" }} />
@@ -674,9 +762,10 @@ function CoaBuilderModal({
                       <button className="icon-btn" onClick={() => setLines((arr) => arr.filter((_, j) => j !== i))} style={{ color: "var(--red)" }}><Icon name="trash-2" size={13} /></button>
                     </div>
                   ))}
-                  <button className="add-link" onClick={() => setLines((arr) => [...arr, { code: "", account: "New account", section: sec, include: true }])} style={{ marginTop: 4 }}><Icon name="plus" size={12} /> Add account</button>
+                  {open && <button className="add-link" onClick={() => setLines((arr) => [...arr, { code: "", account: "New account", section: sec, include: true }])} style={{ marginTop: 4 }}><Icon name="plus" size={12} /> Add account</button>}
                 </div>
-              ))}
+                );
+              })}
             </>
           )}
         </div>
@@ -725,7 +814,7 @@ function AssignPicker({
       </div>
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people…" style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 9px", fontSize: 12.5, marginBottom: 8 }} />
       <div style={{ maxHeight: 190, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
-        {filtered.length === 0 && <div style={{ fontSize: 12, color: "var(--ink-3)", padding: 8 }}>No matching people.</div>}
+        {filtered.length === 0 && <div style={{ fontSize: 12, color: "var(--ink-3)", padding: 8 }}>{people.length === 0 ? "No one available yet — assign the level above (Team Lead → Senior → Junior) first, so we can show their team." : "No matching people."}</div>}
         {filtered.map((p) => (
           <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", borderRadius: 7, cursor: "pointer", fontSize: 13, background: sel[p.id] ? "var(--bg)" : "transparent" }}>
             <input type="checkbox" checked={!!sel[p.id]} onChange={(e) => setSel((s) => ({ ...s, [p.id]: e.target.checked }))} style={{ accentColor: "var(--orange)" }} />
@@ -913,6 +1002,25 @@ function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat
         <MirrorChip icon="check-circle" label="COA sign-off" value={coaSignedOff ? "Signed off" : "Pending"} done={coaSignedOff} />
       </div>
 
+      {/* Sign-off proof — durable evidence the client confirmed their setup */}
+      {(() => {
+        const proof = detail.items["signoff"]?.[0]?.data as { signed?: boolean; at?: string; clientName?: string; signedBy?: string; signedEmail?: string | null; statement?: string } | undefined;
+        if (!proof?.signed) return null;
+        return (
+          <div className="runs-card" style={{ padding: 16, marginBottom: 14, borderLeft: "3px solid var(--green)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, marginBottom: 8 }}>
+              <Icon name="shield-check" size={15} style={{ color: "var(--green)" }} /> Onboarding sign-off — proof on record
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.6 }}>{proof.statement}</div>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10, fontSize: 12 }}>
+              <div><span style={{ color: "var(--ink-3)" }}>Signed by</span><br /><strong>{proof.signedBy ?? proof.clientName ?? "Client"}</strong></div>
+              {proof.signedEmail && <div><span style={{ color: "var(--ink-3)" }}>Verified email</span><br /><strong>{proof.signedEmail}</strong></div>}
+              {proof.at && <div><span style={{ color: "var(--ink-3)" }}>Date &amp; time</span><br /><strong>{new Date(proof.at).toLocaleString("en-GB")}</strong></div>}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Client-visible board */}
       <div className="runs-card" style={{ padding: 16, marginBottom: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Task board the client sees</div>
@@ -1034,6 +1142,17 @@ function TaskBoard({
       router.refresh();
     });
 
+  const emailSummary = () =>
+    start(async () => {
+      const label = (s: string) => ({ not_started: "Not started", in_progress: "In progress", complete: "Done", needs_input: "Needs your input", blocked: "Blocked" }[s] ?? s);
+      const body = "Here is the latest status of your onboarding tasks:\n\n" +
+        tasks.map((t) => `• ${t.title} — ${label(t.status)}`).join("\n") +
+        "\n\nReply to this email if anything needs a change.\n\n— Your Finanshels team";
+      const r = await sendClientEmail(runId, "Your onboarding — task summary", body);
+      setToast(r.error ? r.error : "Task summary emailed to the client");
+      setTimeout(() => setToast(null), 2600);
+    });
+
   return (
     <>
       <div className="section-head">
@@ -1046,6 +1165,7 @@ function TaskBoard({
           <button className="btn-ghost" onClick={() => setNudgeOpen(true)}><Icon name="bell" size={13} /> Nudge team</button>
           <button className="btn-ghost" onClick={() => setColMgr([...columns])}><Icon name="columns" size={13} /> Manage columns</button>
           <button className="btn-ghost" onClick={() => setSlaOpen(true)}><Icon name="bell-ring" size={13} /> Reminders</button>
+          <button className="btn-ghost" onClick={emailSummary} disabled={busy || tasks.length === 0}><Icon name="mail" size={13} /> Email summary</button>
           <button className="btn-primary" disabled={busy} onClick={() => change(() => addTask(runId, { title: "New task", boardColumn: columns[0] }))}>
             <Icon name="plus" size={14} /> Add task
           </button>
@@ -1475,13 +1595,27 @@ const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 const ITEM_TITLE: Record<string, string> = { catchup: "Catch-up board", project: "Internal projects & tasks", compliance: "Compliance calendar" };
 
 function ItemsBuilderModal({
-  runId, stepId, kind, existing, onClose, onDone,
+  runId, stepId, kind, existing, people = [], assignedTeam = [], onClose, onDone,
 }: {
   runId: string; stepId: string; kind: string;
   existing: { id: string; data: Record<string, unknown>; status: string }[];
+  people?: { id: string; name: string; role: string }[];
+  assignedTeam?: { id: string; name: string; role: string }[];
   onClose: () => void; onDone: () => void;
 }) {
-  const fields = ITEM_FIELDS[kind];
+  // Columns are configurable for the catch-up & compliance boards (add/remove/rename + dropdown options).
+  const configurable = kind === "catchup" || kind === "compliance";
+  const [cols, setCols] = useState<BoardCol[]>(ITEM_FIELDS[kind]);
+  const [colMgr, setColMgr] = useState(false);
+  useEffect(() => {
+    if (!configurable) return;
+    getBoardCols(runId, kind).then((r) => { if (r.cols) setCols(r.cols); });
+  }, [runId, kind, configurable]);
+  const fields = cols;
+  // Catch-up can be assigned to the onboarding team that's already on the run, or
+  // handed to a different team — the owner dropdown is filtered to the org chart.
+  const [catchupTeam, setCatchupTeam] = useState<"my" | "other">("my");
+  const ownerPool = (catchupTeam === "my" && assignedTeam.length ? assignedTeam : people);
   const blankRow = () => kind === "project" ? { task: "", cadence: "monthly", when: "" } : Object.fromEntries(fields.map((f) => [f.k, ""]));
   const [rows, setRows] = useState<Record<string, string>[]>(existing.length ? existing.map((e) => e.data as Record<string, string>) : [blankRow()]);
   const [saving, start] = useTransition();
@@ -1498,6 +1632,7 @@ function ItemsBuilderModal({
 
   const saveItems = (after?: "email") => start(async () => {
     const items: RunItemInput[] = rows.filter((r) => Object.values(r).some((v) => v)).map((r) => ({ data: r, status: "open" }));
+    if (configurable) await saveBoardCols(runId, kind, cols);
     const res = await saveRunItems(runId, stepId, kind, items);
     if (res.error) { setInfo(res.error); return; }
     if (after === "email") {
@@ -1516,11 +1651,39 @@ function ItemsBuilderModal({
           {kind === "compliance" && (
             <button className="btn-ai" disabled={aiBusy} onClick={aiCompliance} style={{ marginBottom: 10 }}><Icon name="sparkles" size={13} /> {aiBusy ? "Generating…" : "Generate from client (AI)"}</button>
           )}
+          {kind === "catchup" && (
+            <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Who runs the catch-up?</div>
+              <div className="radio-row">
+                <label className={"radio" + (catchupTeam === "my" ? " selected" : "")}><input type="radio" checked={catchupTeam === "my"} onChange={() => setCatchupTeam("my")} /><div><div className="r-ttl">Same onboarding team</div><div className="r-desc">The team already assigned to this run.</div></div></label>
+                <label className={"radio" + (catchupTeam === "other" ? " selected" : "")}><input type="radio" checked={catchupTeam === "other"} onChange={() => setCatchupTeam("other")} /><div><div className="r-ttl">A different catch-up team</div><div className="r-desc">Anyone in your team on the org chart.</div></div></label>
+              </div>
+              {ownerPool.length === 0 && <div style={{ fontSize: 12, color: "var(--amber)", marginTop: 8 }}>No team members available to assign yet.</div>}
+            </div>
+          )}
           {kind === "project" && (
             <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Describe the recurring tasks (optional AI)</div>
               <textarea className="notes" value={pBrief} onChange={(e) => setPBrief(e.target.value)} placeholder="e.g. Document request monthly 5th, bills & sales booking daily, salary processing monthly 25th, weekly sync meeting with client Thursday" style={{ minHeight: 56 }} />
               <button className="btn-ai" disabled={aiBusy || !pBrief.trim()} onClick={aiRecurring} style={{ marginTop: 6 }}><Icon name="sparkles" size={13} /> {aiBusy ? "Reading…" : "Generate tasks with AI"}</button>
+            </div>
+          )}
+          {configurable && (
+            <div style={{ marginBottom: 10 }}>
+              <button className="btn-ghost" onClick={() => setColMgr((v) => !v)}><Icon name="columns" size={13} /> {colMgr ? "Done managing columns" : "Manage columns"}</button>
+              {colMgr && (
+                <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {cols.map((c, i) => (
+                    <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <input value={c.l} onChange={(e) => setCols((cs) => cs.map((x, j) => (j === i ? { ...x, l: e.target.value } : x)))} placeholder="Column name" style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, width: 150 }} />
+                      <input value={(c.opts ?? []).join(", ")} onChange={(e) => setCols((cs) => cs.map((x, j) => (j === i ? { ...x, opts: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } : x)))} placeholder="Dropdown options (comma-separated) — blank = free text" style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, flex: 1, minWidth: 220 }} />
+                      <button className="icon-btn" style={{ color: "var(--red)" }} disabled={cols.length <= 1} onClick={() => setCols((cs) => cs.filter((_, j) => j !== i))}><Icon name="trash-2" size={13} /></button>
+                    </div>
+                  ))}
+                  <button className="add-link" onClick={() => setCols((cs) => [...cs, { k: "col" + cs.length + Math.floor(Math.random() * 1e4).toString(36), l: "New column" }])}><Icon name="plus" size={12} /> Add column</button>
+                  <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>Add comma-separated options to turn any column into a dropdown.</div>
+                </div>
+              )}
             </div>
           )}
           {kind === "project" ? (
@@ -1567,7 +1730,13 @@ function ItemsBuilderModal({
                 <tr key={i}>
                   {fields.map((f) => (
                     <td key={f.k}>
-                      {f.opts ? (
+                      {kind === "catchup" && f.k === "owner" ? (
+                        <select value={row[f.k] ?? ""} onChange={(e) => setCell(i, f.k, e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, minWidth: 130 }}>
+                          <option value="">Assign to…</option>
+                          {ownerPool.map((p) => <option key={p.id} value={p.name}>{p.name} · {ROLE_LBL[p.role] ?? p.role}</option>)}
+                          {row.owner && !ownerPool.some((p) => p.name === row.owner) && <option value={row.owner}>{row.owner}</option>}
+                        </select>
+                      ) : f.opts ? (
                         <select value={row[f.k] ?? ""} onChange={(e) => setCell(i, f.k, e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5 }}>
                           <option value="">—</option>{f.opts.map((o) => <option key={o} value={o}>{o}</option>)}
                         </select>
@@ -1604,21 +1773,22 @@ function TriageModal({
   return (
     <div className="modal-overlay open" onClick={onClose}>
       <div className="modal" style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
-        <div className="hd"><h3>Urgent compliance triage</h3><div className="sub">Flag penalty-risk items (CT / VAT / WPS / AML) and route each to a person — it lands in their My Work.</div></div>
+        <div className="hd"><h3>Urgent compliance triage</h3><div className="sub">Flag penalty-risk items (CT / VAT / WPS / AML) and route each to an Account Manager. A fast-track run is created for that AM to configure and assign the owner.</div></div>
         <div className="bd">
           {rows.map((row, i) => (
             <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
               <input placeholder="Risk item (e.g. CT registration overdue)" value={row.item} onChange={(e) => set(i, "item", e.target.value)} style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", fontSize: 13 }} />
               <select value={row.severity} onChange={(e) => set(i, "severity", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 8px" }}>{["High", "Medium", "Low"].map((s) => <option key={s}>{s}</option>)}</select>
-              <select value={row.memberId} onChange={(e) => set(i, "memberId", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 8px", maxWidth: 160 }}><option value="">Assign to…</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+              <select value={row.memberId} onChange={(e) => set(i, "memberId", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 8px", maxWidth: 170 }}><option value="">To which AM…</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
             </div>
           ))}
           <button className="add-link" onClick={() => setRows((r) => [...r, { item: "", memberId: "", severity: "High" }])}><Icon name="plus" size={12} /> Add item</button>
+          <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 10, display: "flex", gap: 6, alignItems: "flex-start" }}><Icon name="info" size={13} /> Each item creates a new run for the chosen AM. The run&apos;s steps start from a fast-track template the AM then configures for the specific item.</div>
         </div>
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className="btn-ghost" disabled={saving} onClick={() => start(async () => { await assignTriage(runId, stepId, []); onDone(); })}>No urgent items</button>
-          <button className="btn-primary" disabled={saving} onClick={() => start(async () => { const items = rows.filter((r) => r.item.trim() && r.memberId).map((r) => ({ item: r.item.trim(), memberId: r.memberId, memberName: people.find((p) => p.id === r.memberId)?.name ?? "", severity: r.severity })); const res = await assignTriage(runId, stepId, items); if (!res.error) onDone(); })}>{saving ? "Routing…" : "Assign & confirm"}</button>
+          <button className="btn-ghost" disabled={saving} onClick={() => start(async () => { await escalateUrgentCompliance(runId, stepId, []); onDone(); })}>No urgent items</button>
+          <button className="btn-primary" disabled={saving} onClick={() => start(async () => { const items = rows.filter((r) => r.item.trim() && r.memberId).map((r) => ({ item: r.item.trim(), amId: r.memberId, amName: people.find((p) => p.id === r.memberId)?.name ?? "", severity: r.severity })); const res = await escalateUrgentCompliance(runId, stepId, items); if (!res.error) onDone(); })}>{saving ? "Creating run(s)…" : "Create run(s) for AM"}</button>
         </div>
       </div>
     </div>
@@ -1806,6 +1976,7 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
             <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}><Icon name="pencil" size={12} /> Edit</button>
           </div>
           <button className="fsdeck-btn ghost" onClick={regen} disabled={phase === "loading"}><Icon name="refresh-cw" size={12} /> Regenerate</button>
+          <button className="fsdeck-btn ghost" onClick={() => window.print()} disabled={!deck}><Icon name="download" size={12} /> Download</button>
           <button className="fsdeck-btn ghost" onClick={onClose}>Close</button>
           <button className="fsdeck-btn primary" onClick={saveAndConfirm} disabled={!deck || saving}><Icon name="check" size={13} /> {saving ? "Saving…" : "Save & confirm step"}</button>
         </div>
@@ -2045,6 +2216,211 @@ function DocBuilderModal({
   );
 }
 
+function ContractBuilderModal({
+  runId, stepId, onClose, onDone,
+}: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
+  const supabase = createClient();
+  const [contractText, setContractText] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [ca, setCa] = useState<ContractAnalysis | null>(null);
+  const [contractFile, setContractFile] = useState<{ link: string; name: string } | null>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, startSave] = useTransition();
+
+  useEffect(() => {
+    supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "contract").maybeSingle().then(({ data }) => {
+      const d = data?.data as (ContractAnalysis & { fileLink?: string; fileName?: string }) | undefined;
+      if (d && Object.keys(d).length) { setCa(d); if (d.fileLink) setContractFile({ link: d.fileLink, name: d.fileName ?? "Contract file" }); }
+    });
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const onFile = async (file: File) => {
+    setUploadingFile(true);
+    const fd = new FormData(); fd.append("file", file);
+    const r = await uploadContractFile(runId, fd);
+    if (r.link) setContractFile({ link: r.link, name: r.name ?? file.name });
+    // Auto-analyse straight from the uploaded file — no need to paste the text.
+    setAnalyzing(true);
+    const fd2 = new FormData(); fd2.append("file", file);
+    const a = await analyzeContractFile(runId, fd2);
+    setAnalyzing(false);
+    setUploadingFile(false);
+    if (a.result) setCa(a.result);
+    else if (a.error) setError(a.error);
+  };
+  const analyze = async () => {
+    setAnalyzing(true);
+    const r = await analyzeContract(runId, contractText);
+    setAnalyzing(false);
+    if (r.result) setCa(r.result);
+  };
+  const upd = (patch: Partial<ContractAnalysis>) => setCa((c) => ({ ...(c ?? {}), ...patch }));
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 660, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>Upload contract & confirm what we deliver</h3><div className="sub">Attach or paste the engagement contract — AI extracts the scope, exclusions, payment terms and the reports we deliver. This is what the client sees in their portal.</div></div>
+        <div className="bd" style={{ maxHeight: "66vh" }}>
+          <div className="field">
+            <label>Engagement contract / proposal — just attach the file and AI reads it (or paste the text)</label>
+            <textarea className="notes" value={contractText} onChange={(e) => setContractText(e.target.value)} placeholder="Paste the contract / engagement letter text… (optional — attaching a PDF is enough)" style={{ minHeight: 80 }} />
+            <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <label className="btn-ai" style={{ cursor: uploadingFile || analyzing ? "default" : "pointer" }}>
+                <Icon name="paperclip" size={13} /> {uploadingFile ? "Uploading…" : analyzing ? "Reading the file…" : contractFile ? "Replace file & re-read" : "Attach contract & analyze"}
+                <input type="file" hidden disabled={uploadingFile || analyzing} onChange={(e) => { const f = e.target.files?.[0]; if (f) { setError(null); onFile(f); } e.target.value = ""; }} />
+              </label>
+              <button className="btn-ghost" type="button" disabled={analyzing || !contractText.trim()} onClick={() => { setError(null); analyze(); }}><Icon name="sparkles" size={13} /> {analyzing ? "Reading…" : "Analyze pasted text"}</button>
+              {contractFile && <a href={contractFile.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--orange)", fontWeight: 600 }}><Icon name="file-check" size={12} /> {contractFile.name}</a>}
+            </div>
+            {error && <div style={{ fontSize: 12, color: "var(--red)", marginTop: 6 }}>{error}</div>}
+          </div>
+          {ca && (
+            <>
+              <div className="field" style={{ margin: 0 }}><label>Scope (client sees this)</label><textarea className="notes" value={ca.scope ?? ""} onChange={(e) => upd({ scope: e.target.value })} style={{ minHeight: 50 }} /></div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 8 }}>
+                <div className="field" style={{ margin: 0 }}><label>Included (one per line)</label><textarea className="notes" value={(ca.inclusions ?? []).join("\n")} onChange={(e) => upd({ inclusions: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) })} style={{ minHeight: 60 }} /></div>
+                <div className="field" style={{ margin: 0 }}><label>Excluded (one per line)</label><textarea className="notes" value={(ca.exclusions ?? []).join("\n")} onChange={(e) => upd({ exclusions: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) })} style={{ minHeight: 60 }} /></div>
+              </div>
+              <div className="field" style={{ marginTop: 8 }}><label>Payment terms</label><input value={ca.paymentTerms ?? ""} onChange={(e) => upd({ paymentTerms: e.target.value })} /></div>
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>What we deliver &amp; when</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 6 }}>Standard deadlines pre-filled — edit per the client&apos;s request. Shown in the client portal.</div>
+                {(ca.deliverables ?? []).map((dv, i) => (
+                  <div key={i} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+                    <input value={dv.item} placeholder="Deliverable" onChange={(e) => upd({ deliverables: (ca.deliverables ?? []).map((x, j) => (j === i ? { ...x, item: e.target.value } : x)) })} style={{ flex: 3, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
+                    <input value={dv.frequency} placeholder="Frequency" onChange={(e) => upd({ deliverables: (ca.deliverables ?? []).map((x, j) => (j === i ? { ...x, frequency: e.target.value } : x)) })} style={{ width: 95, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
+                    <input value={dv.deadline} placeholder="Deadline" onChange={(e) => upd({ deliverables: (ca.deliverables ?? []).map((x, j) => (j === i ? { ...x, deadline: e.target.value } : x)) })} style={{ flex: 3, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
+                    <button className="icon-btn" style={{ color: "var(--red)" }} onClick={() => upd({ deliverables: (ca.deliverables ?? []).filter((_, j) => j !== i) })}><Icon name="x" size={12} /></button>
+                  </div>
+                ))}
+                <button className="add-link" style={{ marginTop: 6 }} onClick={() => upd({ deliverables: [...(ca.deliverables ?? []), { item: "New deliverable", frequency: "Monthly", deadline: "By the 15th of the following month" }] })}><Icon name="plus" size={12} /> Add deliverable</button>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn-primary" disabled={saving} onClick={() => startSave(async () => {
+            const data = (ca || contractFile) ? { ...((ca as unknown as Record<string, unknown>) ?? {}), ...(contractFile ? { fileLink: contractFile.link, fileName: contractFile.name } : {}) } : null;
+            const r = await saveContractAnalysis(runId, stepId, data);
+            if (!r.error) onDone();
+          })}>{saving ? "Saving…" : "Save & confirm"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface AccessEntry { on: boolean; label: string; systemName: string; method: string; sop: string }
+
+function AccessBuilderModal({
+  runId, stepId, onClose, onDone,
+}: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
+  const supabase = createClient();
+  const [email, setEmail] = useState(AUTHORISED_USER_EMAIL);
+  const [secureDefault, setSecureDefault] = useState(AUTHORISED_USER_EMAIL);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, start] = useTransition();
+  const [mailbox, setMailbox] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [entries, setEntries] = useState<Record<string, AccessEntry>>(() =>
+    Object.fromEntries(ACCESS_TYPES.map((t) => [t.id, { on: false, label: t.label, systemName: "", method: t.methods[0], sop: t.sop.join("\n") }])),
+  );
+
+  useEffect(() => {
+    Promise.all([
+      supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "access").order("sort"),
+      supabase.from("onboarding_runs").select("clients(name)").eq("id", runId).maybeSingle(),
+    ]).then(([{ data }, { data: runRow }]) => {
+      const cl = (runRow as { clients?: { name?: string } | { name?: string }[] } | null)?.clients;
+      const name = Array.isArray(cl) ? cl[0]?.name : cl?.name;
+      const slug = (name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24) || "client";
+      const secure = `secure+${slug}@finanshels.com`;
+      setSecureDefault(secure);
+      const rows = (data ?? []).map((r) => r.data as AccessItem);
+      if (rows.length) {
+        setEntries((prev) => {
+          const next = { ...prev };
+          rows.forEach((it) => {
+            next[it.id] = { on: true, label: it.label, systemName: it.systemName ?? "", method: it.method, sop: (it.sop ?? []).join("\n") };
+          });
+          return next;
+        });
+        const firstEmail = rows.find((r) => r.email)?.email;
+        setEmail(firstEmail || secure);
+      } else {
+        setEmail(secure); // default authorised user = the client's secure mailbox
+      }
+      setLoaded(true);
+    });
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const set = (id: string, patch: Partial<AccessEntry>) => setEntries((e) => ({ ...e, [id]: { ...e[id], ...patch } }));
+  const enabledCount = Object.values(entries).filter((e) => e.on).length;
+  const sendMailboxRequest = () => { setMailbox("sending"); requestSecureMailbox(runId, (email.split(",")[0] || secureDefault).trim()).then((r) => setMailbox(r.ok ? "sent" : "error")); };
+
+  const save = () => start(async () => {
+    const items: AccessItem[] = ACCESS_TYPES.filter((t) => entries[t.id].on).map((t) => {
+      const e = entries[t.id];
+      return { id: t.id, label: e.label.trim() || t.label, method: e.method, email: email.trim() || AUTHORISED_USER_EMAIL, sop: e.sop.split("\n").map((s) => s.trim()).filter(Boolean), systemName: e.systemName.trim() || undefined, status: "requested" };
+    });
+    const r = await saveAccess(runId, stepId, items);
+    if (!r.error) onDone();
+  });
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 720, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>Configure access requests</h3><div className="sub">Pick the systems the client must give us access to. Each shows a step-by-step SOP in their portal — editable here.</div></div>
+        <div className="bd" style={{ maxHeight: "66vh" }}>
+          <div className="field">
+            <label>Authorised user email(s) — used in every SOP. Comma-separate for more than one.</label>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder={secureDefault} />
+            <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+              {email.trim() !== secureDefault && <button className="btn-ghost" type="button" onClick={() => setEmail(secureDefault)}><Icon name="rotate-ccw" size={12} /> Use secure default ({secureDefault})</button>}
+              <button className="btn-ghost" type="button" disabled={mailbox === "sending"} onClick={sendMailboxRequest}>
+                <Icon name={mailbox === "sent" ? "check" : "mail"} size={12} /> {mailbox === "sending" ? "Sending…" : mailbox === "sent" ? "Mailbox request sent to Lohith" : mailbox === "error" ? "Couldn't send — retry" : "Request this mailbox from Lohith"}
+              </button>
+            </div>
+          </div>
+          {!loaded ? <div style={{ color: "var(--ink-3)", fontSize: 13 }}>Loading…</div> : ACCESS_TYPES.map((t) => {
+            const e = entries[t.id];
+            return (
+              <div key={t.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, marginBottom: 8, background: e.on ? "#fff" : "var(--bg-soft)" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13.5, fontWeight: 600 }}>
+                  <input type="checkbox" checked={e.on} onChange={(ev) => set(t.id, { on: ev.target.checked })} style={{ accentColor: "var(--orange)" }} />
+                  {t.label}
+                  <span className="pill gray" style={{ fontSize: 10, marginLeft: "auto" }}>{t.category}</span>
+                </label>
+                {e.on && (
+                  <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <div className="field" style={{ margin: 0 }}><label>Display label</label><input value={e.label} onChange={(ev) => set(t.id, { label: ev.target.value })} /></div>
+                      <div className="field" style={{ margin: 0 }}><label>Specific system name (optional)</label><input value={e.systemName} onChange={(ev) => set(t.id, { systemName: ev.target.value })} placeholder="e.g. Emirates NBD, Telr" /></div>
+                    </div>
+                    <div className="field" style={{ margin: 0 }}><label>How access is given</label>
+                      <select value={e.method} onChange={(ev) => set(t.id, { method: ev.target.value })}>{accessTypeById(t.id)!.methods.map((m) => <option key={m} value={m}>{m}</option>)}</select>
+                    </div>
+                    <div className="field" style={{ margin: 0 }}><label>SOP — one step per line ({"{email}"} is auto-filled)</label>
+                      <textarea className="notes" value={e.sop} onChange={(ev) => set(t.id, { sop: ev.target.value })} style={{ minHeight: 100, fontFamily: "inherit" }} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn-primary" disabled={saving} onClick={save}>{saving ? "Saving…" : `Save & share ${enabledCount || ""} access ${enabledCount === 1 ? "request" : "requests"}`}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const UAE_BANKS = ["Emirates NBD", "First Abu Dhabi Bank", "ADCB", "Dubai Islamic Bank", "Mashreq", "RAKBANK", "ADIB", "Commercial Bank of Dubai", "Emirates Islamic", "Sharjah Islamic Bank", "NBF", "Ajman Bank", "Wio Bank", "HSBC UAE", "Citibank"];
 const GATEWAYS = ["Telr", "Network International", "Stripe", "PayPal", "Checkout.com", "Amazon Payment Services", "Tap", "Ziina", "Mamo"];
 const SOFTWARE = ["Zoho Books", "QuickBooks", "Xero", "Tally", "Odoo", "SAP", "Oracle NetSuite", "Wafeq", "Excel / Spreadsheets", "None / Other"];
@@ -2184,29 +2560,9 @@ function IntakeBuilderModal({
 function DriveBuilderModal({
   runId, stepId, onClose, onDone,
 }: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
-  const [contractText, setContractText] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
-  const [ca, setCa] = useState<ContractAnalysis | null>(null);
-  const [contractFile, setContractFile] = useState<{ link: string; name: string } | null>(null);
-  const [uploadingFile, setUploadingFile] = useState(false);
   const [saving, startSave] = useTransition();
-
-  const onContractFile = async (file: File) => {
-    setUploadingFile(true);
-    const fd = new FormData(); fd.append("file", file);
-    const r = await uploadContractFile(runId, fd);
-    setUploadingFile(false);
-    if (r.link) setContractFile({ link: r.link, name: r.name ?? file.name });
-  };
-
-  const analyze = async () => {
-    setAnalyzing(true);
-    const r = await analyzeContract(runId, contractText);
-    setAnalyzing(false);
-    if (r.result) { setCa(r.result); if (r.result.periodStart) setStart(r.result.periodStart); if (r.result.periodEnd) setEnd(r.result.periodEnd); }
-  };
 
   const months = (() => {
     if (!start || !end) return [];
@@ -2219,47 +2575,13 @@ function DriveBuilderModal({
 
   return (
     <div className="modal-overlay open" onClick={onClose}>
-      <div className="modal" style={{ width: 640 }} onClick={(e) => e.stopPropagation()}>
-        <div className="hd"><h3>Create & share Drive folders</h3><div className="sub">Paste the engagement contract — AI reads the service period and builds the Books folders for those months.</div></div>
-        <div className="bd" style={{ maxHeight: "66vh" }}>
-          <div className="field">
-            <label>Engagement contract — attach a file or paste the text (both optional)</label>
-            <textarea className="notes" value={contractText} onChange={(e) => setContractText(e.target.value)} placeholder="Paste the contract / engagement letter text…" style={{ minHeight: 80 }} />
-            <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
-              <button className="btn-ai" type="button" disabled={analyzing || !contractText.trim()} onClick={analyze}><Icon name="sparkles" size={13} /> {analyzing ? "Reading…" : "Analyze text with AI"}</button>
-              <label className="btn-ghost" style={{ cursor: uploadingFile ? "default" : "pointer" }}>
-                <Icon name="paperclip" size={13} /> {uploadingFile ? "Uploading…" : contractFile ? "Replace contract file" : "Attach contract file"}
-                <input type="file" hidden disabled={uploadingFile} onChange={(e) => { const f = e.target.files?.[0]; if (f) onContractFile(f); e.target.value = ""; }} />
-              </label>
-              {contractFile && <a href={contractFile.link} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--orange)", fontWeight: 600 }}><Icon name="file-check" size={12} /> {contractFile.name}</a>}
-            </div>
-          </div>
+      <div className="modal" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>Create & share Drive folders</h3><div className="sub">Set the service period — we build the Books folders for those months and share the Drive link.</div></div>
+        <div className="bd" style={{ maxHeight: "60vh" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div className="field"><label>Service period — start</label><input type="month" value={start} onChange={(e) => setStart(e.target.value)} /></div>
             <div className="field"><label>Service period — end</label><input type="month" value={end} onChange={(e) => setEnd(e.target.value)} /></div>
           </div>
-          {ca && (
-            <div className="ai-response" style={{ marginTop: 0 }}>
-              <div className="hdr"><Icon name="file-text" size={13} /> Contract breakdown</div>
-              {ca.scope && <div style={{ marginBottom: 6 }}><strong>Scope:</strong> {ca.scope}</div>}
-              {ca.inclusions?.length ? <div><strong>Included:</strong> {ca.inclusions.join(", ")}</div> : null}
-              {ca.exclusions?.length ? <div><strong>Excluded:</strong> {ca.exclusions.join(", ")}</div> : null}
-              {ca.paymentTerms && <div><strong>Payment:</strong> {ca.paymentTerms}</div>}
-              <div style={{ marginTop: 10 }}>
-                <strong>What we deliver &amp; when</strong>
-                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 6 }}>Standard deadlines pre-filled — edit per the client&apos;s request. This is what the client sees in their portal.</div>
-                {(ca.deliverables ?? []).map((dv, i) => (
-                  <div key={i} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
-                    <input value={dv.item} placeholder="Deliverable" onChange={(e) => setCa((c) => ({ ...c!, deliverables: (c!.deliverables ?? []).map((x, j) => (j === i ? { ...x, item: e.target.value } : x)) }))} style={{ flex: 3, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
-                    <input value={dv.frequency} placeholder="Frequency" onChange={(e) => setCa((c) => ({ ...c!, deliverables: (c!.deliverables ?? []).map((x, j) => (j === i ? { ...x, frequency: e.target.value } : x)) }))} style={{ width: 90, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
-                    <input value={dv.deadline} placeholder="Deadline" onChange={(e) => setCa((c) => ({ ...c!, deliverables: (c!.deliverables ?? []).map((x, j) => (j === i ? { ...x, deadline: e.target.value } : x)) }))} style={{ flex: 3, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
-                    <button className="icon-btn" style={{ color: "var(--red)" }} onClick={() => setCa((c) => ({ ...c!, deliverables: (c!.deliverables ?? []).filter((_, j) => j !== i) }))}><Icon name="x" size={12} /></button>
-                  </div>
-                ))}
-                <button className="add-link" style={{ marginTop: 6 }} onClick={() => setCa((c) => ({ ...c!, deliverables: [...(c!.deliverables ?? []), { item: "New deliverable", frequency: "Monthly", deadline: "By the 15th of the following month" }] }))}><Icon name="plus" size={12} /> Add deliverable</button>
-              </div>
-            </div>
-          )}
           <div style={{ marginTop: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 6 }}>Folders to create</div>
             <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7 }}>
@@ -2270,8 +2592,7 @@ function DriveBuilderModal({
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn-primary" disabled={saving} onClick={() => startSave(async () => {
-            const contractData = (ca || contractFile) ? { ...((ca as unknown as Record<string, unknown>) ?? {}), ...(contractFile ? { fileLink: contractFile.link, fileName: contractFile.name } : {}) } : null;
-            const r = await saveDrive(runId, stepId, { periodStart: start || undefined, periodEnd: end || undefined, contract: contractData });
+            const r = await saveDrive(runId, stepId, { periodStart: start || undefined, periodEnd: end || undefined, contract: null });
             if (!r.error) onDone();
           })}>{saving ? "Creating…" : "Create folders & share link"}</button>
         </div>

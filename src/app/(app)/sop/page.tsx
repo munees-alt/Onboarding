@@ -7,7 +7,7 @@ export default async function SopPage() {
   const supabase = await createClient();
   const { data } = await supabase
     .from("sops")
-    .select("id,title,industry,steps,created_by_name,created_at")
+    .select("id,title,industry,steps,scope,flow,category,client_id,created_by_name,created_at")
     .order("created_at", { ascending: false });
   return <SopLibrary sops={(data ?? []) as SopRow[]} />;
 }

@@ -42,6 +42,10 @@ export interface RunDetail {
   seniors: { id: string; name: string }[];
   juniors: { id: string; name: string }[];
   assignPeople: { id: string; name: string; role: string }[];
+  assignedTeam: { id: string; name: string; role: string }[];
+  amId: string | null;
+  /** Full org chart (unscoped) for the AM→TeamLead→Senior→Junior cascade. */
+  orgPeople: { id: string; name: string; role: string; reportsTo: string | null }[];
   portalLink: { token: string; email: string | null } | null;
   lastMessageAt: string | null;
   tasks: TaskRow[];
@@ -90,7 +94,7 @@ export async function getRunDetail(
     supabase.from("coa_instances").select("accounts,client_signed_off").eq("run_id", runId).maybeSingle(),
     supabase.from("documents").select("id,label,status,storage_path,review_note").eq("run_id", runId).order("created_at"),
     supabase.from("run_diagrams").select("name,nodes").eq("run_id", runId).order("sort"),
-    supabase.from("run_team").select("role_in_run,team_members(full_name)").eq("run_id", runId),
+    supabase.from("run_team").select("role_in_run,team_members(id,full_name,role)").eq("run_id", runId),
     supabase.from("magic_links").select("token,email").eq("run_id", runId).eq("purpose", "portal").maybeSingle(),
     supabase.from("run_messages").select("created_at").eq("run_id", runId).order("created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
@@ -136,16 +140,18 @@ export async function getRunDetail(
     due: t.service ?? null,
     boardColumn: t.board_column ?? null,
   }));
+  const pbTeamRows = (pbTeam ?? []) as { role_in_run: string; team_members: { id: string; full_name: string; role: string } | { id: string; full_name: string; role: string }[] | null }[];
+  const assignedTeam = pbTeamRows
+    .map((t) => { const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members; return tm ? { id: tm.id, name: tm.full_name, role: t.role_in_run } : null; })
+    .filter((x): x is { id: string; name: string; role: string } => !!x);
+
   const playbook: RunDetail["playbook"] = {
     profile: pbClient ?? {},
     intake: (pbIntake?.submitted as Record<string, unknown>) ?? null,
     coa: pbCoa ? { accounts: (pbCoa.accounts ?? []) as { code: string; account: string; section: string }[], signedOff: pbCoa.client_signed_off } : null,
     documents: (pbDocs ?? []).map((d) => ({ id: d.id, label: d.label, status: d.status, storagePath: d.storage_path ?? null, reviewNote: d.review_note ?? null })),
     diagrams: (pbDiag ?? []).map((d) => ({ name: d.name, nodes: (d.nodes ?? []) as { id: string; label: string; type: string }[] })),
-    team: (pbTeam ?? []).map((t: { role_in_run: string; team_members: { full_name: string } | { full_name: string }[] | null }) => {
-      const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members;
-      return { role: t.role_in_run, name: tm?.full_name ?? "—" };
-    }),
+    team: assignedTeam.map((t) => ({ role: t.role, name: t.name })),
   };
 
   // Org-chart scoping: a non-admin/ops viewer can only assign people who report
@@ -187,6 +193,9 @@ export async function getRunDetail(
     seniors: (srs ?? []).map((m) => ({ id: m.id, name: m.full_name })),
     juniors: (jrs ?? []).map((m) => ({ id: m.id, name: m.full_name })),
     assignPeople: assignablePool.map((m) => ({ id: m.id, name: m.full_name, role: m.role })),
+    assignedTeam,
+    amId: (run.am_id as string | null) ?? null,
+    orgPeople: apsRows.map((m) => ({ id: m.id, name: m.full_name, role: m.role, reportsTo: m.reports_to ?? null })),
     portalLink: portalLinkRow ? { token: portalLinkRow.token as string, email: (portalLinkRow.email as string | null) ?? null } : null,
     lastMessageAt: (lastMsgRow?.created_at as string | undefined) ?? null,
   };

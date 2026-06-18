@@ -10,6 +10,8 @@ import {
   setClientStatusAction,
   deleteClientAction,
   deleteRunAction,
+  bulkSetClientStatus,
+  bulkDeleteClients,
   type NewClientInput,
 } from "./actions";
 
@@ -93,10 +95,31 @@ export function ClientsTable({
   const [menuFor, setMenuFor] = useState<{ id: string; x: number; y: number } | null>(null);
   const [confirmDel, setConfirmDel] = useState<{ kind: "client" | "run"; id: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkConfirm, setBulkConfirm] = useState(false);
 
   const showToast = (msg: string, kind = "green") => {
     setToast({ msg, kind });
     setTimeout(() => setToast(null), 2600);
+  };
+
+  const toggleSel = (id: string) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const clearSel = () => setSelected(new Set());
+
+  const bulkStatus = async (status: "active" | "hold" | "paused", label: string) => {
+    const ids = [...selected];
+    const res = await bulkSetClientStatus(ids, status);
+    if (res.error) showToast(res.error, "red");
+    else { showToast(`${res.count ?? ids.length} ${label}`); clearSel(); router.refresh(); }
+  };
+  const bulkDelete = async () => {
+    const ids = [...selected];
+    setBusy(true);
+    const res = await bulkDeleteClients(ids);
+    setBusy(false);
+    setBulkConfirm(false);
+    if (res.error) showToast(res.error, "red");
+    else { showToast(`${res.count ?? ids.length} clients deleted`); clearSel(); router.refresh(); }
   };
 
   const changeStatus = async (clientId: string, status: "active" | "hold" | "paused" | "lead", label: string) => {
@@ -203,9 +226,28 @@ export function ClientsTable({
             </div>
           </div>
 
+          {selected.size > 0 && (canManageStatus || canDelete) && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "var(--orange-soft)", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 13 }}>{selected.size} selected</strong>
+              {canManageStatus && <>
+                <button className="btn-ghost" onClick={() => bulkStatus("active", "reactivated")}><Icon name="play" size={13} /> Reactivate</button>
+                <button className="btn-ghost" onClick={() => bulkStatus("hold", "put on hold")}><Icon name="pause" size={13} /> Hold</button>
+                <button className="btn-ghost" onClick={() => bulkStatus("paused", "paused")}><Icon name="pause-circle" size={13} /> Pause</button>
+              </>}
+              {canDelete && <button className="btn-ghost" style={{ color: "var(--red)" }} onClick={() => setBulkConfirm(true)}><Icon name="trash-2" size={13} /> Delete</button>}
+              <button className="btn-ghost" style={{ marginLeft: "auto" }} onClick={clearSel}>Clear</button>
+            </div>
+          )}
           <table className="runs-table">
             <thead>
               <tr>
+                {(canManageStatus || canDelete) && (
+                  <th style={{ width: 34 }}>
+                    <input type="checkbox" aria-label="Select all"
+                      checked={filtered.length > 0 && filtered.every((c) => selected.has(c.id))}
+                      onChange={(e) => { e.stopPropagation(); setSelected(e.target.checked ? new Set(filtered.map((c) => c.id)) : new Set()); }} />
+                  </th>
+                )}
                 <th>Client</th>
                 <th>Industry</th>
                 <th>Services</th>
@@ -217,7 +259,7 @@ export function ClientsTable({
             <tbody>
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>
+                  <td colSpan={7} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>
                     No clients match.
                   </td>
                 </tr>
@@ -226,6 +268,11 @@ export function ClientsTable({
                 const run = runByClient[c.id];
                 return (
                   <tr key={c.id} onClick={() => openClient(c)}>
+                    {(canManageStatus || canDelete) && (
+                      <td onClick={(e) => e.stopPropagation()} style={{ width: 34 }}>
+                        <input type="checkbox" aria-label={`Select ${c.name}`} checked={selected.has(c.id)} onChange={() => toggleSel(c.id)} />
+                      </td>
+                    )}
                     <td>
                       <div className="client-cell">
                         <div className="client" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -414,6 +461,21 @@ export function ClientsTable({
               <button className="btn-danger" onClick={doDelete} disabled={busy}>
                 {busy ? "Deleting…" : confirmDel.kind === "client" ? "Delete client" : "Delete run"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bulkConfirm && (
+        <div className="modal-overlay open" style={{ zIndex: 90 }} onClick={() => !busy && setBulkConfirm(false)}>
+          <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd">
+              <h3>Delete {selected.size} clients?</h3>
+              <div className="sub">This permanently deletes the {selected.size} selected clients and ALL their onboarding runs, tasks, documents and messages. This cannot be undone.</div>
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setBulkConfirm(false)} disabled={busy}>Cancel</button>
+              <button className="btn-danger" onClick={bulkDelete} disabled={busy}>{busy ? "Deleting…" : `Delete ${selected.size} clients`}</button>
             </div>
           </div>
         </div>

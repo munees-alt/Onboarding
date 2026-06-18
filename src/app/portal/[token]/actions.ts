@@ -11,7 +11,7 @@ async function resolve(token: string) {
   const admin = createAdminClient();
   const { data } = await admin
     .from("magic_links")
-    .select("id,client_id,run_id,org_id,expires_at,purpose")
+    .select("id,client_id,run_id,org_id,expires_at,purpose,email")
     .eq("token", token)
     .maybeSingle();
   if (!data) return null;
@@ -219,24 +219,53 @@ export async function attachPortalTaskFile(token: string, taskRef: string, formD
   return { ok: true };
 }
 
+/** Client confirms they've granted a specific access (FTA / bank / gateway / software …). */
+export async function confirmAccessItem(token: string, rowId: string, note?: string): Promise<{ error?: string; ok?: boolean }> {
+  const link = await resolve(token);
+  if (!link?.run_id) return { error: "Link invalid or expired." };
+  const admin = createAdminClient();
+  const { data: row } = await admin.from("run_items").select("data").eq("id", rowId).eq("run_id", link.run_id).eq("kind", "access").maybeSingle();
+  if (!row) return { error: "Access item not found." };
+  const data = { ...(row.data as Record<string, unknown>), status: "granted", note: note?.trim() || undefined };
+  const { error } = await admin.from("run_items").update({ data, status: "granted" }).eq("id", rowId).eq("run_id", link.run_id);
+  if (error) return { error: error.message };
+  await admin.from("notifications").insert({
+    org_id: link.org_id, run_id: link.run_id, kind: "info",
+    title: "Client granted access", body: `${String((data as { label?: string }).label ?? "Access")} marked as granted by the client.`,
+  });
+  revalidatePath(`/portal/${token}`);
+  return { ok: true };
+}
+
 /** Client signs off their onboarding — notifies the team in-app and in the run chat. */
-export async function signOffOnboarding(token: string): Promise<{ error?: string; ok?: boolean }> {
+export async function signOffOnboarding(token: string, signerName?: string): Promise<{ error?: string; ok?: boolean }> {
   const link = await resolve(token);
   if (!link?.run_id) return { error: "Link invalid or expired." };
   const admin = createAdminClient();
   const { data: client } = await admin.from("clients").select("name").eq("id", link.client_id).maybeSingle();
   const cname = client?.name ?? "The client";
+  const signer = signerName?.trim() || cname;
+  const at = new Date().toISOString();
+  // Durable proof record — kept as evidence the client confirmed their setup.
+  const proof = {
+    signed: true,
+    at,
+    clientName: cname,
+    signedBy: signer,
+    signedEmail: link.email ?? null,
+    statement: `${signer} reviewed and confirmed the onboarding setup for ${cname} (chart of accounts, documents and configuration) via the secure Finanshels client portal. Access was verified by email code.`,
+  };
   await admin.from("run_items").delete().eq("run_id", link.run_id).eq("kind", "signoff");
   await admin.from("run_items").insert(
-    { run_id: link.run_id, client_id: link.client_id, kind: "signoff", data: { signed: true, at: new Date().toISOString() } },
+    { run_id: link.run_id, client_id: link.client_id, kind: "signoff", data: proof },
   );
   await admin.from("run_messages").insert({
     run_id: link.run_id, author_name: "System", author_role: "System",
-    body: `${cname} has signed off their onboarding. Everything is confirmed on the client side.`,
+    body: `✅ ${signer} signed off the onboarding for ${cname} on ${new Date(at).toLocaleString("en-GB")}. Saved as proof.`,
   });
   await admin.from("notifications").insert({
     org_id: link.org_id, run_id: link.run_id, kind: "milestone",
-    title: "Client signed off their onboarding", body: `${cname} confirmed their setup looks right.`,
+    title: "Client signed off their onboarding", body: `${signer} confirmed ${cname}'s setup — proof saved.`,
   });
   revalidatePath(`/portal/${token}`);
   return { ok: true };

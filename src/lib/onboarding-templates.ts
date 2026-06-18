@@ -168,8 +168,10 @@ const MEDIUM_TEAM: OnbTemplate = {
       { id: "t1.3", title: "Assign Junior Accountant", kind: "person", who: ["AM"], note: "Default: most-available junior. AM can override.", act: { type: "assign", role: "Junior" } },
     ] },
     { id: "t2", name: "Send Magic Link", desc: "Prepare the intake form, the document upload list and the task board — then dispatch the client magic link.", steps: [
+      { id: "t2.0a", title: "Upload contract & confirm deliverables", kind: "doc", who: ["AM", "Senior"], note: "Attach or paste the engagement contract — AI extracts the scope, exclusions, payment terms and the reports we deliver (with timelines). Shown to the client in their portal Live tab.", act: { type: "contract", btn: "Upload & analyze contract" } },
       { id: "t2.1", title: "Prepare intake form set (optional)", kind: "ai", who: ["AI", "Senior"], note: "OPTIONAL — decide yes/no. If yes, the PMS-synced + AI-drafted intake form is prepared and the Senior reviews before it goes out.", config: "intake", act: { type: "intake", btn: "Prepare intake form", optional: true } },
       { id: "t2.2", title: "Set document upload list", kind: "doc", who: ["Senior"], note: "Mandatory. Trade licence, tax certificates, MOA, owner EIDs/passports, trackers.", config: "uploads", act: { type: "uploads", btn: "Set document list" } },
+      { id: "t2.2b", title: "Configure system access requests", kind: "person", who: ["Senior"], note: "Choose which systems the client must give us access to (FTA portal, bank, payment gateways, accounting software, payroll…). Each gets a step-by-step SOP in the client portal.", act: { type: "access", btn: "Configure access requests" } },
       { id: "t2.3", title: "Set the client task board", kind: "person", who: ["AM", "Senior"], note: "Mandatory. The board the client sees in their portal — toggle what's client-visible.", config: "taskboard", act: { type: "taskboard", btn: "Set client task board" } },
       { id: "t2.4", title: "Create & share client Drive link", kind: "link", who: ["System", "Senior"], note: "The Drive folder is auto-created when onboarding starts. Generate the shareable link — saved to the run and sent with the magic link.", act: { type: "drivelink", btn: "Create & share Drive link", toast: "Drive link created and shared with the client" } },
       { id: "t2.5", title: "Dispatch magic link to client", kind: "link", who: ["System"], note: "Sends the magic link (+ Drive link) to the client's email and Fincore chat. 7-day expiry.", act: { type: "dispatch", btn: "Dispatch magic link" } },
@@ -184,8 +186,7 @@ const MEDIUM_TEAM: OnbTemplate = {
     { id: "t4", name: "Call with Client", desc: "Optional AI agenda sent ahead, then the client meeting covering COA review. AI generates the minutes of meeting from the recording.", steps: [
       { id: "t4.0", title: "Generate & send call agenda (optional)", kind: "ai", who: ["AI", "AM"], note: "Optional — AI drafts a call agenda from the intake + brief. Review and send before the call.", act: { type: "agenda", btn: "Generate & send agenda" } },
       { id: "t4.1", title: "Meeting — COA review & other discussions", kind: "person", who: ["AM", "Senior"], note: "Hold the client meeting. Cross off each coverage point, then add the recording link and your notes.", act: { type: "call", cover: ["Business model & revenue understood", "Payroll / salary points covered", "Accounting & compliance scope agreed", "COA reviewed with the client", "Required documents walked through", "Open questions logged"] } },
-      { id: "t4.2", title: "AI generates Minutes of Meeting", kind: "ai", who: ["AI"], note: "MOM drafted from the recording. Review and confirm before it goes out.", act: { type: "ai", btn: "Generate MOM" } },
-      { id: "t4.3", title: "Send MOM to client", kind: "link", who: ["System"], note: "Opens the full email — client name and company auto-inserted, signed off by Finanshels. Review and send.", act: { type: "mom", btn: "Open MOM email" } },
+      { id: "t4.2", title: "AI Minutes of Meeting — review & send", kind: "ai", who: ["AI", "AM"], note: "AI drafts the MOM from your meeting notes and recording link. Review, edit, then send to the client — one step.", act: { type: "mom", btn: "Generate & send MOM" } },
     ] },
     { id: "t5", name: "Catch-up Accounting", desc: "If the client has a backlog, catch-up runs here as a sub-tracked board before go-live. Senior review unlocks only once every catch-up task is done.", steps: [
       { id: "t5.1", title: "Configure & run catch-up tasks", kind: "person", who: ["Junior"], note: "Decide if catch-up is needed. If yes, a pop-up opens to set up the monthly catch-up board — editable any time.", act: { type: "catchup", btn: "Configure catch-up tasks", popup: true, reopen: true } },
@@ -249,8 +250,10 @@ const MICRO_TEAM: OnbTemplate = {
       { id: "m1.3", title: "Assign Junior Accountant", kind: "person", who: ["AM"], note: "Default: most-available junior. AM can override.", act: { type: "assign", role: "Junior" } },
     ] },
     { id: "m2", name: "Send Magic Link", desc: "Prepare the (optional) intake form, the document upload list and the task board, create the Drive link — then dispatch the magic link.", steps: [
+      { id: "m2.0a", title: "Upload contract & confirm deliverables", kind: "doc", who: ["AM", "Senior"], note: "Attach or paste the engagement contract — AI extracts scope, exclusions, payment terms and the reports we deliver (with timelines). Shown to the client in their portal.", act: { type: "contract", btn: "Upload & analyze contract" } },
       { id: "m2.1", title: "Prepare intake form set (optional)", kind: "ai", who: ["AI", "Senior"], note: "OPTIONAL — decide yes/no.", config: "intake", act: { type: "intake", btn: "Prepare intake form", optional: true } },
       { id: "m2.2", title: "Set document upload list", kind: "doc", who: ["Senior"], note: "Mandatory. Standard UAE document set.", config: "uploads", act: { type: "uploads", btn: "Set document list" } },
+      { id: "m2.2b", title: "Configure system access requests", kind: "person", who: ["Senior"], note: "Choose which systems the client must give us access to (FTA portal, bank, gateways, software…). Each gets a step-by-step SOP in the client portal.", act: { type: "access", btn: "Configure access requests" } },
       { id: "m2.3", title: "Set the client task board", kind: "person", who: ["AM", "Senior"], note: "Mandatory. Toggle what's client-visible.", config: "taskboard", act: { type: "taskboard", btn: "Set client task board" } },
       { id: "m2.4", title: "Create & share client Drive link", kind: "link", who: ["System", "Senior"], note: "Generate the shareable Drive link.", act: { type: "drivelink", btn: "Create & share Drive link", toast: "Drive link created and shared with the client" } },
       { id: "m2.5", title: "Dispatch magic link to client", kind: "link", who: ["System"], note: "Sends the magic link (+ Drive link). 7-day expiry.", act: { type: "dispatch", btn: "Dispatch magic link" } },
@@ -263,12 +266,10 @@ const MICRO_TEAM: OnbTemplate = {
       { id: "m3.4", title: "Create compliance calendar", kind: "ai", who: ["AI", "Senior"], note: "Auto-populated from filing due dates and document expiries.", act: { type: "calendar", btn: "Create compliance calendar", reopen: true } },
     ], gate: { label: "AM Approval", after: "m3.4", sop: "Review the COA numbering, Zoho import and compliance calendar, then approve." } },
     { id: "m4", name: "Call with Client", desc: "Contract-scoped branded deck opens the call, an optional AI agenda is sent ahead, then the meeting runs from a coverage checklist.", steps: [
-      { id: "m4.0a", title: "Attach contract & confirm deck scope", kind: "person", who: ["AM", "Senior"], note: "Attach the engagement contract — the branded deck's scope is built from it.", act: { type: "checklist", btn: "Confirm scope from contract", contract: true, items: ["Engagement contract attached", "Services in scope confirmed", "Fees & timeline confirmed"] } },
-      { id: "m4.0b", title: "Branded onboarding deck", kind: "ai", who: ["AI", "AM"], note: "Auto-generated client-facing deck, scoped from the contract + CRM + intake. Advisory only.", act: { type: "deck", btn: "Generate onboarding deck" } },
+      { id: "m4.0b", title: "Branded onboarding deck", kind: "ai", who: ["AI", "AM"], note: "Auto-generated client-facing deck, scoped from the contract + CRM + intake. Download or present.", act: { type: "deck", btn: "Generate onboarding deck" } },
       { id: "m4.0", title: "Generate & send call agenda (optional)", kind: "ai", who: ["AI", "AM"], note: "Optional — AI drafts a call agenda.", act: { type: "agenda", btn: "Generate & send agenda" } },
       { id: "m4.1", title: "Meeting — COA review & other discussions", kind: "person", who: ["AM", "Senior"], note: "Hold the client meeting.", act: { type: "call", cover: ["Business model & revenue understood", "Payroll / salary points covered", "Accounting & compliance scope agreed", "COA reviewed with the client", "Required documents walked through", "Open questions logged"] } },
-      { id: "m4.2", title: "AI generates Minutes of Meeting", kind: "ai", who: ["AI"], note: "MOM drafted from the recording.", act: { type: "ai", btn: "Generate MOM" } },
-      { id: "m4.3", title: "Send MOM to client", kind: "link", who: ["System"], note: "Opens the full email.", act: { type: "mom", btn: "Open MOM email" } },
+      { id: "m4.2", title: "AI Minutes of Meeting — review & send", kind: "ai", who: ["AI", "AM"], note: "AI drafts the MOM from your meeting notes and recording link. Review, edit, then send to the client — one step.", act: { type: "mom", btn: "Generate & send MOM" } },
     ] },
     { id: "m5", name: "Catch-up Accounting", desc: "If the client has a backlog, catch-up runs here before go-live.", steps: [
       { id: "m5.1", title: "Configure & run catch-up tasks", kind: "person", who: ["Junior"], note: "Decide if catch-up is needed.", act: { type: "catchup", btn: "Configure catch-up tasks", popup: true, reopen: true } },
@@ -312,7 +313,32 @@ const MICRO_TEAM: OnbTemplate = {
   ],
 };
 
-export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM];
+// Fast-track run created when an urgent compliance item is escalated to an AM.
+// Deliberately minimal — the AM configures the real steps and assigns the owner.
+const URGENT_COMPLIANCE: OnbTemplate = {
+  id: "urgent-compliance",
+  name: "Urgent Compliance",
+  tier: "Escalation",
+  teamLabel: "AM-led fast track",
+  desc: "Fast-track run for an urgent compliance item escalated from onboarding. Configure the steps and assign the owner.",
+  color: "red",
+  live: true,
+  usedBy: 0,
+  stages: [
+    { id: "uc1", name: "Triage & assign", desc: "Assign an owner and confirm the scope of the urgent item.", steps: [
+      { id: "uc1.1", title: "Assign the owner for this item", kind: "person", who: ["AM"], note: "Pick who will action this urgent compliance item.", act: { type: "assign", role: "Senior", btn: "Assign owner" } },
+      { id: "uc1.2", title: "Configure the resolution steps", kind: "person", who: ["AM"], note: "This run was auto-created from an escalation. Edit its tasks/template to fit the specific compliance item, then confirm.", act: { type: "checklist", btn: "Mark configured", items: ["Scope of the urgent item confirmed", "Owner assigned", "Deadline set"] } },
+    ] },
+    { id: "uc2", name: "Resolve", desc: "Work the item to closure.", steps: [
+      { id: "uc2.1", title: "Resolve & confirm the compliance item", kind: "person", who: ["Senior"], act: { type: "checklist", btn: "Mark resolved", items: ["Action taken", "Evidence filed to Drive", "Client / authority confirmed"] } },
+    ] },
+  ],
+  uploads: [],
+  intake: [],
+  taskboard: [],
+};
+
+export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE];
 export const templateById = (id: string) => ONB_TEMPLATES.find((t) => t.id === id);
 
 export function stepCount(t: OnbTemplate) {

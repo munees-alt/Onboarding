@@ -1,7 +1,7 @@
 "use server";
 
 import coaDataRaw from "@/lib/coa-templates.json";
-import { runAi } from "@/lib/ai";
+import { runAi, getAiConfig } from "@/lib/ai";
 import { getSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { completeStep } from "./actions";
@@ -45,7 +45,7 @@ import type { AiFeature } from "@/lib/ai-config";
 const TEXT_FEATURE_PROMPT: Record<string, { feature: AiFeature; instruction: string }> = {
   agenda: { feature: "agenda", instruction: "Write a polished, client-ready kickoff-call agenda as a short email with a greeting and 5-7 clear agenda points. Ready to send as-is." },
   ai: { feature: "mom", instruction: "Write professional minutes of meeting as a ready-to-send client email: warm greeting to the client by name, a short paragraph on what was covered, a 'Decisions' list, an 'Action items' list (each with owner and due date), 'Next steps', and a Finanshels sign-off. Complete and polished." },
-  mom: { feature: "mom", instruction: "Write the minutes-of-meeting email to send to the client now: greeting by name, summary, decisions, action items (owner + due), next steps, signed off by the Finanshels team. Ready to send." },
+  mom: { feature: "mom", instruction: "Write the minutes-of-meeting email to send to the client now, based STRICTLY on the meeting notes provided (the recording link is for the client's reference — you cannot watch it, so do not invent anything not in the notes). Structure: warm greeting by name; a 2-3 sentence summary of what was discussed; 'Key points discussed'; 'Decisions made'; 'Action items' (each with owner and due date); 'Next steps'; include the recording link line; Finanshels sign-off. Professional, specific to this meeting, ready to send." },
   welcome_email: { feature: "welcome_email", instruction: "Write a warm, professional welcome email from the Finanshels account manager to the client after the kickoff call: thank them, confirm scope and timeline, note the COA review and next steps, sign off. Ready to send." },
   deck: { feature: "handover_summary", instruction: "Write a short, branded client onboarding deck as slide-by-slide content (Slide title + 1-2 lines each): Welcome, Scope of service, Your team, Timeline & milestones, What we need from you, How we work. Client-ready." },
   brief: { feature: "brief", instruction: "Write a sharp internal pre-call brief: business overview, UAE regulatory points (VAT/CT/WPS), the 4-5 best questions to ask on the call, risk/complexity flags, and a COA template recommendation. Concise and specific." },
@@ -258,6 +258,54 @@ export async function analyzeContract(runId: string, text: string): Promise<{ er
   }
 }
 
+const CONTRACT_JSON_INSTRUCTION =
+  `Read this UAE accounting engagement contract and return ONLY JSON: ` +
+  `{"periodStart":"YYYY-MM","periodEnd":"YYYY-MM","scope":"1-2 sentence summary","inclusions":["..."],"exclusions":["..."],"paymentTerms":"...","deliverables":[{"item":"...","frequency":"Monthly|Quarterly|Annual|One-off","deadline":"plain-English due date"}]}. ` +
+  `For "deliverables", list every report/service we must deliver and WHEN. If the contract names a timeline use it exactly; otherwise apply Finanshels UAE defaults (monthly management reports & bookkeeping by the 15th of the following month; VAT quarterly within 28 days of quarter-end; Corporate Tax annually within 9 months of year-end). If a field is unknown use null/empty.`;
+
+/**
+ * Analyse a contract from the UPLOADED FILE (PDF, etc.) — no pasted text needed.
+ * Uses OpenAI's native file understanding (the org's OpenAI key). Falls back with a clear
+ * message if no OpenAI key is configured (the team can still paste text).
+ */
+export async function analyzeContractFile(runId: string, formData: FormData): Promise<{ error?: string; result?: ContractAnalysis }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "No file selected." };
+  const cfg = await getAiConfig(session.profile.org_id);
+  const key = cfg.keys.openai;
+  if (!key) return { error: "Add an OpenAI key in Settings to read files automatically, or paste the contract text." };
+  try {
+    // 1) upload the file to OpenAI
+    const up = new FormData();
+    up.append("purpose", "user_data");
+    up.append("file", file);
+    const upRes = await fetch("https://api.openai.com/v1/files", { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: up });
+    if (!upRes.ok) return { error: `Couldn't read the file (upload ${upRes.status}). Try pasting the text.` };
+    const fileId = (await upRes.json()).id as string;
+    // 2) ask the model to extract the structured contract data from the file
+    const r = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        input: [{ role: "user", content: [{ type: "input_text", text: CONTRACT_JSON_INSTRUCTION }, { type: "input_file", file_id: fileId }] }],
+      }),
+    });
+    if (!r.ok) return { error: `Couldn't analyse the file (${r.status}). Try pasting the text.` };
+    const j = await r.json();
+    const text: string = j.output_text
+      ?? ((j.output ?? []).flatMap((o: { content?: { text?: string }[] }) => (o.content ?? []).map((c) => c.text)).filter(Boolean).join("\n"));
+    const s = text.indexOf("{"), e = text.lastIndexOf("}");
+    const parsed = s >= 0 ? (JSON.parse(text.slice(s, e + 1)) as ContractAnalysis) : {};
+    if (!parsed.deliverables || parsed.deliverables.length === 0) parsed.deliverables = DEFAULT_DELIVERABLES;
+    return { result: parsed };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "AI failed" };
+  }
+}
+
 /** AI-researches the client from email domain + industry → client-facing description. */
 export async function generateBusinessDescription(runId: string): Promise<{ error?: string; text?: string }> {
   const session = await getSession();
@@ -265,14 +313,14 @@ export async function generateBusinessDescription(runId: string): Promise<{ erro
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
-  const { data: client } = await supabase.from("clients").select("name,industry,entity_type,primary_contact_email").eq("id", run.client_id).maybeSingle();
+  const { data: client } = await supabase.from("clients").select("name,industry,entity_type,primary_contact_email,revenue_channels").eq("id", run.client_id).maybeSingle();
   if (!client) return { error: "Client not found." };
   const domain = (client.primary_contact_email ?? "").split("@")[1] ?? "";
   try {
     const text = await runAi(session.profile.org_id, "brief", {
       runId,
-      system: "You research UAE businesses. Write a concise, client-facing description (3-5 sentences) of what THIS business does — confirming back 'here's what we understood about your business'. Describe ONLY the client's business; never mention our firm, Finanshels, or the accounting services we provide. If the domain/industry give you too little to go on, say plainly that there's limited public information and ask the client to confirm — do NOT invent specifics, named products, or figures.",
-      prompt: `Company: ${client.name}. Industry: ${client.industry ?? "unknown"}. Entity: ${client.entity_type ?? "unknown"}. Email domain: ${domain || "unknown"}. Using the domain and industry only, describe what this business most likely does, its likely revenue model and customer base in the UAE. If unsure, say so rather than guessing.`,
+      system: "You profile UAE businesses for an accounting firm's onboarding. Write a confident, client-facing business description in 3-5 sentences that covers: (1) WHAT the business does, (2) HOW it makes money (its revenue model / main revenue streams), (3) WHO its customers are, and (4) how it positions itself in the market. Describe ONLY the client's own business — never mention our firm, Finanshels, or accounting services. The company's website is its email domain (the part after the @). Reason from that domain/brand and the industry. Only if the domain is a generic mailbox (gmail/outlook/yahoo) or truly gives nothing should you say information is limited and ask the client to confirm — otherwise write a real description. Do not invent specific figures or named contracts.",
+      prompt: `Company: ${client.name}. Industry: ${client.industry ?? "unknown"}. Entity: ${client.entity_type ?? "unknown"}. Website domain (from the email address, the part after @): ${domain || "unknown"}. Revenue channels on file: ${(client.revenue_channels ?? []).join(", ") || "n/a"}. Write the business description — what they do, how they make money, their customers, and their positioning in the UAE market.`,
     });
     return { text };
   } catch (e) {
@@ -399,6 +447,16 @@ export async function generateCoa(
   const { data: client } = await supabase.from("clients").select("*").eq("id", run.client_id).maybeSingle();
   if (!client) return { error: "Client not found." };
 
+  // Pull the client's intake answers — every revenue/expense channel, bank and gateway
+  // they gave us MUST appear as an account in the COA.
+  const { data: intake } = await supabase.from("intake_forms").select("submitted,prefilled").eq("run_id", runId).maybeSingle();
+  const intakeData = (intake?.submitted ?? intake?.prefilled ?? {}) as Record<string, unknown>;
+  const asArr = (v: unknown) => (Array.isArray(v) ? (v as unknown[]).map(String) : []);
+  const intakeRevenue = [...new Set([...asArr(intakeData.revenue), ...(client.revenue_channels ?? [])])];
+  const intakeExpense = asArr(intakeData.expense);
+  const intakeBanks = [...new Set([...asArr(intakeData.banks), ...(client.bank_names ?? [])])];
+  const intakeGateways = [...new Set([...asArr(intakeData.gateways), ...(client.payment_gateways ?? [])])];
+
   const tplIndustry = INDUSTRY_MAP[client.industry as string] ?? "General COA";
   const accounts = coaData[tplIndustry] ?? coaData["General COA"];
   const mandatoryLines: CoaLine[] = accounts
@@ -413,6 +471,9 @@ export async function generateCoa(
     `accounting software ${client.accounting_software ?? "n/a"}.\n\n` +
     `Base "${tplIndustry}" chart of accounts (code | account | tag):\n` +
     accounts.map((a) => `${a.code} | ${a.account} | ${a.tag}`).join("\n") +
+    `\n\nMUST-HAVE accounts from the client's intake form — create a dedicated account for EACH of these (they are confirmed by the client, so they must appear): ` +
+    `revenue channels [${intakeRevenue.join(", ") || "none given"}]; expense channels [${intakeExpense.join(", ") || "none given"}]; ` +
+    `banks [${intakeBanks.join(", ") || "none given"}] (each = a bank/cash account under Assets); payment gateways [${intakeGateways.join(", ") || "none given"}] (each = a gateway clearing account). ` +
     `\n\nIMPORTANT — classify by the CLIENT'S OWN primary business activity, NOT the industry of their customers. ` +
     `Example: a marketing agency serving F&B clients is a marketing / professional-services business (service revenue, no inventory/COGS) — it is NOT an F&B business. ` +
     `If the client spans multiple activities, choose the broader fit and add accounts for each material revenue line. The base template above is only a starting point — adapt it to what this client actually does. ` +

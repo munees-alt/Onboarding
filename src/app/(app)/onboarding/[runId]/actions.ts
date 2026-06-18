@@ -7,6 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getSession } from "@/lib/auth";
 import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, type DriveFolderNode } from "@/lib/google";
 import { getTemplate } from "@/lib/templates-store";
+import { createRunFromTemplate } from "@/lib/runs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const KIND_TO_TYPE: Record<string, string> = { ai: "ai", link: "link", doc: "form", check: "manual", person: "manual" };
@@ -393,6 +394,50 @@ export async function saveDocuments(runId: string, stepId: string, labels: strin
   return {};
 }
 
+/** Emails Lohith (IT) to create the client's secure shared mailbox (e.g. secure+acme@finanshels.com). */
+export async function requestSecureMailbox(runId: string, secureEmail: string): Promise<{ error?: string; ok?: boolean }> {
+  const session = await getSession();
+  if (!session?.teamMember?.id) return { error: "Connect your Google account first to send the request." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: client } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+  const body = `Please create a secure shared mailbox for client onboarding.\n\nClient: ${client?.name ?? "—"}\nMailbox: ${secureEmail}\n\nThis address will be used as the authorised user when the client grants us access to their systems (FTA, bank, gateways, etc.).\n\nRequested by ${session.teamMember.full_name ?? session.email}.`;
+  const res = await sendGmailAs(session.teamMember.id, "lohith@finanshels.com", `Create secure mailbox: ${secureEmail}`, body);
+  if (!res.ok) return { error: res.error ?? "Could not send the email." };
+  return { ok: true };
+}
+
+/** Saves the engagement-contract analysis (scope / inclusions / exclusions / payment / deliverables)
+    as run_items kind 'contract' — shown in the client portal Live tab — then completes the step. */
+export async function saveContractAnalysis(runId: string, stepId: string, contract: Record<string, unknown> | null): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "contract");
+  if (contract) await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "contract", data: contract });
+  await completeStep(runId, stepId);
+  return {};
+}
+
+/** Saves the access-grant configuration (FTA / bank / gateway / software …) as run_items
+    (kind 'access'), one row per access, then completes the step. */
+export async function saveAccess(runId: string, stepId: string, items: import("@/lib/access-sops").AccessItem[]): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "access");
+  const clean = items.filter((it) => it.label?.trim());
+  if (clean.length) {
+    const { error } = await supabase.from("run_items").insert(
+      clean.map((it, i) => ({ run_id: runId, client_id: run.client_id, kind: "access", data: it, status: it.status ?? "requested", sort: i })),
+    );
+    if (error) return { error: error.message };
+  }
+  await completeStep(runId, stepId);
+  return {};
+}
+
 /** Saves a call step's recording link + notes into the step payload, then completes it.
     These are what the MoM generator reads — without them the MoM can't be generated. */
 export async function saveCallNotes(runId: string, stepId: string, recording: string, notes: string): Promise<{ error?: string }> {
@@ -525,6 +570,28 @@ export async function notifyClientOnTask(runId: string, taskRef: string, message
 export interface RunItemInput { data: Record<string, unknown>; status?: string }
 
 /** Replaces all run_items of a kind, then completes the step. */
+export interface BoardCol { k: string; l: string; opts?: string[] }
+
+/** Loads the saved column config for a run board (catch-up / compliance), or null for defaults. */
+export async function getBoardCols(runId: string, kind: string): Promise<{ cols?: BoardCol[] }> {
+  const supabase = await createClient();
+  const { data } = await supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", `${kind}_cols`).maybeSingle();
+  const cols = (data?.data as { cols?: BoardCol[] } | null)?.cols;
+  return { cols: Array.isArray(cols) && cols.length ? cols : undefined };
+}
+
+/** Saves a board's column config (add/remove/rename columns + dropdown options). */
+export async function saveBoardCols(runId: string, kind: string, cols: BoardCol[]): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", `${kind}_cols`);
+  const { error } = await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: `${kind}_cols`, data: { cols } });
+  if (error) return { error: error.message };
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 export async function saveRunItems(runId: string, stepId: string | null, kind: string, items: RunItemInput[]) {
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
@@ -568,6 +635,40 @@ export async function assignTriage(runId: string, stepId: string, items: { item:
   }
   await completeStep(runId, stepId);
   return {};
+}
+
+/**
+ * Urgent compliance → routed to an AM. For each item we CREATE A NEW RUN (urgent-compliance
+ * template) owned by that AM, so they configure the steps and assign the owner. The run is
+ * created even though its template still needs configuring.
+ */
+export async function escalateUrgentCompliance(
+  runId: string, stepId: string,
+  items: { item: string; amId: string; amName: string; severity: string }[],
+): Promise<{ error?: string; created?: number }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  let created = 0;
+  for (const it of items) {
+    if (!it.amId || !it.item.trim()) continue;
+    const newRunId = await createRunFromTemplate(supabase, {
+      orgId: run.org_id, clientId: run.client_id, amId: it.amId, templateId: "urgent-compliance",
+    });
+    await supabase.from("notifications").insert({
+      org_id: run.org_id, run_id: newRunId, recipient_id: it.amId, kind: "escalation",
+      title: `Urgent compliance run created: ${it.item}`,
+      body: `Severity ${it.severity}. A fast-track run was created for you — configure its steps and assign the owner.`,
+    });
+    created++;
+  }
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "triage");
+  if (items.length) {
+    await supabase.from("run_items").insert(items.map((it, i) => ({ run_id: runId, client_id: run.client_id, kind: "triage", data: { ...it, memberName: it.amName }, status: "escalated", sort: i })));
+  }
+  await completeStep(runId, stepId);
+  revalidatePath(`/onboarding/${runId}`);
+  return { created };
 }
 
 export interface DiagramNode { id: string; label: string; type: string; x?: number; y?: number }
@@ -803,6 +904,34 @@ export async function dispatchMagicLink(runId: string): Promise<{ error?: string
     await supabase.from("magic_links").update({ email: clientEmail }).eq("token", token);
   }
   return { token, url: `/portal/${token}`, email: clientEmail };
+}
+
+/** Completes the whole onboarding immediately (e.g. handover not needed): marks every
+    step complete, closes the run and moves the client live. AM level or above. */
+export async function completeOnboarding(runId: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  const myRole = session?.teamMember?.role ?? session?.profile.role;
+  if ((ROLE_RANK[myRole ?? ""] ?? 0) < ROLE_RANK.am) {
+    return { error: "Only an Account Manager or above can complete the onboarding." };
+  }
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const tpl = await getTemplate(run.template_key);
+  if (!tpl) return { error: "Template missing." };
+  // Upsert every template step as complete so recompute closes the run.
+  const now = new Date().toISOString();
+  for (const [si, stage] of tpl.stages.entries()) {
+    for (const step of stage.steps) {
+      await supabase.from("run_steps").upsert(
+        { run_id: runId, step_no: step.id, stage_no: si + 1, title: step.title, type: KIND_TO_TYPE[step.kind] ?? "manual", status: "complete", completed_at: now },
+        { onConflict: "run_id,step_no" },
+      );
+    }
+  }
+  await recompute(supabase, runId, run.template_key);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
 }
 
 export async function rollbackToStage(runId: string, stageNo: number) {

@@ -3,7 +3,8 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { confirmCoa, commentCoa, uploadDocFile, uploadDocsBatch, submitIntake, postPortalMessage, signOffOnboarding, attachPortalTaskFile, documentViewUrl } from "./actions";
+import { confirmCoa, commentCoa, uploadDocFile, uploadDocsBatch, submitIntake, postPortalMessage, signOffOnboarding, attachPortalTaskFile, documentViewUrl, confirmAccessItem } from "./actions";
+import { renderSopLine } from "@/lib/access-sops";
 
 export interface PortalData {
   token: string;
@@ -29,6 +30,7 @@ export interface PortalData {
   software: string | null;
   onboardingPartner: string | null;
   csm: { name: string; email: string | null } | null;
+  access: { rowId: string; label: string; method: string; email: string; sop: string[]; systemName?: string; status: string; note?: string }[];
 }
 export interface IntakePrepView {
   enabled?: boolean;
@@ -61,7 +63,7 @@ const UAE_ACCT_SW = [
   "Excel / Google Sheets", "No system yet",
 ];
 
-type Screen = "welcome" | "intake" | "tasks" | "live";
+type Screen = "welcome" | "intake" | "access" | "tasks" | "live";
 
 interface IntakeState {
   desc: string; revenue: string[]; expense: string[]; employees: string;
@@ -86,6 +88,7 @@ export function PortalView({ data }: { data: PortalData }) {
   const tabs: [Screen, string][] = [
     ["welcome", "Welcome"],
     ["intake", data.intakeEnabled ? "Intake form" : "Documents"],
+    ...(data.access.length ? ([["access", "Access"]] as [Screen, string][]) : []),
     ["tasks", "Task board"],
     ["live", "Live setup"],
   ];
@@ -120,6 +123,9 @@ export function PortalView({ data }: { data: PortalData }) {
         )}
         {screen === "intake" && (
           <IntakeForm data={data} busy={busy} note={note} go={setScreen} />
+        )}
+        {screen === "access" && (
+          <AccessSection data={data} busy={busy} run={run} go={setScreen} />
         )}
         {screen === "tasks" && (
           <Tasks data={data} amInitials={amInitials} amName={amName} amEmail={amEmail} busy={busy} run={run} note={note} go={setScreen} />
@@ -420,6 +426,15 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
           )}
         </div>
       </div>
+      {(() => {
+        const reupload = data.documents.filter((d) => d.status === "rejected").length;
+        if (!reupload) return null;
+        return (
+          <div style={{ marginTop: 14, background: "var(--red-soft)", border: "1px solid #f0c0c0", borderRadius: 10, padding: "10px 14px", color: "var(--red)", fontSize: 13, fontWeight: 600, display: "flex", gap: 8, alignItems: "center" }}>
+            <Icon name="alert-circle" size={15} /> Action needed — {reupload} document{reupload === 1 ? "" : "s"} need re-uploading. See the highlighted item{reupload === 1 ? "" : "s"} below.
+          </div>
+        );
+      })()}
       <div style={{ marginTop: 16 }}>
         {data.documents.map((d) => {
           const rejected = d.status === "rejected";
@@ -449,6 +464,78 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Access: systems the client must grant us access to, each with an SOP ---------- */
+function AccessSection({ data, busy, run, go }: {
+  data: PortalData; busy: boolean; run: (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) => void; go: (s: Screen) => void;
+}) {
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const granted = data.access.filter((a) => a.status === "granted").length;
+  return (
+    <div className="obv3-fade">
+      <div className="obv3-pcard">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div className="obv3-pcard-h">System access we need</div>
+            <div className="obv3-pcard-sub">To manage your accounting & compliance we need access to the systems below. Follow each short guide, then mark it done.</div>
+          </div>
+          <span className="pill amber"><span className="dot" />{granted} of {data.access.length} granted</span>
+        </div>
+      </div>
+
+      {data.access.map((a) => (
+        <div key={a.rowId} className="obv3-pcard">
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ width: 30, height: 30, borderRadius: 8, background: a.status === "granted" ? "var(--green-soft)" : "var(--orange-soft)", color: a.status === "granted" ? "var(--green)" : "var(--orange)", display: "grid", placeItems: "center" }}>
+              <Icon name={a.status === "granted" ? "check" : "key-round"} size={15} />
+            </span>
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{a.label}{a.systemName ? ` · ${a.systemName}` : ""}</div>
+              {a.method && <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{a.method}</div>}
+            </div>
+            <span className={"pill " + (a.status === "granted" ? "green" : "gray")} style={{ fontSize: 10.5 }}><span className="dot" />{a.status === "granted" ? "Granted" : "Action needed"}</span>
+          </div>
+
+          {a.email ? (
+            <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, background: "var(--bg-soft)", borderRadius: 9, padding: "9px 12px" }}>
+              <Icon name="mail" size={14} style={{ color: "var(--orange)" }} />
+              <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Grant access to:</span>
+              <strong style={{ fontSize: 13.5, fontFamily: "DM Mono, monospace" }}>{a.email}</strong>
+            </div>
+          ) : (
+            <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, background: "var(--red-soft)", borderRadius: 9, padding: "9px 12px", color: "var(--red)", fontSize: 12.5 }}>
+              <Icon name="alert-triangle" size={14} /> No access email set yet — your account manager will share the address to grant access to.
+            </div>
+          )}
+
+          {a.sop.length > 0 && (
+            <ol style={{ margin: "12px 0 0", paddingLeft: 20, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.7 }}>
+              {a.sop.map((s, i) => <li key={i}>{renderSopLine(s, a.email)}</li>)}
+            </ol>
+          )}
+
+          {a.status === "granted" ? (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--green)", display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name="check-circle" size={14} /> Thank you — access confirmed.{a.note ? ` (${a.note})` : ""}
+            </div>
+          ) : (
+            <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input value={notes[a.rowId] ?? ""} onChange={(e) => setNotes((n) => ({ ...n, [a.rowId]: e.target.value }))} placeholder="Optional note (e.g. how you shared it)…" style={{ flex: 1, minWidth: 180, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+              <button className="obv3-pbtn primary" disabled={busy} onClick={() => run(() => confirmAccessItem(data.token, a.rowId, notes[a.rowId]), "Thank you — marked as granted")}>
+                <Icon name="check" size={14} /> Mark as granted
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+
+      <div className="obv3-pbtn-row">
+        <button className="obv3-pbtn secondary" onClick={() => go("intake")}><Icon name="arrow-left" size={14} /> Back</button>
+        <button className="obv3-pbtn primary" onClick={() => go("tasks")}>Next — your task board <Icon name="arrow-right" size={15} /></button>
       </div>
     </div>
   );
@@ -732,6 +819,7 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
   const junior = data.team.junior;
   const teamLead = data.team.team_lead;
   const teamLeadEmail = data.teamEmail.team_lead;
+  const [signName, setSignName] = useState(data.ownerName ?? "");
   return (
     <div className="obv3-fade">
       <div className="obv3-live-banner">
@@ -841,9 +929,11 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
           <>
             <div className="cp-signoff-head">
               <span className="ic"><Icon name="clipboard-check" size={20} /></span>
-              <div><div className="t">Happy with your setup?</div><div className="d">Sign off to confirm everything looks right. This lets your team move you to live delivery.</div></div>
+              <div><div className="t">Happy with your setup?</div><div className="d">Type your full name to sign off — this is saved as your confirmation that everything looks right.</div></div>
             </div>
-            <button className="cp-signoff-btn" disabled={busy} onClick={() => run(() => signOffOnboarding(data.token), "Thank you — your onboarding is signed off.")}>
+            <input value={signName} onChange={(e) => setSignName(e.target.value)} placeholder="Your full name"
+              style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 9, padding: "10px 12px", fontSize: 14, marginTop: 12, marginBottom: 10 }} />
+            <button className="cp-signoff-btn" disabled={busy || !signName.trim()} onClick={() => run(() => signOffOnboarding(data.token, signName.trim()), "Thank you — your onboarding is signed off.")}>
               <Icon name="check-circle" size={16} /> Sign off my onboarding
             </button>
           </>

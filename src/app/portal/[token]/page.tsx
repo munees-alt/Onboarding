@@ -58,6 +58,19 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
   const signedOff = !!(signoffRow?.data as { signed?: boolean } | null)?.signed;
   const boardCols = (colsRow?.data as { columns?: string[] } | null)?.columns ?? null;
 
+  const { data: accessRows } = link.run_id
+    ? await admin.from("run_items").select("id,data,status").eq("run_id", link.run_id).eq("kind", "access").order("sort")
+    : { data: [] as { id: string; data: Record<string, unknown>; status: string }[] };
+  const access = (accessRows ?? []).map((r) => {
+    const d = (r.data ?? {}) as Record<string, unknown>;
+    return {
+      rowId: r.id, label: String(d.label ?? "Access"), method: String(d.method ?? ""),
+      email: String(d.email ?? ""), sop: Array.isArray(d.sop) ? (d.sop as unknown[]).map(String) : [],
+      systemName: d.systemName ? String(d.systemName) : undefined,
+      status: String(d.status ?? r.status ?? "requested"), note: d.note ? String(d.note) : undefined,
+    };
+  });
+
   const prep = (intake?.prefilled ?? null) as IntakePrepView | null;
   const intakeFields = (templateById(run?.template_key ?? "medium-team")?.intake ?? [])
     .filter((f) => f.source === "client")
@@ -114,6 +127,7 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     software: client?.accounting_software ?? null,
     onboardingPartner,
     csm,
+    access,
   };
 
   return <PortalView data={data} />;
