@@ -2365,7 +2365,7 @@ function ContractBuilderModal({
   );
 }
 
-interface AccessEntry { on: boolean; label: string; systemName: string; method: string; sop: string }
+interface AccessEntry { on: boolean; label: string; systemName: string; method: string; sop: string; emails: string[] }
 
 function AccessBuilderModal({
   runId, stepId, onClose, onDone,
@@ -2376,34 +2376,49 @@ function AccessBuilderModal({
   const [loaded, setLoaded] = useState(false);
   const [saving, start] = useTransition();
   const [mailbox, setMailbox] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [people, setPeople] = useState<{ label: string; email: string }[]>([]);
   const [entries, setEntries] = useState<Record<string, AccessEntry>>(() =>
-    Object.fromEntries(ACCESS_TYPES.map((t) => [t.id, { on: false, label: t.label, systemName: "", method: t.methods[0], sop: t.sop.join("\n") }])),
+    Object.fromEntries(ACCESS_TYPES.map((t) => [t.id, { on: false, label: t.label, systemName: "", method: t.methods[0], sop: t.sop.join("\n"), emails: [] }])),
   );
 
   useEffect(() => {
     Promise.all([
       supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "access").order("sort"),
-      supabase.from("onboarding_runs").select("clients(name)").eq("id", runId).maybeSingle(),
-    ]).then(([{ data }, { data: runRow }]) => {
+      supabase.from("onboarding_runs").select("org_id,clients(name)").eq("id", runId).maybeSingle(),
+      supabase.from("run_team").select("team_members(full_name,email)").eq("run_id", runId),
+    ]).then(async ([{ data }, { data: runRow }, { data: teamRows }]) => {
       const cl = (runRow as { clients?: { name?: string } | { name?: string }[] } | null)?.clients;
       const name = Array.isArray(cl) ? cl[0]?.name : cl?.name;
       const slug = (name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24) || "client";
       const secure = `secure+${slug}@finanshels.com`;
       setSecureDefault(secure);
+
+      // Build the email option list: secure default + master admin + assigned people.
+      const opts: { label: string; email: string }[] = [{ label: "Secure mailbox (default)", email: secure }];
+      const orgId = (runRow as { org_id?: string } | null)?.org_id;
+      if (orgId) {
+        const { data: admins } = await supabase.from("team_members").select("full_name,email").eq("org_id", orgId).eq("role", "admin").eq("active", true);
+        (admins ?? []).forEach((a: { full_name: string; email: string | null }) => { if (a.email) opts.push({ label: `${a.full_name} (Master Admin)`, email: a.email }); });
+      }
+      (teamRows ?? []).forEach((t: { team_members: { full_name: string; email: string | null } | { full_name: string; email: string | null }[] | null }) => {
+        const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members;
+        if (tm?.email) opts.push({ label: `${tm.full_name} (assigned)`, email: tm.email });
+      });
+      // de-dupe by email
+      const seen = new Set<string>();
+      setPeople(opts.filter((o) => o.email && !seen.has(o.email.toLowerCase()) && seen.add(o.email.toLowerCase())));
+
       const rows = (data ?? []).map((r) => r.data as AccessItem);
       if (rows.length) {
         setEntries((prev) => {
           const next = { ...prev };
           rows.forEach((it) => {
-            next[it.id] = { on: true, label: it.label, systemName: it.systemName ?? "", method: it.method, sop: (it.sop ?? []).join("\n") };
+            next[it.id] = { on: true, label: it.label, systemName: it.systemName ?? "", method: it.method, sop: (it.sop ?? []).join("\n"), emails: (it.email ?? "").split(",").map((s) => s.trim()).filter(Boolean) };
           });
           return next;
         });
-        const firstEmail = rows.find((r) => r.email)?.email;
-        setEmail(firstEmail || secure);
-      } else {
-        setEmail(secure); // default authorised user = the client's secure mailbox
       }
+      setEmail(secure);
       setLoaded(true);
     });
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
@@ -2416,7 +2431,7 @@ function AccessBuilderModal({
   const save = () => start(async () => {
     const items: AccessItem[] = ACCESS_TYPES.filter((t) => entries[t.id].on).map((t) => {
       const e = entries[t.id];
-      return { id: t.id, label: e.label.trim() || t.label, method: e.method, email: email.trim() || AUTHORISED_USER_EMAIL, sop: e.sop.split("\n").map((s) => s.trim()).filter(Boolean), systemName: e.systemName.trim() || undefined, status: "requested" };
+      return { id: t.id, label: e.label.trim() || t.label, method: e.method, email: (e.emails.length ? e.emails.join(", ") : secureDefault) || AUTHORISED_USER_EMAIL, sop: e.sop.split("\n").map((s) => s.trim()).filter(Boolean), systemName: e.systemName.trim() || undefined, status: "requested" };
     });
     const r = await saveAccess(runId, stepId, items);
     if (!r.error) onDone();
@@ -2428,7 +2443,7 @@ function AccessBuilderModal({
         <div className="hd"><h3>Configure access requests</h3><div className="sub">Pick the systems the client must give us access to. Each shows a step-by-step SOP in their portal — editable here.</div></div>
         <div className="bd" style={{ maxHeight: "66vh" }}>
           <div className="field">
-            <label>Authorised user email(s) — used in every SOP. Comma-separate for more than one.</label>
+            <label>Secure mailbox for this client (request it if it doesn&apos;t exist). Per-system access emails are configured on each system below.</label>
             <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder={secureDefault} />
             <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
               {email.trim() !== secureDefault && <button className="btn-ghost" type="button" onClick={() => setEmail(secureDefault)}><Icon name="rotate-ccw" size={12} /> Use secure default ({secureDefault})</button>}
@@ -2442,7 +2457,7 @@ function AccessBuilderModal({
             return (
               <div key={t.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, marginBottom: 8, background: e.on ? "#fff" : "var(--bg-soft)" }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13.5, fontWeight: 600 }}>
-                  <input type="checkbox" checked={e.on} onChange={(ev) => set(t.id, { on: ev.target.checked })} style={{ accentColor: "var(--orange)" }} />
+                  <input type="checkbox" checked={e.on} onChange={(ev) => set(t.id, { on: ev.target.checked, emails: ev.target.checked && !e.emails.length ? [secureDefault] : e.emails })} style={{ accentColor: "var(--orange)" }} />
                   {t.label}
                   <span className="pill gray" style={{ fontSize: 10, marginLeft: "auto" }}>{t.category}</span>
                 </label>
@@ -2455,7 +2470,37 @@ function AccessBuilderModal({
                     <div className="field" style={{ margin: 0 }}><label>How access is given</label>
                       <select value={e.method} onChange={(ev) => set(t.id, { method: ev.target.value })}>{accessTypeById(t.id)!.methods.map((m) => <option key={m} value={m}>{m}</option>)}</select>
                     </div>
-                    <div className="field" style={{ margin: 0 }}><label>SOP — one step per line ({"{email}"} is auto-filled)</label>
+                    <div className="field" style={{ margin: 0 }}>
+                      <label>Grant access to which email(s)? — used in this system&apos;s SOP</label>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+                        {people.map((p) => {
+                          const on = e.emails.includes(p.email);
+                          return (
+                            <button key={p.email} type="button" className={"tab-pill" + (on ? " active" : "")} title={p.email}
+                              onClick={() => set(t.id, { emails: on ? e.emails.filter((x) => x !== p.email) : [...e.emails, p.email] })}>
+                              {on ? "✓ " : ""}{p.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {/* any custom emails already added that aren't in the option list */}
+                      {e.emails.filter((em) => !people.some((p) => p.email === em)).map((em) => (
+                        <span key={em} className="tab-pill active" style={{ marginRight: 6 }}>✓ {em}
+                          <button type="button" onClick={() => set(t.id, { emails: e.emails.filter((x) => x !== em) })} style={{ marginLeft: 6, background: "none", border: "none", cursor: "pointer", color: "inherit" }}>×</button>
+                        </span>
+                      ))}
+                      <input placeholder="+ add another email & press Enter"
+                        onKeyDown={(ev) => {
+                          if (ev.key === "Enter") {
+                            ev.preventDefault();
+                            const v = (ev.target as HTMLInputElement).value.trim();
+                            if (v && /\S+@\S+\.\S+/.test(v) && !e.emails.includes(v)) { set(t.id, { emails: [...e.emails, v] }); (ev.target as HTMLInputElement).value = ""; }
+                          }
+                        }}
+                        style={{ width: "100%", marginTop: 6, border: "1px dashed var(--border-strong)", borderRadius: 8, padding: "7px 10px", fontSize: 12.5 }} />
+                      {e.emails.length === 0 && <div style={{ fontSize: 11.5, color: "var(--red)", marginTop: 4 }}>Pick at least one email — without it the access request isn&apos;t effective.</div>}
+                    </div>
+                    <div className="field" style={{ margin: 0 }}><label>SOP — one step per line ({"{email}"} is auto-filled with the selected email)</label>
                       <textarea className="notes" value={e.sop} onChange={(ev) => set(t.id, { sop: ev.target.value })} style={{ minHeight: 100, fontFamily: "inherit" }} />
                     </div>
                   </div>
