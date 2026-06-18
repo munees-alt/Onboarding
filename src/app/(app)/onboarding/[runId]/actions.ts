@@ -767,6 +767,44 @@ export async function requestDocReupload(runId: string, docId: string, note: str
   return {};
 }
 
+/** Team uploads/replaces a document on the client's behalf (Drive → fallback Storage). */
+export async function uploadDocForClient(runId: string, docId: string, formData: FormData): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "No file selected." };
+  if (file.size > 25 * 1024 * 1024) return { error: "File is larger than 25 MB." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,am_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: client } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+  const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const buf = Buffer.from(await file.arrayBuffer());
+
+  // Prefer the uploader's own connected Drive, else the AM's, else Storage.
+  let driveLink: string | null = null;
+  let storagePath: string | null = null;
+  const candidates = [session.teamMember?.id, run.am_id].filter(Boolean) as string[];
+  for (const m of candidates) {
+    const { data: conn } = await supabase.from("member_connections").select("team_member_id").eq("team_member_id", m).eq("provider", "google").eq("connected", true).maybeSingle();
+    if (conn?.team_member_id) {
+      const r = await uploadClientDocToDrive(m, client?.name ?? "Client", safe, file.type || "application/octet-stream", buf);
+      if (r) { driveLink = r.link; break; }
+    }
+  }
+  if (!driveLink) {
+    const admin = createAdminClient();
+    const path = `${run.client_id}/${docId}-${Date.now()}-${safe}`;
+    const { error: upErr } = await admin.storage.from("client-docs").upload(path, buf, { contentType: file.type || "application/octet-stream", upsert: true });
+    if (upErr) return { error: upErr.message };
+    storagePath = path;
+  }
+  const { error } = await supabase.from("documents").update({ status: "uploaded", uploaded_at: new Date().toISOString(), storage_path: driveLink ?? storagePath, review_note: null }).eq("id", docId).eq("run_id", runId);
+  if (error) return { error: error.message };
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 /** Save task-board SLA reminders for the run (notify the AM if a task stalls). */
 export async function saveTaskSla(runId: string, notStartedDays: number, notCompletedDays: number): Promise<{ error?: string }> {
   const supabase = await createClient();

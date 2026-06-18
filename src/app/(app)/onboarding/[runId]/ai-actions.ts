@@ -350,7 +350,10 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
 
   if (!force) {
     const { data: existing } = await supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "deck").maybeSingle();
-    if (existing?.data && (existing.data as DeckData).clientName) return { deck: existing.data as DeckData };
+    const d = existing?.data as DeckData | undefined;
+    // Only reuse a cached deck if it actually has content — otherwise regenerate
+    // (a previous failed generation could have saved an empty deck).
+    if (d?.clientName && d.mission && d.whatWeUnderstood?.summary) return { deck: d };
   }
 
   const { data: client } = await supabase.from("clients").select("*").eq("id", run.client_id).maybeSingle();

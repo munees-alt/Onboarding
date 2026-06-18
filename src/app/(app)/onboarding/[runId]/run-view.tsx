@@ -9,7 +9,7 @@ import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboard
 import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, accessTypeById, type AccessItem } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, getBoardCols, saveBoardCols, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -1062,6 +1062,7 @@ function DocReviewRow({ runId, doc }: { runId: string; doc: RunDetail["playbook"
 
   const view = async () => { const r = await getDocumentUrl(doc.id); if (r.url) window.open(r.url, "_blank", "noopener"); };
   const send = () => start(async () => { await requestDocReupload(runId, doc.id, note); setFlagging(false); setNote(""); router.refresh(); });
+  const upload = (file: File) => start(async () => { const fd = new FormData(); fd.append("file", file); await uploadDocForClient(runId, doc.id, fd); router.refresh(); });
 
   return (
     <div style={{ borderBottom: "1px solid var(--border)", padding: "7px 0" }}>
@@ -1069,6 +1070,10 @@ function DocReviewRow({ runId, doc }: { runId: string; doc: RunDetail["playbook"
         <span style={{ color: uploaded ? "var(--green)" : rejected ? "var(--red)" : "var(--ink-4)" }}><Icon name={uploaded ? "check-circle" : rejected ? "rotate-ccw" : "circle"} size={14} /></span>
         <span style={{ flex: 1 }}>{doc.label}</span>
         {(uploaded || rejected) && doc.storagePath && <button className="btn-ghost" style={{ padding: "3px 8px" }} onClick={view}><Icon name="eye" size={13} /> View</button>}
+        <label className="btn-ghost" style={{ padding: "3px 8px", cursor: busy ? "default" : "pointer" }}>
+          <Icon name="upload" size={13} /> {busy ? "…" : uploaded ? "Replace" : "Upload"}
+          <input type="file" hidden disabled={busy} onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} />
+        </label>
         {uploaded && <button className="btn-ghost" style={{ padding: "3px 8px", color: "var(--red)" }} onClick={() => setFlagging((v) => !v)}><Icon name="flag" size={13} /> Request re-upload</button>}
         <span className={"pill " + (uploaded ? "green" : rejected ? "red" : "gray")} style={{ fontSize: 10 }}>{uploaded ? "Received" : rejected ? "Re-upload asked" : "Pending"}</span>
       </div>
@@ -2216,6 +2221,36 @@ function DocBuilderModal({
   );
 }
 
+// Load pdf.js from CDN once (no npm dep) so we can read the contract text in the
+// browser and feed the proven text analyzer — far more reliable than the file API.
+let pdfjsPromise: Promise<{ getDocument: (o: unknown) => { promise: Promise<{ numPages: number; getPage: (n: number) => Promise<{ getTextContent: () => Promise<{ items: { str: string }[] }> }> }> }; GlobalWorkerOptions: { workerSrc: string } }> | null = null;
+function loadPdfjs() {
+  const w = window as unknown as { pdfjsLib?: unknown };
+  if (w.pdfjsLib) return Promise.resolve(w.pdfjsLib as never);
+  if (!pdfjsPromise) {
+    pdfjsPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      s.onload = () => { const lib = (window as unknown as { pdfjsLib: { GlobalWorkerOptions: { workerSrc: string } } }).pdfjsLib; lib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; resolve(lib as never); };
+      s.onerror = () => reject(new Error("Could not load the PDF reader."));
+      document.head.appendChild(s);
+    });
+  }
+  return pdfjsPromise;
+}
+async function extractPdfText(file: File): Promise<string> {
+  const lib = await loadPdfjs();
+  const buf = await file.arrayBuffer();
+  const pdf = await lib.getDocument({ data: buf }).promise;
+  let text = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map((it) => it.str).join(" ") + "\n";
+  }
+  return text.trim();
+}
+
 function ContractBuilderModal({
   runId, stepId, onClose, onDone,
 }: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
@@ -2241,14 +2276,31 @@ function ContractBuilderModal({
     const fd = new FormData(); fd.append("file", file);
     const r = await uploadContractFile(runId, fd);
     if (r.link) setContractFile({ link: r.link, name: r.name ?? file.name });
-    // Auto-analyse straight from the uploaded file — no need to paste the text.
     setAnalyzing(true);
-    const fd2 = new FormData(); fd2.append("file", file);
-    const a = await analyzeContractFile(runId, fd2);
-    setAnalyzing(false);
-    setUploadingFile(false);
-    if (a.result) setCa(a.result);
-    else if (a.error) setError(a.error);
+    try {
+      let result: ContractAnalysis | undefined;
+      // PDFs: read the text in the browser and use the proven text analyzer
+      // (the same content ChatGPT handles well) — most reliable.
+      if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+        try {
+          const text = await extractPdfText(file);
+          if (text && text.length > 80) {
+            const a = await analyzeContract(runId, text);
+            if (a.result) result = a.result;
+          }
+        } catch { /* fall through to the file API */ }
+      }
+      // Fallback: OpenAI native file understanding (scanned PDFs, images, docx).
+      if (!result) {
+        const fd2 = new FormData(); fd2.append("file", file);
+        const a = await analyzeContractFile(runId, fd2);
+        if (a.result) result = a.result; else if (a.error) setError(a.error);
+      }
+      if (result) { setCa(result); setError(null); }
+    } finally {
+      setAnalyzing(false);
+      setUploadingFile(false);
+    }
   };
   const analyze = async () => {
     setAnalyzing(true);

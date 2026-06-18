@@ -360,12 +360,12 @@ function IntakeForm({ data, busy, note, go }: {
         <button className="obv3-pbtn secondary" onClick={() => go("welcome")}><Icon name="arrow-left" size={14} /> Back</button>
         <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
           {data.intakeEnabled ? (
-            <button className="obv3-pbtn primary" disabled={busy} onClick={() => { submitIntake(data.token, f as unknown as Record<string, unknown>).then((r) => { if (r.error) note(r.error); else { note(submitted ? "Updated — your team has been notified" : "Saved — your team has been notified"); go("tasks"); } }); }}>
+            <button className="obv3-pbtn primary" disabled={busy} onClick={() => { submitIntake(data.token, f as unknown as Record<string, unknown>).then((r) => { if (r.error) note(r.error); else { note(submitted ? "Updated — your team has been notified" : "Saved — your team has been notified"); go(data.access.length ? "access" : "tasks"); } }); }}>
               Save &amp; continue <Icon name="arrow-right" size={15} />
             </button>
           ) : (
-            <button className="obv3-pbtn primary" onClick={() => go("tasks")}>
-              Continue to task board <Icon name="arrow-right" size={15} />
+            <button className="obv3-pbtn primary" onClick={() => go(data.access.length ? "access" : "tasks")}>
+              {data.access.length ? "Continue to access" : "Continue to task board"} <Icon name="arrow-right" size={15} />
             </button>
           )}
         </div>
@@ -447,6 +447,12 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
                 </span>
                 <span className="dname">{d.label}</span>
                 {uploaded && <button type="button" className="obv3-doc-upload" onClick={() => view(d.id)} style={{ cursor: "pointer" }}><Icon name="eye" size={12} /> View</button>}
+                {uploaded && (
+                  <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
+                    <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : "Replace"}
+                    <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onFiles(d.id, files); e.target.value = ""; }} />
+                  </label>
+                )}
                 {uploaded ? (
                   <span className="pill green" style={{ fontSize: 10.5, height: 18 }}><span className="dot" />Received</span>
                 ) : (
