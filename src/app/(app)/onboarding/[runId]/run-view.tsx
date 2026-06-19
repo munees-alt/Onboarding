@@ -1971,9 +1971,9 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 2</div><h2 className="fsdeck-h2">Ensuring Compliance</h2></div></div>
-          <div className="fsdeck-grid3">
-            {[["CT", "Corporate Tax", d.compliance.ct], ["VAT", "VAT Compliance", d.compliance.vat], ["WPS", "WPS / Payroll", d.compliance.wps]].map(([b, t, v]) => (
-              <div key={b} className="fsdeck-compliance"><div className="fsdeck-compliance-badge">{b}</div><div className="fsdeck-compliance-t">{t}</div><div className="fsdeck-compliance-d">{v}</div></div>
+          <div className="fsdeck-grid3" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+            {[["CT", "Corporate Tax", d.compliance.ct], ["VAT", "VAT Compliance", d.compliance.vat], ["WPS", "WPS / Payroll", d.compliance.wps], ["TL", "Trade Licence — renewal", d.compliance.tradeLicence]].map(([b, t, v]) => (
+              <div key={b} className="fsdeck-compliance"><div className="fsdeck-compliance-badge">{b}</div><div className="fsdeck-compliance-t">{t}</div><div className="fsdeck-compliance-d">{v || "We track the licence renewal date and remind you before it expires."}</div></div>
             ))}
           </div>
         </div>
@@ -2137,13 +2137,19 @@ async function downloadDeckPptx(deck: DeckData) {
   s.addText("WHAT WE UNDERSTOOD — PLEASE CONFIRM", { x: 0.9, y: 5.25, w: 11.6, h: 0.3, fontSize: 10, color: PPTX.orange, bold: true, valign: "middle" });
   s.addText(deck.whatWeUnderstood?.summary || "", { x: 0.9, y: 5.55, w: 11.6, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top" });
 
-  // 5. Compliance
+  // 5. Compliance — CT / VAT / WPS / Trade licence (2x2)
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 2", "Ensuring Compliance");
-  [["Corporate Tax", deck.compliance?.ct], ["VAT", deck.compliance?.vat], ["WPS / Payroll", deck.compliance?.wps]].forEach(([t, v], i) => {
-    const x = 0.7 + i * 4.1;
-    s.addShape("roundRect", { x, y: 2.2, w: 3.85, h: 3.6, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
-    s.addText(String(t), { x: x + 0.25, y: 2.45, w: 3.35, h: 0.5, fontSize: 16, bold: true, color: PPTX.navy, valign: "middle" });
-    s.addText(String(v || "Not specified"), { x: x + 0.25, y: 3.05, w: 3.35, h: 2.6, fontSize: 12, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.05 });
+  ([
+    ["Corporate Tax", deck.compliance?.ct],
+    ["VAT", deck.compliance?.vat],
+    ["WPS / Payroll", deck.compliance?.wps],
+    ["Trade Licence — renewal", deck.compliance?.tradeLicence || "We track the licence renewal date and remind before it expires."],
+  ]).forEach(([t, v], i) => {
+    const col = i % 2, row = Math.floor(i / 2);
+    const x = 0.7 + col * 6.35, y = 2.05 + row * 2.45;
+    s.addShape("roundRect", { x, y, w: 5.95, h: 2.2, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+    s.addText(String(t), { x: x + 0.25, y: y + 0.18, w: 5.45, h: 0.4, fontSize: 15, bold: true, color: PPTX.navy, valign: "middle" });
+    s.addText(String(v || "Not specified"), { x: x + 0.25, y: y + 0.62, w: 5.45, h: 1.45, fontSize: 12, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.05 });
   });
 
   // 6. Software
@@ -2316,6 +2322,7 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
           <DeckEdit n="3" label="Compliance · Corporate Tax" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.ct} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, ct: e.target.value } }))} rows={2} /></DeckEdit>
           <DeckEdit n="3.2" label="Compliance · VAT" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.vat} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, vat: e.target.value } }))} rows={2} /></DeckEdit>
           <DeckEdit n="3.3" label="Compliance · WPS" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.wps} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, wps: e.target.value } }))} rows={2} /></DeckEdit>
+          <DeckEdit n="3.4" label="Compliance · Trade Licence (renewal)" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.tradeLicence ?? ""} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, tradeLicence: e.target.value } }))} rows={2} placeholder="e.g. We track your trade licence renewal date and remind you ahead of expiry." /></DeckEdit>
 
           <DeckEdit n="4" label="Software recommendation" pill="ai"><textarea className="fsdeck-edit" value={deck.software.recommendation} onChange={(e) => set((d) => ({ ...d, software: { ...d.software, recommendation: e.target.value } }))} rows={2} /></DeckEdit>
           <DeckEdit n="4.1" label="Zoho subscription plan" pill="ai"><input className="fsdeck-edit" value={deck.software.plan ?? ""} onChange={(e) => set((d) => ({ ...d, software: { ...d.software, plan: e.target.value } }))} placeholder="e.g. Professional — multi-currency & purchase orders" /></DeckEdit>
