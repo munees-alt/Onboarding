@@ -3014,6 +3014,10 @@ select:focus-visible,
 .cl-zero { font-family: "DM Mono", monospace; color: var(--ink-4); }
 .cl-due { font-family: "DM Mono", monospace; font-size: 12.5px; color: var(--ink-2); }
 
+/* My Work compact table rows */
+.mywork-row { transition: background 0.12s ease; }
+.mywork-row:hover { background: var(--bg-soft); }
+
 /* ───────── My Work compact list (Fix 2) ───────── */
 .mw-list { display: flex; flex-direction: column; gap: 4px; }
 .mw-row {
