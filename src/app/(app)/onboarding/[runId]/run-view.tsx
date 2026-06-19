@@ -1662,6 +1662,8 @@ function ItemsBuilderModal({
   // handed to a different team — the owner dropdown is filtered to the org chart.
   const [catchupTeam, setCatchupTeam] = useState<"my" | "other">("my");
   const [catchupAm, setCatchupAm] = useState("");
+  // Catch-up is optional — the team can declare there's no backlog and skip it.
+  const [catchupNeeded, setCatchupNeeded] = useState(existing.length > 0);
   const ownerPool = (catchupTeam === "my" && assignedTeam.length ? assignedTeam : people);
   const amPool = people.filter((p) => p.role === "am" || /account manager/i.test(p.role));
   const blankRow = () => kind === "project" ? { task: "", cadence: "monthly", when: "" } : Object.fromEntries(fields.map((f) => [f.k, ""]));
@@ -1687,6 +1689,12 @@ function ItemsBuilderModal({
   const aiRecurring = async () => { setAiBusy(true); setInfo(null); const r = await generateRecurringTasks(runId, pBrief); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ task: i.task, cadence: CADENCES.includes(i.cadence) ? i.cadence : "monthly", when: i.when }))); };
 
   const saveItems = (after?: "email") => start(async () => {
+    // No catch-up needed → save an empty board and complete the step (go straight to go-live).
+    if (kind === "catchup" && !catchupNeeded) {
+      const res = await saveRunItems(runId, stepId, "catchup", []);
+      if (res.error) { setInfo(res.error); return; }
+      onDone(); return;
+    }
     // Catch-up handed to a different team → create a dedicated run for that team's AM.
     if (kind === "catchup" && catchupTeam === "other") {
       if (!catchupAm) { setInfo("Pick the Account Manager for the catch-up team."); return; }
@@ -1719,6 +1727,16 @@ function ItemsBuilderModal({
             </div>
           )}
           {kind === "catchup" && (
+            <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Does this client need catch-up accounting?</div>
+              <div className="radio-row">
+                <label className={"radio" + (!catchupNeeded ? " selected" : "")}><input type="radio" checked={!catchupNeeded} onChange={() => setCatchupNeeded(false)} /><div><div className="r-ttl">No catch-up needed</div><div className="r-desc">Books are current — go straight to go-live.</div></div></label>
+                <label className={"radio" + (catchupNeeded ? " selected" : "")}><input type="radio" checked={catchupNeeded} onChange={() => setCatchupNeeded(true)} /><div><div className="r-ttl">Yes — there&apos;s a backlog</div><div className="r-desc">Configure the catch-up tasks below.</div></div></label>
+              </div>
+              {!catchupNeeded && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 8 }}>No backlog — click &ldquo;Save &amp; confirm&rdquo; to skip catch-up.</div>}
+            </div>
+          )}
+          {kind === "catchup" && catchupNeeded && (
             <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Who runs the catch-up?</div>
               <div className="radio-row">
@@ -1763,6 +1781,7 @@ function ItemsBuilderModal({
               )}
             </div>
           )}
+          {!(kind === "catchup" && !catchupNeeded) && (<>
           {kind === "project" ? (
             <table className="runs-table" style={{ border: "1px solid var(--border)", borderRadius: 8 }}>
               <thead><tr><th style={{ minWidth: 200 }}>Task</th><th>Cadence</th><th>When</th><th></th></tr></thead>
@@ -1829,6 +1848,7 @@ function ItemsBuilderModal({
           </table>
           )}
           <button className="add-link" onClick={addRow} style={{ marginTop: 8 }}><Icon name="plus" size={12} /> Add row</button>
+          </>)}
           {info && <div style={{ fontSize: 12.5, color: "var(--amber)", marginTop: 8 }}>{info}</div>}
         </div>
         <div className="ft">
