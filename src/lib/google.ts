@@ -213,6 +213,37 @@ export async function uploadClientDocToDrive(
   return { link: j.webViewLink ?? `https://drive.google.com/file/d/${j.id}/view`, fileId: j.id };
 }
 
+/**
+ * Shares a Drive file/folder with a set of email addresses at the given role
+ * ("writer" = editor, "reader" = view-only). Best-effort per email; returns the
+ * list of emails that were granted access. Skips blanks/dupes.
+ */
+export async function shareDriveFolder(
+  teamMemberId: string,
+  fileId: string,
+  emails: string[],
+  role: "writer" | "reader" = "writer",
+): Promise<{ shared: string[]; error?: string }> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return { shared: [], error: "No connected Google account to share from." };
+  const unique = [...new Set(emails.map((e) => (e || "").trim().toLowerCase()).filter((e) => /.+@.+\..+/.test(e)))];
+  const shared: string[] = [];
+  for (const email of unique) {
+    try {
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?sendNotificationEmail=false&supportsAllDrives=true`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ role, type: "user", emailAddress: email }),
+        },
+      );
+      if (res.ok) shared.push(email);
+    } catch { /* skip this email */ }
+  }
+  return { shared };
+}
+
 /** Extracts the Drive file id from a webViewLink like https://drive.google.com/file/d/<ID>/view */
 export function driveFileIdFromLink(link: string): string | null {
   return link.match(/\/d\/([^/]+)/)?.[1] ?? link.match(/[?&]id=([^&]+)/)?.[1] ?? null;

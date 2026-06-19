@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSession } from "@/lib/auth";
-import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, getDriveCapableMemberId, type DriveFolderNode } from "@/lib/google";
+import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, getDriveCapableMemberId, shareDriveFolder, type DriveFolderNode } from "@/lib/google";
 import { getTemplate } from "@/lib/templates-store";
 import { createRunFromTemplate } from "@/lib/runs";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -313,15 +313,38 @@ export async function saveDrive(
   opts: { periodStart?: string; periodEnd?: string; contract?: Record<string, unknown> | null },
 ): Promise<{ error?: string; link?: string }> {
   const session = await getSession();
-  if (!session?.teamMember?.id) return { error: "Connect your account to a team member before creating Drive folders." };
+  if (!session?.profile.org_id) return { error: "Not signed in." };
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
-  const { data: client } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+  const { data: client } = await supabase.from("clients").select("name,primary_contact_email").eq("id", run.client_id).maybeSingle();
+
+  // Create the folder in the org's Drive account (same place client documents
+  // upload to), preferring a run-team member with Google connected, else any
+  // connected org account, else the current user.
+  const driveMember = (await getDriveCapableMemberId(session.profile.org_id, runId)) ?? session.teamMember?.id;
+  if (!driveMember) return { error: "Connect a Google account (Settings → Integrations) before creating Drive folders." };
   const tree = buildDriveTree(client?.name ?? "Client", opts.periodStart, opts.periodEnd);
-  const driveTree = await createClientDriveTree(session.teamMember.id, tree);
+  const driveTree = await createClientDriveTree(driveMember, tree);
   if (!driveTree) return { error: "Could not create Drive folders. Reconnect Google and make sure you have access to the master Drive folder." };
   await supabase.from("drive_folders").upsert({ client_id: run.client_id, tree: driveTree }, { onConflict: "client_id" });
+
+  // Share the client folder (as editor) with the client and the assigned AM / Team Lead / Senior.
+  if (driveTree.id) {
+    const { data: teamRows } = await supabase
+      .from("run_team")
+      .select("role_in_run, team_members(email)")
+      .eq("run_id", runId)
+      .in("role_in_run", ["am", "team_lead", "senior"]);
+    const teamEmails = (teamRows ?? [])
+      .map((t: { team_members: { email?: string } | { email?: string }[] | null }) => {
+        const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members;
+        return tm?.email ?? null;
+      })
+      .filter(Boolean) as string[];
+    const recipients = [client?.primary_contact_email ?? "", ...teamEmails].filter(Boolean);
+    if (recipients.length) await shareDriveFolder(driveMember, driveTree.id, recipients, "writer");
+  }
   if (opts.contract) {
     await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "contract");
     await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "contract", data: opts.contract });
