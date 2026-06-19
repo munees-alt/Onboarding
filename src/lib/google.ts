@@ -12,6 +12,34 @@ export interface DriveFolderNode {
   link?: string;
 }
 
+/**
+ * Finds a team member who can write to Drive on this run's behalf: prefers a
+ * member assigned to the run who has Google connected; otherwise falls back to
+ * ANY connected Google account in the org (e.g. the admin's). This is what makes
+ * client/team document uploads actually land in Drive even when the assigned
+ * accountants haven't personally connected Google.
+ */
+export async function getDriveCapableMemberId(orgId: string | null, runId?: string | null): Promise<string | null> {
+  const admin = createAdminClient();
+  if (runId) {
+    const { data: rt } = await admin.from("run_team").select("team_member_id").eq("run_id", runId);
+    const ids = (rt ?? []).map((r) => r.team_member_id).filter(Boolean);
+    if (ids.length) {
+      const { data: conn } = await admin
+        .from("member_connections")
+        .select("team_member_id")
+        .eq("provider", "google").eq("connected", true)
+        .in("team_member_id", ids)
+        .limit(1);
+      if (conn?.[0]?.team_member_id) return conn[0].team_member_id as string;
+    }
+  }
+  let q = admin.from("member_connections").select("team_member_id").eq("provider", "google").eq("connected", true);
+  if (orgId) q = q.eq("org_id", orgId);
+  const { data: anyConn } = await q.limit(1);
+  return (anyConn?.[0]?.team_member_id as string) ?? null;
+}
+
 /** Returns a valid Google access token for a member, refreshing if expired. */
 export async function getValidGoogleToken(teamMemberId: string): Promise<string | null> {
   const admin = createAdminClient();

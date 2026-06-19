@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSession } from "@/lib/auth";
-import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, type DriveFolderNode } from "@/lib/google";
+import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, getDriveCapableMemberId, type DriveFolderNode } from "@/lib/google";
 import { getTemplate } from "@/lib/templates-store";
 import { createRunFromTemplate } from "@/lib/runs";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -829,10 +829,12 @@ export async function uploadDocForClient(runId: string, docId: string, formData:
   const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const buf = Buffer.from(await file.arrayBuffer());
 
-  // Prefer the uploader's own connected Drive, else the AM's, else Storage.
+  // Prefer the uploader's own connected Drive, else the AM's, else any connected
+  // account in the org (so docs reach Drive even if neither has connected). Else Storage.
   let driveLink: string | null = null;
   let storagePath: string | null = null;
-  const candidates = [session.teamMember?.id, run.am_id].filter(Boolean) as string[];
+  const orgFallback = await getDriveCapableMemberId(session.profile.org_id, runId);
+  const candidates = [session.teamMember?.id, run.am_id, orgFallback].filter((v, i, a) => v && a.indexOf(v) === i) as string[];
   for (const m of candidates) {
     const { data: conn } = await supabase.from("member_connections").select("team_member_id").eq("team_member_id", m).eq("provider", "google").eq("connected", true).maybeSingle();
     if (conn?.team_member_id) {

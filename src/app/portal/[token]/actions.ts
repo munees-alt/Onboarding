@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { uploadClientDocToDrive, sendGmailAs } from "@/lib/google";
+import { uploadClientDocToDrive, sendGmailAs, getDriveCapableMemberId } from "@/lib/google";
 import { PORTAL_COOKIE, makePortalCookie, hashCode, makeCode } from "@/lib/portal-auth";
 
 /** Validates a portal token → returns the magic link row (or null). */
@@ -212,18 +212,12 @@ export async function attachPortalTaskFile(token: string, taskRef: string, formD
   const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const buf = Buffer.from(await file.arrayBuffer());
 
-  // Prefer the run's connected member's Drive (Cadence/<client>); fall back to Storage.
+  // Route to the org's Drive (Cadence/<client>); fall back to Storage.
   let fileLink: string | null = null;
-  const { data: rt } = await admin.from("run_team").select("team_member_id").eq("run_id", link.run_id);
-  const ids = (rt ?? []).map((r) => r.team_member_id).filter(Boolean);
-  if (ids.length) {
-    const { data: conn } = await admin.from("member_connections")
-      .select("team_member_id").eq("provider", "google").eq("connected", true).in("team_member_id", ids).limit(1);
-    const memberId = (conn ?? [])[0]?.team_member_id as string | undefined;
-    if (memberId) {
-      const r = await uploadClientDocToDrive(memberId, clientName, safe, file.type || "application/octet-stream", buf);
-      if (r) fileLink = r.link;
-    }
+  const memberId = await getDriveCapableMemberId(link.org_id, link.run_id);
+  if (memberId) {
+    const r = await uploadClientDocToDrive(memberId, clientName, safe, file.type || "application/octet-stream", buf);
+    if (r) fileLink = r.link;
   }
   if (!fileLink) {
     const path = `${link.client_id}/task-${Date.now()}-${safe}`;
@@ -309,24 +303,13 @@ export async function uploadDocFile(token: string, docId: string, formData: Form
   const { data: client } = await admin.from("clients").select("name").eq("id", link.client_id).maybeSingle();
   const clientName = client?.name ?? "Client";
 
-  // Prefer the run's connected member's Google Drive (Cadence/<client> folder); fall back to Supabase Storage.
+  // Route to the org's Google Drive (Cadence/<client> folder); fall back to Supabase Storage.
   let storagePath: string | null = null;
   let driveLink: string | null = null;
-  if (link.run_id) {
-    const { data: rt } = await admin.from("run_team").select("team_member_id").eq("run_id", link.run_id);
-    const ids = (rt ?? []).map((r) => r.team_member_id).filter(Boolean);
-    if (ids.length) {
-      const { data: conn } = await admin.from("member_connections")
-        .select("team_member_id")
-        .eq("provider", "google").eq("connected", true)
-        .in("team_member_id", ids)
-        .limit(1);
-      const memberId = (conn ?? [])[0]?.team_member_id as string | undefined;
-      if (memberId) {
-        const r = await uploadClientDocToDrive(memberId, clientName, safe, file.type || "application/octet-stream", buf);
-        if (r) driveLink = r.link;
-      }
-    }
+  const memberId = await getDriveCapableMemberId(link.org_id, link.run_id);
+  if (memberId) {
+    const r = await uploadClientDocToDrive(memberId, clientName, safe, file.type || "application/octet-stream", buf);
+    if (r) driveLink = r.link;
   }
   if (!driveLink) {
     const path = `${link.client_id}/${docId}-${Date.now()}-${safe}`;
@@ -364,17 +347,8 @@ export async function uploadDocsBatch(token: string, formData: FormData): Promis
   const { data: client } = await admin.from("clients").select("name").eq("id", link.client_id).maybeSingle();
   const clientName = client?.name ?? "Client";
 
-  // Resolve the connected Drive member once for the whole batch.
-  let memberId: string | undefined;
-  if (link.run_id) {
-    const { data: rt } = await admin.from("run_team").select("team_member_id").eq("run_id", link.run_id);
-    const ids = (rt ?? []).map((r) => r.team_member_id).filter(Boolean);
-    if (ids.length) {
-      const { data: conn } = await admin.from("member_connections")
-        .select("team_member_id").eq("provider", "google").eq("connected", true).in("team_member_id", ids).limit(1);
-      memberId = (conn ?? [])[0]?.team_member_id as string | undefined;
-    }
-  }
+  // Resolve a Drive-capable member once for the whole batch (run team, else org).
+  const memberId = (await getDriveCapableMemberId(link.org_id, link.run_id)) ?? undefined;
   // Pending checklist items, in order, take the incoming files one-by-one.
   const { data: pending } = await admin.from("documents")
     .select("id").eq("client_id", link.client_id).neq("status", "uploaded").order("created_at");
