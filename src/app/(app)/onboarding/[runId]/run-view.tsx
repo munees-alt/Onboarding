@@ -9,7 +9,7 @@ import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboard
 import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, accessTypeById, type AccessItem } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateCatchup, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, saveLinkedSops, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateCatchup, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, saveLinkedSops, createSalesUploadLink, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -956,6 +956,22 @@ function StepBox({
 
 function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat: () => void }) {
   const [copied, setCopied] = useState(false);
+  // Optional Sales upload link (generated on demand — not part of any template).
+  const [salesUrl, setSalesUrl] = useState<string | null>(null);
+  const [salesBusy, setSalesBusy] = useState(false);
+  const [salesCopied, setSalesCopied] = useState(false);
+  const makeSalesLink = async () => {
+    setSalesBusy(true);
+    const r = await createSalesUploadLink(detail.runId);
+    setSalesBusy(false);
+    if (r.url) {
+      const url = r.url.startsWith("http") ? r.url : `${window.location.origin}${r.url}`;
+      setSalesUrl(url);
+      navigator.clipboard?.writeText(url);
+      setSalesCopied(true);
+      setTimeout(() => setSalesCopied(false), 1800);
+    }
+  };
   const visible = detail.tasks.filter((t) => t.clientVisible);
   const cols = (detail.items["board_columns"]?.[0]?.data?.columns as string[] | undefined) ?? null;
   const link = detail.portalLink;
@@ -1006,6 +1022,23 @@ function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat
             <div style={{ fontSize: 13, color: "var(--ink-3)" }}>Portal link not dispatched yet — send it from the <strong>Send Magic Link</strong> stage.</div>
           )}
         </div>
+      </div>
+
+      {/* Optional: Sales upload link — share with Sales to drop in docs they already collected */}
+      <div className="runs-card" style={{ padding: 14, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ width: 30, height: 30, borderRadius: 8, background: "var(--bg-soft)", color: "var(--ink-2)", display: "grid", placeItems: "center" }}><Icon name="upload-cloud" size={15} /></span>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Sales upload link <span className="pill" style={{ fontSize: 9.5, marginLeft: 4 }}>Optional</span></div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{salesUrl ? "Share with Sales — files drop into the client Drive folder and are marked received." : "Generate a link for the Sales team to share documents they already collected."}</div>
+          </div>
+          {salesUrl ? (
+            <button className="btn-ghost" onClick={() => { navigator.clipboard?.writeText(salesUrl); setSalesCopied(true); setTimeout(() => setSalesCopied(false), 1800); }}><Icon name={salesCopied ? "check" : "copy"} size={13} /> {salesCopied ? "Copied" : "Copy link"}</button>
+          ) : (
+            <button className="btn-ghost" disabled={salesBusy} onClick={makeSalesLink}><Icon name="link" size={13} /> {salesBusy ? "Creating…" : "Create link"}</button>
+          )}
+        </div>
+        {salesUrl && <div style={{ marginTop: 8, fontSize: 12, fontFamily: "DM Mono, monospace", color: "var(--ink-3)", wordBreak: "break-all" }}>{salesUrl}</div>}
       </div>
 
       {/* Progress chips */}

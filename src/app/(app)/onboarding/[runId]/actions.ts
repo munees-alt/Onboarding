@@ -906,6 +906,32 @@ export async function saveLinkedSops(runId: string, sops: { id: string; title: s
   return {};
 }
 
+/**
+ * Creates (or returns) an OPTIONAL link the team can send to the Sales team so
+ * they can drop documents they already collected straight into the client's
+ * Drive folder — marked as received. Not part of any template; generated on demand.
+ */
+export async function createSalesUploadLink(runId: string): Promise<{ error?: string; url?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: existing } = await supabase.from("magic_links").select("token").eq("run_id", runId).eq("purpose", "sales_upload").maybeSingle();
+  let token = existing?.token as string | undefined;
+  if (!token) {
+    token = crypto.randomBytes(24).toString("base64url");
+    const expires = new Date(Date.now() + 30 * 86_400_000).toISOString(); // 30-day window
+    const { error } = await supabase.from("magic_links").insert({
+      org_id: run.org_id, run_id: runId, client_id: run.client_id,
+      email: "sales-upload", token, purpose: "sales_upload", expires_at: expires,
+    });
+    if (error) return { error: error.message };
+  }
+  const base = (process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")).replace(/\/$/, "");
+  return { url: base ? `${base}/sales-upload/${token}` : `/sales-upload/${token}` };
+}
+
 /** Save task-board SLA reminders for the run (notify the AM if a task stalls). */
 export async function saveTaskSla(runId: string, notStartedDays: number, notCompletedDays: number): Promise<{ error?: string }> {
   const supabase = await createClient();
