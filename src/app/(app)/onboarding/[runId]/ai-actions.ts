@@ -4,7 +4,10 @@ import coaDataRaw from "@/lib/coa-templates.json";
 import { runAi, getAiConfig } from "@/lib/ai";
 import { getSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { downloadDriveFile, driveFileIdFromLink } from "@/lib/google";
 import { completeStep } from "./actions";
+import { renderWelcomeEmail } from "@/lib/welcome-email";
 
 type CoaAccount = { code: string; account: string; description: string; tag: string; category: string; subcategory: string };
 const coaData = coaDataRaw as unknown as Record<string, CoaAccount[]>;
@@ -45,7 +48,7 @@ import type { AiFeature } from "@/lib/ai-config";
 const TEXT_FEATURE_PROMPT: Record<string, { feature: AiFeature; instruction: string }> = {
   agenda: { feature: "agenda", instruction: "Write a polished, client-ready kickoff-call agenda as a short email with a greeting and 5-7 clear agenda points. Ready to send as-is." },
   ai: { feature: "mom", instruction: "Write professional minutes of meeting as a ready-to-send client email: warm greeting to the client by name, a short paragraph on what was covered, a 'Decisions' list, an 'Action items' list (each with owner and due date), 'Next steps', and a Finanshels sign-off. Complete and polished." },
-  mom: { feature: "mom", instruction: "Write the minutes-of-meeting email to send to the client now, based STRICTLY on the meeting notes provided (the recording link is for the client's reference — you cannot watch it, so do not invent anything not in the notes). Structure: warm greeting by name; a 2-3 sentence summary of what was discussed; 'Key points discussed'; 'Decisions made'; 'Action items' (each with owner and due date); 'Next steps'; include the recording link line; Finanshels sign-off. Professional, specific to this meeting, ready to send." },
+  mom: { feature: "mom", instruction: "Write ONLY the minutes-of-meeting body (no greeting, no sign-off — these are added by a surrounding template), based STRICTLY on the meeting notes provided (the recording link is for the client's reference — you cannot watch it, so do not invent anything not in the notes). Structure with these short labelled sections: 'Key points discussed'; 'Decisions made'; 'Action items' (each with owner and due date); 'Next steps'; and a final line with the recording link. Professional, specific to this meeting, concise." },
   welcome_email: { feature: "welcome_email", instruction: "Write a warm, professional welcome email from the Finanshels account manager to the client after the kickoff call: thank them, confirm scope and timeline, note the COA review and next steps, sign off. Ready to send." },
   deck: { feature: "handover_summary", instruction: "Write a short, branded client onboarding deck as slide-by-slide content (Slide title + 1-2 lines each): Welcome, Scope of service, Your team, Timeline & milestones, What we need from you, How we work. Client-ready." },
   brief: { feature: "brief", instruction: "Write a sharp internal pre-call brief: business overview, UAE regulatory points (VAT/CT/WPS), the 4-5 best questions to ask on the call, risk/complexity flags, and a COA template recommendation. Concise and specific." },
@@ -79,8 +82,12 @@ export async function generateStepText(
     .filter(Boolean)
     .join("; ");
 
-  // Minutes of meeting MUST be based on the real recording + notes — never invented.
+  // The "mom" step now produces the post-call WELCOME EMAIL: a saved template
+  // (client portal link + login steps + portal explainer) with the real minutes
+  // of the meeting embedded. The minutes MUST be based on the real recording +
+  // notes — never invented — and the portal link must already be dispatched.
   let meetingBlock = "";
+  let portalUrl = "";
   if (cfg.feature === "mom") {
     const { data: callStep } = await supabase
       .from("run_steps")
@@ -95,6 +102,21 @@ export async function generateStepText(
       return { error: "Add the meeting recording link and your notes on the call step first — minutes are written from the real meeting, not generated blank." };
     }
     meetingBlock = `\n\nThe meeting actually happened. Write the minutes ONLY from these real notes (do not add anything that isn't here):\nRecording: ${p.recording}\nNotes:\n${p.notes}`;
+
+    // The welcome email's whole point is to deliver the portal link, so it must
+    // be dispatched first.
+    const { data: linkRow } = await supabase
+      .from("magic_links")
+      .select("token")
+      .eq("run_id", runId)
+      .eq("purpose", "portal")
+      .maybeSingle();
+    const token = linkRow?.token as string | undefined;
+    if (!token) {
+      return { error: "Dispatch the client portal link first (the 'Send Magic Link' step). The welcome email includes that link." };
+    }
+    const base = (process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")).replace(/\/$/, "");
+    portalUrl = base ? `${base}/portal/${token}` : `/portal/${token}`;
   }
 
   const ctx =
@@ -110,6 +132,18 @@ export async function generateStepText(
       system: "You write for a UAE accounting firm (Finanshels). Output must be polished and ready to send AS-IS — NEVER use [placeholders], brackets, or 'insert X here'; use the real client and team names provided. If a needed detail isn't in the context, leave it out rather than inventing it. Professional, warm, concise.",
       prompt: `${cfg.instruction}\n\nUse these real details (do not invent beyond them):\n${ctx}${meetingBlock}`,
     });
+    // For the welcome-email step, drop the AI-drafted minutes into the saved
+    // template with the client's real name, company and portal link filled in.
+    if (cfg.feature === "mom") {
+      return {
+        text: renderWelcomeEmail({
+          contactName: client.owner_name?.trim() || client.name,
+          companyName: client.name,
+          portalUrl,
+          momBody: text,
+        }),
+      };
+    }
     return { text };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI failed" };
@@ -163,6 +197,80 @@ export async function generateCompliance(runId: string): Promise<{ error?: strin
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI failed" };
   }
+}
+
+/**
+ * Builds the compliance calendar ONLY from the client's uploaded documents — reads each file
+ * (Supabase Storage or the connected member's Drive) and extracts its real expiry/renewal date
+ * via OpenAI. Returns empty:true (no invented data) when there are no documents or no dates found.
+ */
+export async function generateComplianceFromDocs(runId: string): Promise<{ error?: string; items?: { label: string; type: string; date: string }[]; empty?: boolean; scanned?: number }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const admin = createAdminClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { data: docs } = await admin.from("documents").select("id,label,status,storage_path").eq("client_id", run.client_id).eq("status", "uploaded");
+  const uploaded = (docs ?? []).filter((d) => d.storage_path);
+  if (uploaded.length === 0) return { empty: true };
+
+  const key = (await getAiConfig(session.profile.org_id)).keys.openai;
+  if (!key) return { error: "Add an OpenAI key in Settings to read the documents' expiry dates." };
+
+  // A Google-connected run-team member, for downloading Drive-stored documents.
+  let driveMember: string | undefined;
+  const { data: rt } = await admin.from("run_team").select("team_member_id").eq("run_id", runId);
+  const ids = (rt ?? []).map((r) => r.team_member_id).filter(Boolean);
+  if (ids.length) {
+    const { data: conn } = await admin.from("member_connections").select("team_member_id").eq("provider", "google").eq("connected", true).in("team_member_id", ids).limit(1);
+    driveMember = conn?.[0]?.team_member_id as string | undefined;
+  }
+
+  const items: { label: string; type: string; date: string }[] = [];
+  let scanned = 0;
+  for (const d of uploaded) {
+    const sp = d.storage_path as string;
+    let buf: Buffer | null = null;
+    let mime = "application/octet-stream";
+    try {
+      if (/^https?:\/\//.test(sp)) {
+        const fid = driveFileIdFromLink(sp);
+        if (fid && driveMember) buf = await downloadDriveFile(driveMember, fid);
+      } else {
+        const { data: blob } = await admin.storage.from("client-docs").download(sp);
+        if (blob) { buf = Buffer.from(await blob.arrayBuffer()); mime = blob.type || mime; }
+      }
+      if (!buf) continue;
+      scanned++;
+      const up = new FormData();
+      up.append("purpose", "user_data");
+      up.append("file", new File([new Uint8Array(buf)], d.label || "document", { type: mime }));
+      const upRes = await fetch("https://api.openai.com/v1/files", { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: up });
+      if (!upRes.ok) continue;
+      const fileId = (await upRes.json()).id as string;
+      const r = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          input: [{ role: "user", content: [
+            { type: "input_text", text: `This is a UAE business/compliance document. Return ONLY JSON {"docType":"e.g. Trade Licence / VAT certificate / Emirates ID / Tenancy / Insurance / Establishment Card","expiry":"YYYY-MM-DD or null"}. Use the expiry / renewal / valid-until date if present; null if there is none.` },
+            { type: "input_file", file_id: fileId },
+          ] }],
+        }),
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const text: string = j.output_text ?? ((j.output ?? []).flatMap((o: { content?: { text?: string }[] }) => (o.content ?? []).map((c) => c.text)).filter(Boolean).join("\n"));
+      const s = text.indexOf("{"), e = text.lastIndexOf("}");
+      const parsed = s >= 0 ? (JSON.parse(text.slice(s, e + 1)) as { docType?: string; expiry?: string }) : {};
+      if (parsed.expiry && /^\d{4}-\d{2}-\d{2}$/.test(parsed.expiry)) {
+        items.push({ label: `${parsed.docType || d.label} — renewal/expiry`, type: "Doc expiry", date: parsed.expiry });
+      }
+    } catch { /* skip unreadable doc */ }
+  }
+  return { items, empty: items.length === 0, scanned };
 }
 
 /** AI-generates internal projects + tasks from a plain-language brief over a period. */
@@ -409,6 +517,28 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
     contract: parsed.contract ?? { scope: "", highlights: [], payment: "", duration: "", responsibilities: "" },
     nextSteps: parsed.nextSteps?.length ? parsed.nextSteps : [],
   };
+
+  // "What we understood" must be the high-quality business description (gpt-4o), not the
+  // deck prompt's thin summary. Prefer the client's own intake description if they gave one.
+  try {
+    const bd = await generateBusinessDescription(runId);
+    const best = (intakeData.description as string)?.trim() || bd.text?.trim();
+    if (best) deck.whatWeUnderstood = { ...deck.whatWeUnderstood, summary: best };
+  } catch { /* keep the deck-prompt summary */ }
+
+  // The deck's contract section must mirror the SAME analysis done at the magic-link step
+  // (run_items kind 'contract'), not an AI re-interpretation. Override directly when present.
+  if (contract) {
+    const c = contract as { scope?: string; inclusions?: string[]; exclusions?: string[]; paymentTerms?: string; periodStart?: string; periodEnd?: string; deliverables?: { item: string }[] };
+    const highlights = (c.inclusions?.length ? c.inclusions : (c.deliverables ?? []).map((d) => d.item)).filter(Boolean);
+    deck.contract = {
+      scope: c.scope || deck.contract.scope,
+      highlights: highlights.length ? highlights : deck.contract.highlights,
+      payment: c.paymentTerms || deck.contract.payment,
+      duration: (c.periodStart || c.periodEnd) ? `${c.periodStart ?? "—"} → ${c.periodEnd ?? "—"}` : deck.contract.duration,
+      responsibilities: c.exclusions?.length ? `Out of scope: ${c.exclusions.join(", ")}` : deck.contract.responsibilities,
+    };
+  }
 
   await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "deck");
   await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "deck", data: deck, status: "open" });

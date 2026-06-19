@@ -9,7 +9,28 @@ export interface RunCardAction {
   waitingRole: string | null;
 }
 
-export function RunCard({ run, action, dense }: { run: RunCardData; action?: RunCardAction | null; dense?: boolean }) {
+export function RunCard({ run, action, dense, compact }: { run: RunCardData; action?: RunCardAction | null; dense?: boolean; compact?: boolean }) {
+  if (compact) {
+    return (
+      <Link href={`/onboarding/${run.id}`} className="mywork-card" style={{ textDecoration: "none", color: "inherit", padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run.clientName}</div>
+          <div style={{ fontSize: 11, color: "var(--ink-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {run.templateName}{run.amName ? ` · ${run.amName}` : ""}
+          </div>
+        </div>
+        {action && (
+          <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap", background: action.mine ? "var(--orange-soft)" : "var(--bg)", color: action.mine ? "var(--orange)" : "var(--ink-3)", border: "1px solid " + (action.mine ? "var(--orange)" : "var(--border)") }}>
+            {action.mine ? "Your step" : `Waiting · ${action.waitingRole ?? "team"}`}
+          </span>
+        )}
+        <div style={{ width: 110, flexShrink: 0 }}>
+          <div className="progress orange"><i style={{ width: `${run.progress}%` }} /></div>
+          <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3, textAlign: "right" }}>{run.progress}% · St {run.currentStage}/{run.stageCount}</div>
+        </div>
+      </Link>
+    );
+  }
   if (dense) {
     return (
       <Link href={`/onboarding/${run.id}`} className="mywork-card mw-dense" style={{ textDecoration: "none", color: "inherit" }}>

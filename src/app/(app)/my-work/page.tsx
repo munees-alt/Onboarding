@@ -1,7 +1,8 @@
 import { requireSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { getRunCards } from "@/lib/data/runs";
-import { RunCard, type RunCardAction } from "@/components/run-card";
+import { type RunCardAction } from "@/components/run-card";
+import { MyWorkBoard } from "./my-work-board";
 import { templateById, type TemplateStep } from "@/lib/onboarding-templates";
 import { ROLE_LABEL } from "@/lib/roles";
 import type { Role } from "@/lib/types";
@@ -100,11 +101,7 @@ export default async function MyWorkPage() {
             Nothing assigned to you yet.
           </div>
         ) : (
-          <div className="mywork-grid">
-            {runs.map((r) => (
-              <RunCard key={r.id} run={r} action={actionByRun[r.id]} />
-            ))}
-          </div>
+          <MyWorkBoard items={runs.map((r) => ({ run: r, action: actionByRun[r.id] ?? null }))} />
         )}
       </div>
     </div>

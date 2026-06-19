@@ -206,3 +206,10 @@
 .fsdeck-conf.inferred { color: #9a6a12; background: #fdf0d8; }
 .fsdeck-conf.ai { color: #6a48c9; background: #efe9fd; }
 .fsdeck-conf.client { color: #2563c9; background: #e6effc; }
+
+/* Contract Summary slide: long inclusions list + payment text scroll inside the slide instead of being clipped. */
+.fsdeck-contract { min-height: 0; }
+.fsdeck-contract-main { overflow-y: auto; min-height: 0; }
+.fsdeck-contract-side { overflow-y: auto; min-height: 0; justify-content: flex-start; }
+.fsdeck-contract-side b { font-size: 14px; line-height: 1.5; font-weight: 600; }
+.fsdeck-contract .fsdeck-svc { font-size: 13px; padding: 5px 11px; }

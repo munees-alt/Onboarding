@@ -184,3 +184,19 @@ export async function uploadClientDocToDrive(
   const j = await res.json();
   return { link: j.webViewLink ?? `https://drive.google.com/file/d/${j.id}/view`, fileId: j.id };
 }
+
+/** Extracts the Drive file id from a webViewLink like https://drive.google.com/file/d/<ID>/view */
+export function driveFileIdFromLink(link: string): string | null {
+  return link.match(/\/d\/([^/]+)/)?.[1] ?? link.match(/[?&]id=([^&]+)/)?.[1] ?? null;
+}
+
+/** Downloads a Drive file's bytes (alt=media) using the member's token. */
+export async function downloadDriveFile(teamMemberId: string, fileId: string): Promise<Buffer | null> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return null;
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  return Buffer.from(await res.arrayBuffer());
+}

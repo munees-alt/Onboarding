@@ -9,7 +9,7 @@ import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboard
 import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, accessTypeById, type AccessItem } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateCatchup, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -41,7 +41,8 @@ function canEditStep(myRole: string, step: TemplateStep): boolean {
 const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior", junior: "Junior", team_lead: "Team Lead", ops_head: "Ops", intern: "Intern" };
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
-import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
+import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
+import { WELCOME_EMAIL_SUBJECT } from "@/lib/welcome-email";
 
 const KIND_ICON: Record<string, { icon: string; color: string }> = {
   ai: { icon: "sparkles", color: "var(--purple)" },
@@ -118,8 +119,11 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
     else if (role.includes("junior")) anchor = assigneeBySlot["senior"] ?? null;
     else anchor = detail.amId;
     if (!anchor) return [];
-    const direct = orgChildren[anchor] ?? [];
-    return direct.length ? direct : descendantsOf(anchor); // flat-org fallback
+    // Whole subtree below the anchor (e.g. a Team Lead's Seniors AND their Juniors) so a step
+    // can be assigned to more than one role together — e.g. a Senior and a Junior on the same step.
+    const sub = descendantsOf(anchor);
+    if (sub.length) return sub;
+    return orgChildren[anchor] ?? [];
   };
 
   // Opening a step's action: the task-board step jumps to the board instead of a modal.
@@ -173,6 +177,9 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
             <div className="progress orange" style={{ flex: 1 }}><i style={{ width: `${detail.progress}%` }} /></div>
             <span className="progress-pct">{detail.progress}%</span>
           </div>
+          <button className="btn-ghost" onClick={() => { router.refresh(); showToast("Refreshed — showing the latest"); }} title="Refresh to pull the latest team & client updates">
+            <Icon name="refresh-cw" size={13} /> Refresh
+          </button>
           <button className="btn-ghost" style={{ position: "relative" }} onClick={() => setChatOpen(true)}>
             <Icon name="message-square" size={13} /> Chat
             {chatUnread && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: "50%", background: "var(--red)", border: "1.5px solid #fff" }} />}
@@ -330,6 +337,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
           tasks={detail.tasks}
           owners={taskOwners}
           columns={(() => { const c = detail.items["board_columns"]?.[0]?.data?.columns; return Array.isArray(c) && c.length ? (c as string[]) : DEFAULT_BOARD_COLUMNS; })()}
+          statuses={(() => { const s = detail.items["task_statuses"]?.[0]?.data?.statuses; return Array.isArray(s) && s.length ? (s as string[]) : TASK_STATUSES; })()}
           sla={(detail.items["task_sla"]?.[0]?.data as { notStartedDays?: number; notCompletedDays?: number } | undefined) ?? null}
           confirmStepId={taskStepPending}
           onOpenChat={() => setChatOpen(true)}
@@ -1106,14 +1114,17 @@ const TASK_STATUS_LABEL: Record<string, string> = {
 const TASK_TYPES = ["internal", "client_action", "milestone"];
 const TASK_TYPE_LABEL: Record<string, string> = { internal: "Internal", client_action: "Client action", milestone: "Milestone" };
 const inputStyle: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "100%" };
+// Label for any status value — known ones get a nice label, custom ones are prettified.
+const statusLabel = (s: string) => TASK_STATUS_LABEL[s] ?? s.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 function TaskBoard({
-  runId, tasks, owners, columns, sla, confirmStepId, onConfirmStep, onOpenChat,
+  runId, tasks, owners, columns, statuses, sla, confirmStepId, onConfirmStep, onOpenChat,
 }: {
   runId: string;
   tasks: TaskRow[];
   owners: { id: string; name: string }[];
   columns: string[];
+  statuses: string[];
   sla: { notStartedDays?: number; notCompletedDays?: number } | null;
   confirmStepId: string | null;
   onConfirmStep: () => void;
@@ -1126,6 +1137,7 @@ function TaskBoard({
   const [nudgeMsg, setNudgeMsg] = useState("");
   const [toast, setToast] = useState<string | null>(null);
   const [colMgr, setColMgr] = useState<string[] | null>(null); // non-null = modal open with draft
+  const [statusMgr, setStatusMgr] = useState<string[] | null>(null); // non-null = manage-statuses modal open
   const [slaOpen, setSlaOpen] = useState(false);
   const [taskFilter, setTaskFilter] = useState<"all" | "active" | "done">("all");
   const [chatTask, setChatTask] = useState<string | null>(null); // per-task chat modal
@@ -1169,6 +1181,7 @@ function TaskBoard({
           <button className="btn-ghost" onClick={onOpenChat}><Icon name="message-square" size={13} /> Chat</button>
           <button className="btn-ghost" onClick={() => setNudgeOpen(true)}><Icon name="bell" size={13} /> Nudge team</button>
           <button className="btn-ghost" onClick={() => setColMgr([...columns])}><Icon name="columns" size={13} /> Manage columns</button>
+          <button className="btn-ghost" onClick={() => setStatusMgr([...statuses])}><Icon name="list-checks" size={13} /> Manage statuses</button>
           <button className="btn-ghost" onClick={() => setSlaOpen(true)}><Icon name="bell-ring" size={13} /> Reminders</button>
           <button className="btn-ghost" onClick={emailSummary} disabled={busy || tasks.length === 0}><Icon name="mail" size={13} /> Email summary</button>
           <button className="btn-primary" disabled={busy} onClick={() => change(() => addTask(runId, { title: "New task", boardColumn: columns[0] }))}>
@@ -1241,7 +1254,7 @@ function TaskBoard({
                 <td><input type="checkbox" checked={t.clientVisible} disabled={busy} onChange={(e) => change(() => toggleTaskVisible(runId, t.id, e.target.checked))} style={{ accentColor: "var(--orange)" }} /></td>
                 <td>
                   <select value={t.status} disabled={busy} onChange={(e) => change(() => setTaskStatus(runId, t.id, e.target.value))} style={inputStyle}>
-                    {TASK_STATUSES.map((s) => <option key={s} value={s}>{TASK_STATUS_LABEL[s]}</option>)}
+                    {(statuses.includes(t.status) ? statuses : [t.status, ...statuses]).map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
                   </select>
                 </td>
                 <td>
@@ -1288,6 +1301,30 @@ function TaskBoard({
             <div className="ft">
               <button className="btn-ghost" onClick={() => setColMgr(null)} disabled={busy}>Cancel</button>
               <button className="btn-primary" disabled={busy || !colMgr.some((c) => c.trim())} onClick={() => { const cols = colMgr; setColMgr(null); change(() => saveBoardColumns(runId, cols)); }}>Save columns</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {statusMgr !== null && (
+        <div className="modal-overlay open" onClick={() => setStatusMgr(null)}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd"><h3>Manage status options</h3><div className="sub">Add, rename or remove the choices in the Status dropdown (e.g. Stuck, Working on it, Approved). Existing tasks keep their value.</div></div>
+            <div className="bd" style={{ maxHeight: "56vh" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {statusMgr.map((st, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ color: "var(--ink-4)", fontSize: 12, width: 18 }}>{i + 1}</span>
+                    <input value={st} onChange={(e) => setStatusMgr((ss) => ss!.map((c, j) => (j === i ? e.target.value : c)))} style={{ ...inputStyle, flex: 1 }} />
+                    <button className="icon-btn" disabled={statusMgr.length <= 1} onClick={() => setStatusMgr((ss) => ss!.filter((_, j) => j !== i))} style={{ color: "var(--red)" }} aria-label="Remove status"><Icon name="trash-2" size={14} /></button>
+                  </div>
+                ))}
+              </div>
+              <button className="add-link" onClick={() => setStatusMgr((ss) => [...ss!, "New status"])} style={{ marginTop: 10 }}><Icon name="plus" size={12} /> Add status</button>
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setStatusMgr(null)} disabled={busy}>Cancel</button>
+              <button className="btn-primary" disabled={busy || !statusMgr.some((c) => c.trim())} onClick={() => { const ss = statusMgr; setStatusMgr(null); change(() => saveTaskStatuses(runId, ss)); }}>Save statuses</button>
             </div>
           </div>
         </div>
@@ -1620,7 +1657,9 @@ function ItemsBuilderModal({
   // Catch-up can be assigned to the onboarding team that's already on the run, or
   // handed to a different team — the owner dropdown is filtered to the org chart.
   const [catchupTeam, setCatchupTeam] = useState<"my" | "other">("my");
+  const [catchupAm, setCatchupAm] = useState("");
   const ownerPool = (catchupTeam === "my" && assignedTeam.length ? assignedTeam : people);
+  const amPool = people.filter((p) => p.role === "am" || /account manager/i.test(p.role));
   const blankRow = () => kind === "project" ? { task: "", cadence: "monthly", when: "" } : Object.fromEntries(fields.map((f) => [f.k, ""]));
   const [rows, setRows] = useState<Record<string, string>[]>(existing.length ? existing.map((e) => e.data as Record<string, string>) : [blankRow()]);
   const [saving, start] = useTransition();
@@ -1633,9 +1672,25 @@ function ItemsBuilderModal({
   const del = (i: number) => setRows((r) => r.filter((_, j) => j !== i));
 
   const aiCompliance = async () => { setAiBusy(true); setInfo(null); const r = await generateCompliance(runId); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type }))); };
+  const aiComplianceDocs = async () => {
+    setAiBusy(true); setInfo(null);
+    const r = await generateComplianceFromDocs(runId);
+    setAiBusy(false);
+    if (r.error) { setInfo(r.error); return; }
+    if (r.empty) { setInfo(r.scanned ? "Read the uploaded documents but found no expiry/renewal dates in them." : "No documents in the folder yet — the calendar is built from your documents' expiry dates. Ask the client to upload documents first."); return; }
+    if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type })));
+  };
   const aiRecurring = async () => { setAiBusy(true); setInfo(null); const r = await generateRecurringTasks(runId, pBrief); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ task: i.task, cadence: CADENCES.includes(i.cadence) ? i.cadence : "monthly", when: i.when }))); };
 
   const saveItems = (after?: "email") => start(async () => {
+    // Catch-up handed to a different team → create a dedicated run for that team's AM.
+    if (kind === "catchup" && catchupTeam === "other") {
+      if (!catchupAm) { setInfo("Pick the Account Manager for the catch-up team."); return; }
+      const amName = people.find((p) => p.id === catchupAm)?.name ?? "AM";
+      const r = await escalateCatchup(runId, stepId, catchupAm, amName, rows.filter((row) => Object.values(row).some((v) => v)));
+      if (r.error) { setInfo(r.error); return; }
+      onDone(); return;
+    }
     const items: RunItemInput[] = rows.filter((r) => Object.values(r).some((v) => v)).map((r) => ({ data: r, status: "open" }));
     if (configurable) await saveBoardCols(runId, kind, cols);
     const res = await saveRunItems(runId, stepId, kind, items);
@@ -1654,16 +1709,29 @@ function ItemsBuilderModal({
         <div className="hd"><h3>{ITEM_TITLE[kind]}</h3><div className="sub">Generate with AI or add rows manually, then confirm.</div></div>
         <div className="bd" style={{ maxHeight: "64vh" }}>
           {kind === "compliance" && (
-            <button className="btn-ai" disabled={aiBusy} onClick={aiCompliance} style={{ marginBottom: 10 }}><Icon name="sparkles" size={13} /> {aiBusy ? "Generating…" : "Generate from client (AI)"}</button>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <button className="btn-ai" disabled={aiBusy} onClick={aiComplianceDocs}><Icon name="folder-open" size={13} /> {aiBusy ? "Reading documents…" : "Build from uploaded documents"}</button>
+              <button className="btn-ghost" disabled={aiBusy} onClick={aiCompliance}><Icon name="sparkles" size={13} /> Add statutory dates (VAT / CT / WPS)</button>
+            </div>
           )}
           {kind === "catchup" && (
             <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Who runs the catch-up?</div>
               <div className="radio-row">
                 <label className={"radio" + (catchupTeam === "my" ? " selected" : "")}><input type="radio" checked={catchupTeam === "my"} onChange={() => setCatchupTeam("my")} /><div><div className="r-ttl">Same onboarding team</div><div className="r-desc">The team already assigned to this run.</div></div></label>
-                <label className={"radio" + (catchupTeam === "other" ? " selected" : "")}><input type="radio" checked={catchupTeam === "other"} onChange={() => setCatchupTeam("other")} /><div><div className="r-ttl">A different catch-up team</div><div className="r-desc">Anyone in your team on the org chart.</div></div></label>
+                <label className={"radio" + (catchupTeam === "other" ? " selected" : "")}><input type="radio" checked={catchupTeam === "other"} onChange={() => setCatchupTeam("other")} /><div><div className="r-ttl">A different catch-up team</div><div className="r-desc">Creates a separate catch-up run for that team&apos;s AM to configure & assign.</div></div></label>
               </div>
-              {ownerPool.length === 0 && <div style={{ fontSize: 12, color: "var(--amber)", marginTop: 8 }}>No team members available to assign yet.</div>}
+              {catchupTeam === "other" && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ fontSize: 11.5, fontWeight: 700, color: "var(--ink-3)", display: "block", marginBottom: 4 }}>Account Manager for the catch-up team</label>
+                  <select value={catchupAm} onChange={(e) => setCatchupAm(e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 9px", fontSize: 12.5, minWidth: 220 }}>
+                    <option value="">Select an AM…</option>
+                    {amPool.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 6 }}>On save, a dedicated catch-up run is created for this AM, pre-seeded with the tasks below.</div>
+                </div>
+              )}
+              {ownerPool.length === 0 && catchupTeam === "my" && <div style={{ fontSize: 12, color: "var(--amber)", marginTop: 8 }}>No team members available to assign yet.</div>}
             </div>
           )}
           {kind === "project" && (
@@ -1827,24 +1895,13 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
     case 1:
       return (
         <div className="fsdeck-slide fsdeck-content">
-          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Agenda</div><h2 className="fsdeck-h2">Today&apos;s Agenda</h2></div></div>
-          <div className="fsdeck-grid2">
-            {d.agenda.map((a, i) => (
-              <div key={i} className="fsdeck-card"><div className="fsdeck-card-label">{a.num} · {a.label}</div><div className="fsdeck-card-val">{a.desc}</div></div>
-            ))}
-          </div>
-        </div>
-      );
-    case 2:
-      return (
-        <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Roadmap</div><h2 className="fsdeck-h2">Your Onboarding Roadmap</h2></div></div>
           <div className="fsdeck-roadmap">{DECK_PHASES.map((p) => (
             <div key={p.n} className="fsdeck-phase"><div className="fsdeck-phase-n">{p.n}</div><div className="fsdeck-phase-t">{p.t}</div><div className="fsdeck-phase-d">{p.d}</div></div>
           ))}</div>
         </div>
       );
-    case 3:
+    case 2:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 1 · Discovery</div><h2 className="fsdeck-h2">What We Understood</h2><div className="fsdeck-sub">Please confirm this is right.</div></div></div>
@@ -1856,7 +1913,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 4:
+    case 3:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 2</div><h2 className="fsdeck-h2">Ensuring Compliance</h2></div></div>
@@ -1867,7 +1924,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 5:
+    case 4:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 3</div><h2 className="fsdeck-h2">Accounting Software</h2></div></div>
@@ -1877,7 +1934,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 6:
+    case 5:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 4</div><h2 className="fsdeck-h2">Secure Data Management</h2></div></div>
@@ -1887,7 +1944,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 7:
+    case 6:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 5</div><h2 className="fsdeck-h2">How We Stay Connected</h2></div></div>
@@ -1898,7 +1955,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 8:
+    case 7:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Engagement</div><h2 className="fsdeck-h2">Contract Summary</h2></div></div>
@@ -1914,7 +1971,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 9:
+    case 8:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Next</div><h2 className="fsdeck-h2">Immediate Next Steps</h2></div></div>
@@ -1938,7 +1995,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
   }
 }
 
-const DECK_TITLES = ["Welcome", "Agenda", "Roadmap", "What We Understood", "Compliance", "Software", "Data", "Communication", "Contract", "Next Steps", "Thank You"];
+const DECK_TITLES = ["Welcome", "Roadmap", "What We Understood", "Compliance", "Software", "Data", "Communication", "Contract", "Next Steps", "Thank You"];
 
 // Load pptxgenjs from CDN (no npm dep) to export the deck as a real .pptx.
 let pptxPromise: Promise<unknown> | null = null;
@@ -1967,91 +2024,92 @@ async function downloadDeckPptx(deck: DeckData) {
   p.layout = "FS";
   const brand = (s: any, dark = false) => s.addText("FINANSHELS", { x: 10.7, y: 7.0, w: 2.3, fontSize: 9, color: dark ? "FFFFFF" : PPTX.ink2, align: "right", bold: true, charSpacing: 2 });
   const head = (s: any, phase: string, title: string) => {
-    s.addText(phase.toUpperCase(), { x: 0.7, y: 0.55, fontSize: 12, color: PPTX.orange, bold: true, charSpacing: 2 });
-    s.addText(title, { x: 0.7, y: 0.95, w: 12, fontSize: 30, bold: true, color: PPTX.navy });
-    s.addShape("rect", { x: 0.7, y: 1.65, w: 0.7, h: 0.06, fill: { color: PPTX.orange } });
+    s.addText(phase.toUpperCase(), { x: 0.7, y: 0.5, w: 12, h: 0.3, fontSize: 12, color: PPTX.orange, bold: true, charSpacing: 2, align: "left", valign: "middle" });
+    s.addText(title, { x: 0.7, y: 0.85, w: 12, h: 0.7, fontSize: 30, bold: true, color: PPTX.navy, align: "left", valign: "middle" });
+    s.addShape("rect", { x: 0.7, y: 1.66, w: 0.7, h: 0.06, fill: { color: PPTX.orange } });
   };
 
   // 1. Cover
   let s = p.addSlide(); s.background = { color: PPTX.navy };
-  s.addText("WELCOME TO FINANSHELS", { x: 0.7, y: 1.4, fontSize: 14, color: PPTX.orange, bold: true, charSpacing: 3 });
-  s.addText([{ text: "Welcome, ", options: { color: PPTX.white } }, { text: deck.clientName, options: { color: PPTX.orange } }], { x: 0.7, y: 2.0, w: 12, fontSize: 44, bold: true });
-  s.addText(deck.mission || "", { x: 0.7, y: 3.9, w: 11.5, fontSize: 18, color: "D6DEE6" });
+  s.addText("WELCOME TO FINANSHELS", { x: 0.7, y: 1.4, w: 12, h: 0.4, fontSize: 14, color: PPTX.orange, bold: true, charSpacing: 3, valign: "middle" });
+  s.addText([{ text: "Welcome, ", options: { color: PPTX.white } }, { text: deck.clientName, options: { color: PPTX.orange } }], { x: 0.7, y: 2.0, w: 12, h: 1.6, fontSize: 44, bold: true, valign: "middle" });
+  s.addText(deck.mission || "", { x: 0.7, y: 3.9, w: 11.5, h: 2.4, fontSize: 18, color: "D6DEE6", valign: "top", lineSpacingMultiple: 1.1 });
   brand(s, true);
 
-  // 2. Agenda
-  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Agenda", "Today's Agenda");
-  s.addText((deck.agenda || []).map((a) => ({ text: `${a.num}  ${a.label}`, options: { bold: true, color: PPTX.navy, fontSize: 15, bullet: false, breakLine: true } })).flatMap((t, i) => [t, { text: deck.agenda[i].desc, options: { color: PPTX.ink2, fontSize: 12, breakLine: true, paraSpaceAfter: 8 } }]), { x: 0.7, y: 2.0, w: 12, fontSize: 14 });
-
-  // 3. Roadmap
+  // 2. Roadmap (Agenda slide intentionally omitted — Roadmap covers the journey)
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Roadmap", "Your Onboarding Roadmap");
   DECK_PHASES.forEach((ph, i) => {
     const x = 0.7 + i * 2.45;
     s.addShape("roundRect", { x, y: 2.2, w: 2.25, h: 3.2, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
-    s.addText(ph.n, { x, y: 2.4, w: 2.25, align: "center", fontSize: 26, bold: true, color: PPTX.orange });
-    s.addText(ph.t, { x: x + 0.15, y: 3.1, w: 1.95, align: "center", fontSize: 13, bold: true, color: PPTX.navy });
-    s.addText(ph.d, { x: x + 0.15, y: 3.9, w: 1.95, align: "center", fontSize: 10, color: PPTX.ink2 });
+    s.addText(ph.n, { x, y: 2.4, w: 2.25, h: 0.6, align: "center", fontSize: 26, bold: true, color: PPTX.orange, valign: "middle" });
+    s.addText(ph.t, { x: x + 0.15, y: 3.1, w: 1.95, h: 0.7, align: "center", fontSize: 13, bold: true, color: PPTX.navy, valign: "top" });
+    s.addText(ph.d, { x: x + 0.15, y: 3.85, w: 1.95, h: 1.4, align: "center", fontSize: 10, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.05 });
   });
 
   // 4. What We Understood
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 1 · Discovery", "What We Understood");
-  s.addText((deck.whatWeUnderstood?.points || []).map((pt) => ({ text: `${pt.title}: ${pt.desc}`, options: { bullet: { code: "2022" }, color: PPTX.ink, fontSize: 13, breakLine: true, paraSpaceAfter: 6 } })), { x: 0.7, y: 2.0, w: 12 });
+  s.addText((deck.whatWeUnderstood?.points || []).map((pt) => ({ text: `${pt.title}: ${pt.desc}`, options: { bullet: { code: "2022" }, color: PPTX.ink, fontSize: 13, breakLine: true, paraSpaceAfter: 6 } })), { x: 0.7, y: 2.0, w: 12, h: 2.9, valign: "top", lineSpacingMultiple: 1.05 });
   s.addShape("roundRect", { x: 0.7, y: 5.1, w: 12, h: 1.6, fill: { color: PPTX.navy }, rectRadius: 0.1 });
-  s.addText("WHAT WE UNDERSTOOD — PLEASE CONFIRM", { x: 0.9, y: 5.25, fontSize: 10, color: PPTX.orange, bold: true });
-  s.addText(deck.whatWeUnderstood?.summary || "", { x: 0.9, y: 5.6, w: 11.6, fontSize: 13, color: PPTX.white });
+  s.addText("WHAT WE UNDERSTOOD — PLEASE CONFIRM", { x: 0.9, y: 5.25, w: 11.6, h: 0.3, fontSize: 10, color: PPTX.orange, bold: true, valign: "middle" });
+  s.addText(deck.whatWeUnderstood?.summary || "", { x: 0.9, y: 5.55, w: 11.6, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top" });
 
   // 5. Compliance
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 2", "Ensuring Compliance");
   [["Corporate Tax", deck.compliance?.ct], ["VAT", deck.compliance?.vat], ["WPS / Payroll", deck.compliance?.wps]].forEach(([t, v], i) => {
     const x = 0.7 + i * 4.1;
     s.addShape("roundRect", { x, y: 2.2, w: 3.85, h: 3.6, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
-    s.addText(String(t), { x: x + 0.25, y: 2.45, w: 3.4, fontSize: 16, bold: true, color: PPTX.navy });
-    s.addText(String(v || "Not specified"), { x: x + 0.25, y: 3.1, w: 3.4, fontSize: 12, color: PPTX.ink2 });
+    s.addText(String(t), { x: x + 0.25, y: 2.45, w: 3.35, h: 0.5, fontSize: 16, bold: true, color: PPTX.navy, valign: "middle" });
+    s.addText(String(v || "Not specified"), { x: x + 0.25, y: 3.05, w: 3.35, h: 2.6, fontSize: 12, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.05 });
   });
 
   // 6. Software
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 3", "Accounting Software");
   s.addShape("roundRect", { x: 0.7, y: 2.2, w: 5.9, h: 3.6, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
-  s.addText("If you have existing software", { x: 0.95, y: 2.45, fontSize: 13, bold: true, color: PPTX.orange });
-  s.addText(deck.software?.existing || "", { x: 0.95, y: 3.0, w: 5.4, fontSize: 12, color: PPTX.ink });
+  s.addText("If you have existing software", { x: 0.95, y: 2.45, w: 5.4, h: 0.4, fontSize: 13, bold: true, color: PPTX.orange, valign: "middle" });
+  s.addText(deck.software?.existing || "", { x: 0.95, y: 2.95, w: 5.4, h: 2.65, fontSize: 12, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.05 });
   s.addShape("roundRect", { x: 6.85, y: 2.2, w: 5.85, h: 3.6, fill: { color: PPTX.navy }, rectRadius: 0.1 });
-  s.addText("Our recommendation · Zoho Books", { x: 7.1, y: 2.45, fontSize: 13, bold: true, color: PPTX.orange });
-  s.addText(deck.software?.recommendation || "", { x: 7.1, y: 3.0, w: 5.35, fontSize: 12, color: PPTX.white });
+  s.addText("Our recommendation · Zoho Books", { x: 7.1, y: 2.45, w: 5.35, h: 0.4, fontSize: 13, bold: true, color: PPTX.orange, valign: "middle" });
+  s.addText(deck.software?.recommendation || "", { x: 7.1, y: 2.95, w: 5.35, h: 2.65, fontSize: 12, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
 
-  // 7. Data
+  // 7. Data — two columns: our solution (navy) + documents we'll need (checklist), matching the on-screen slide.
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 4", "Secure Data Management");
-  s.addText(DECK_DOCS.map((d) => ({ text: d, options: { bullet: { code: "2713" }, color: PPTX.ink, fontSize: 13, breakLine: true, paraSpaceAfter: 5 } })), { x: 0.7, y: 2.1, w: 12 });
+  s.addShape("roundRect", { x: 0.7, y: 2.2, w: 5.9, h: 4.4, fill: { color: PPTX.navy }, rectRadius: 0.1 });
+  s.addText("OUR SOLUTION", { x: 0.95, y: 2.45, w: 5.4, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
+  s.addText("A dedicated, encrypted Google Drive organised by year and document type — controlled access, easy retrieval.", { x: 0.95, y: 2.9, w: 5.4, h: 3.4, fontSize: 14, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.15 });
+  s.addShape("roundRect", { x: 6.85, y: 2.2, w: 5.85, h: 4.4, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+  s.addText("DOCUMENTS WE'LL NEED", { x: 7.1, y: 2.45, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
+  s.addText(DECK_DOCS.map((d) => ({ text: d, options: { bullet: { code: "2713" }, color: PPTX.ink, fontSize: 12.5, breakLine: true, paraSpaceAfter: 5 } })), { x: 7.1, y: 2.95, w: 5.35, h: 3.5, valign: "top", lineSpacingMultiple: 1.05 });
 
   // 8. Communication
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 5", "How We Stay Connected");
   [["Email", "Formal documentation, reports and major updates."], ["WhatsApp", "Daily operational queries and quick support."], ["Slack", "Optional real-time collaboration if you prefer."]].forEach(([t, d], i) => {
     const x = 0.7 + i * 4.1;
     s.addShape("roundRect", { x, y: 2.4, w: 3.85, h: 3.0, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
-    s.addText(String(t), { x: x + 0.25, y: 2.7, fontSize: 16, bold: true, color: PPTX.navy });
-    s.addText(String(d), { x: x + 0.25, y: 3.3, w: 3.4, fontSize: 12, color: PPTX.ink2 });
+    s.addText(String(t), { x: x + 0.25, y: 2.7, w: 3.35, h: 0.5, fontSize: 16, bold: true, color: PPTX.navy, valign: "middle" });
+    s.addText(String(d), { x: x + 0.25, y: 3.25, w: 3.35, h: 1.9, fontSize: 12, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.05 });
   });
 
   // 9. Contract
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Engagement", "Contract Summary");
-  s.addText("Scope", { x: 0.7, y: 2.0, fontSize: 13, bold: true, color: PPTX.orange });
-  s.addText(deck.contract?.scope || "Not specified", { x: 0.7, y: 2.4, w: 7.6, fontSize: 12, color: PPTX.ink });
-  s.addText((deck.contract?.highlights || []).map((h) => ({ text: h, options: { bullet: { code: "2022" }, fontSize: 12, color: PPTX.ink, breakLine: true } })), { x: 0.7, y: 3.6, w: 7.6 });
+  s.addText("Scope", { x: 0.7, y: 2.0, w: 7.6, h: 0.3, fontSize: 13, bold: true, color: PPTX.orange, valign: "middle" });
+  s.addText(deck.contract?.scope || "Not specified", { x: 0.7, y: 2.35, w: 7.6, h: 1.1, fontSize: 12, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.05 });
+  s.addText((deck.contract?.highlights || []).map((h) => ({ text: h, options: { bullet: { code: "2022" }, fontSize: 12, color: PPTX.ink, breakLine: true, paraSpaceAfter: 4 } })), { x: 0.7, y: 3.55, w: 7.6, h: 2.9, valign: "top", lineSpacingMultiple: 1.05 });
   s.addShape("roundRect", { x: 8.5, y: 2.0, w: 4.2, h: 4.4, fill: { color: PPTX.navy }, rectRadius: 0.1 });
-  s.addText("PAYMENT", { x: 8.75, y: 2.3, fontSize: 10, bold: true, color: PPTX.orange });
-  s.addText(deck.contract?.payment || "Not specified", { x: 8.75, y: 2.6, w: 3.7, fontSize: 12, color: PPTX.white });
-  s.addText("DURATION", { x: 8.75, y: 3.55, fontSize: 10, bold: true, color: PPTX.orange });
-  s.addText(deck.contract?.duration || "Not specified", { x: 8.75, y: 3.85, w: 3.7, fontSize: 12, color: PPTX.white });
-  s.addText("YOUR RESPONSIBILITIES", { x: 8.75, y: 4.8, fontSize: 10, bold: true, color: PPTX.orange });
-  s.addText(deck.contract?.responsibilities || "Not specified", { x: 8.75, y: 5.1, w: 3.7, fontSize: 12, color: PPTX.white });
+  s.addText("PAYMENT", { x: 8.75, y: 2.3, w: 3.7, h: 0.25, fontSize: 10, bold: true, color: PPTX.orange, valign: "middle" });
+  s.addText(deck.contract?.payment || "Not specified", { x: 8.75, y: 2.6, w: 3.7, h: 0.85, fontSize: 12, color: PPTX.white, valign: "top" });
+  s.addText("DURATION", { x: 8.75, y: 3.55, w: 3.7, h: 0.25, fontSize: 10, bold: true, color: PPTX.orange, valign: "middle" });
+  s.addText(deck.contract?.duration || "Not specified", { x: 8.75, y: 3.85, w: 3.7, h: 0.85, fontSize: 12, color: PPTX.white, valign: "top" });
+  s.addText("YOUR RESPONSIBILITIES", { x: 8.75, y: 4.8, w: 3.7, h: 0.25, fontSize: 10, bold: true, color: PPTX.orange, valign: "middle" });
+  s.addText(deck.contract?.responsibilities || "Not specified", { x: 8.75, y: 5.1, w: 3.7, h: 1.1, fontSize: 12, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
 
   // 10. Next steps
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Next", "Immediate Next Steps");
-  s.addText((deck.nextSteps || []).flatMap((n) => ([{ text: n.title, options: { bold: true, color: PPTX.navy, fontSize: 15, breakLine: true } }, { text: n.desc, options: { color: PPTX.ink2, fontSize: 12, breakLine: true, paraSpaceAfter: 10 } }])), { x: 0.7, y: 2.0, w: 12 });
+  s.addText((deck.nextSteps || []).flatMap((n) => ([{ text: n.title, options: { bold: true, color: PPTX.navy, fontSize: 15, breakLine: true, paraSpaceBefore: 6 } }, { text: n.desc, options: { color: PPTX.ink2, fontSize: 12, breakLine: true, paraSpaceAfter: 8, indentLevel: 1 } }])), { x: 0.7, y: 2.0, w: 12, h: 5.0, valign: "top", lineSpacingMultiple: 1.05 });
 
   // 11. Thank you
   s = p.addSlide(); s.background = { color: PPTX.navy };
-  s.addText("Thank you!", { x: 0.7, y: 2.6, fontSize: 48, bold: true, color: PPTX.orange });
-  s.addText("Ready to grow together. Let's begin your journey with Finanshels.", { x: 0.7, y: 4.0, w: 11, fontSize: 18, color: "D6DEE6" });
+  s.addText("Thank you!", { x: 0.7, y: 2.6, w: 12, h: 1.0, fontSize: 48, bold: true, color: PPTX.orange, valign: "middle" });
+  s.addText("Ready to grow together. Let's begin your journey with Finanshels.", { x: 0.7, y: 4.0, w: 11, h: 1.0, fontSize: 18, color: "D6DEE6", valign: "top" });
   brand(s, true);
 
   await p.writeFile({ fileName: `${(deck.clientName || "client").replace(/[^a-z0-9]+/gi, "-")}-onboarding-deck.pptx` });
@@ -2067,6 +2125,19 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
   const [scale, setScale] = useState(0.6);
   const [saving, start] = useTransition();
   const stageRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const [isFs, setIsFs] = useState(false);
+
+  const toggleFs = () => {
+    const el = overlayRef.current;
+    if (!document.fullscreenElement) el?.requestFullscreen?.().catch(() => {});
+    else document.exitFullscreen?.().catch(() => {});
+  };
+  useEffect(() => {
+    const onFs = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
 
   useEffect(() => {
     generateDeck(runId).then((r) => {
@@ -2089,7 +2160,7 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
   const exportPptx = async () => { if (!deck) return; setExporting(true); try { await downloadDeckPptx(deck); } catch (e) { setError(e instanceof Error ? e.message : "Export failed"); } finally { setExporting(false); } };
 
   return (
-    <div className="fsdeck-overlay">
+    <div className="fsdeck-overlay" ref={overlayRef}>
       <div className="fsdeck-bar">
         <div className="fsdeck-bar-left">
           <span className="fsdeck-bar-title"><Icon name="presentation" size={16} /> Onboarding deck</span>
@@ -2100,6 +2171,7 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
             <button className={mode === "present" ? "on" : ""} onClick={() => setMode("present")}><Icon name="play" size={12} /> Present</button>
             <button className={mode === "edit" ? "on" : ""} onClick={() => setMode("edit")}><Icon name="pencil" size={12} /> Edit</button>
           </div>
+          <button className="fsdeck-btn ghost" onClick={toggleFs}><Icon name={isFs ? "minimize" : "maximize"} size={12} /> {isFs ? "Exit full screen" : "Full screen"}</button>
           <button className="fsdeck-btn ghost" onClick={regen} disabled={phase === "loading"}><Icon name="refresh-cw" size={12} /> Regenerate</button>
           <button className="fsdeck-btn ghost" onClick={exportPptx} disabled={!deck || exporting}><Icon name="download" size={12} /> {exporting ? "Exporting…" : "Download PPTX"}</button>
           <button className="fsdeck-btn ghost" onClick={onClose}>Close</button>
@@ -2195,7 +2267,7 @@ function AiTextModal({
   return (
     <div className="modal-overlay open" onClick={onClose}>
       <div className="modal" style={{ width: 640 }} onClick={(e) => e.stopPropagation()}>
-        <div className="hd"><h3>{title}</h3><div className="sub">AI draft — review and edit before saving. Powered by your configured model.</div></div>
+        <div className="hd"><h3>{title}</h3><div className="sub">{actType === "mom" ? "Welcome email — the saved template with your client's name, company, portal link and the meeting minutes filled in. Review and edit before sending." : "AI draft — review and edit before saving. Powered by your configured model."}</div></div>
         <div className="bd" style={{ maxHeight: "62vh" }}>
           {phase === "loading" && (
             <div style={{ padding: 30, textAlign: "center", color: "var(--purple)" }}>
@@ -2222,7 +2294,7 @@ function AiTextModal({
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           {["mom", "ai", "welcome_email", "agenda", "deck"].includes(actType) && (
             <button className="btn-ai" disabled={saving || phase !== "ready" || !text.trim()} onClick={() => startSave(async () => {
-              const s = await sendClientEmail(runId, title, text);
+              const s = await sendClientEmail(runId, actType === "mom" ? WELCOME_EMAIL_SUBJECT : title, text);
               if (s.error) { setError(s.error); setPhase("ready"); return; }
               await saveStepText(runId, stepId, text);
               onDone();

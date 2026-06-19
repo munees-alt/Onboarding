@@ -186,7 +186,7 @@ const MEDIUM_TEAM: OnbTemplate = {
     { id: "t4", name: "Call with Client", desc: "Optional AI agenda sent ahead, then the client meeting covering COA review. AI generates the minutes of meeting from the recording.", steps: [
       { id: "t4.0", title: "Generate & send call agenda (optional)", kind: "ai", who: ["AI", "AM"], note: "Optional — AI drafts a call agenda from the intake + brief. Review and send before the call.", act: { type: "agenda", btn: "Generate & send agenda" } },
       { id: "t4.1", title: "Meeting — COA review & other discussions", kind: "person", who: ["AM", "Senior"], note: "Hold the client meeting. Cross off each coverage point, then add the recording link and your notes.", act: { type: "call", cover: ["Business model & revenue understood", "Payroll / salary points covered", "Accounting & compliance scope agreed", "COA reviewed with the client", "Required documents walked through", "Open questions logged"] } },
-      { id: "t4.2", title: "AI Minutes of Meeting — review & send", kind: "ai", who: ["AI", "AM"], note: "AI drafts the MOM from your meeting notes and recording link. Review, edit, then send to the client — one step.", act: { type: "mom", btn: "Generate & send MOM" } },
+      { id: "t4.2", title: "Welcome email — review & send", kind: "ai", who: ["AI", "AM"], note: "Builds the welcome email from the saved template: the client's name, company and portal link are filled in, plus the AI-drafted minutes of the meeting (from your call notes). Review, edit, then send — one step. Dispatch the portal magic link first.", act: { type: "mom", btn: "Generate welcome email" } },
     ] },
     { id: "t5", name: "Catch-up Accounting", desc: "If the client has a backlog, catch-up runs here as a sub-tracked board before go-live. Senior review unlocks only once every catch-up task is done.", steps: [
       { id: "t5.1", title: "Configure & run catch-up tasks", kind: "person", who: ["Junior"], note: "Decide if catch-up is needed. If yes, a pop-up opens to set up the monthly catch-up board — editable any time.", act: { type: "catchup", btn: "Configure catch-up tasks", popup: true, reopen: true } },
@@ -269,7 +269,7 @@ const MICRO_TEAM: OnbTemplate = {
       { id: "m4.0b", title: "Branded onboarding deck", kind: "ai", who: ["AI", "AM"], note: "Auto-generated client-facing deck, scoped from the contract + CRM + intake. Download or present.", act: { type: "deck", btn: "Generate onboarding deck" } },
       { id: "m4.0", title: "Generate & send call agenda (optional)", kind: "ai", who: ["AI", "AM"], note: "Optional — AI drafts a call agenda.", act: { type: "agenda", btn: "Generate & send agenda" } },
       { id: "m4.1", title: "Meeting — COA review & other discussions", kind: "person", who: ["AM", "Senior"], note: "Hold the client meeting.", act: { type: "call", cover: ["Business model & revenue understood", "Payroll / salary points covered", "Accounting & compliance scope agreed", "COA reviewed with the client", "Required documents walked through", "Open questions logged"] } },
-      { id: "m4.2", title: "AI Minutes of Meeting — review & send", kind: "ai", who: ["AI", "AM"], note: "AI drafts the MOM from your meeting notes and recording link. Review, edit, then send to the client — one step.", act: { type: "mom", btn: "Generate & send MOM" } },
+      { id: "m4.2", title: "Welcome email — review & send", kind: "ai", who: ["AI", "AM"], note: "Builds the welcome email from the saved template: the client's name, company and portal link are filled in, plus the AI-drafted minutes of the meeting (from your call notes). Review, edit, then send — one step. Dispatch the portal magic link first.", act: { type: "mom", btn: "Generate welcome email" } },
     ] },
     { id: "m5", name: "Catch-up Accounting", desc: "If the client has a backlog, catch-up runs here before go-live.", steps: [
       { id: "m5.1", title: "Configure & run catch-up tasks", kind: "person", who: ["Junior"], note: "Decide if catch-up is needed.", act: { type: "catchup", btn: "Configure catch-up tasks", popup: true, reopen: true } },
@@ -338,7 +338,32 @@ const URGENT_COMPLIANCE: OnbTemplate = {
   taskboard: [],
 };
 
-export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE];
+// Run created when catch-up accounting is handed to a DIFFERENT team — that team's AM
+// configures the months and assigns owners.
+const CATCHUP_RUN: OnbTemplate = {
+  id: "catchup",
+  name: "Catch-up Accounting",
+  tier: "Catch-up",
+  teamLabel: "Dedicated catch-up team",
+  desc: "Historical catch-up bookkeeping handed to a dedicated team. Configure the months/board and assign the owners.",
+  color: "teal",
+  live: true,
+  usedBy: 0,
+  stages: [
+    { id: "cu1", name: "Configure & assign", desc: "Set the catch-up board and assign owners.", steps: [
+      { id: "cu1.1", title: "Assign the catch-up owner(s)", kind: "person", who: ["AM"], note: "Pick who will run the historical catch-up.", act: { type: "assign", role: "Junior", btn: "Assign owner(s)" } },
+      { id: "cu1.2", title: "Run the catch-up board", kind: "person", who: ["Senior"], note: "Work the monthly catch-up tasks to completion — board pre-seeded from the onboarding team, editable any time.", act: { type: "catchup", btn: "Open catch-up board", reopen: true } },
+    ] },
+    { id: "cu2", name: "Sign-off", desc: "Confirm all catch-up complete.", steps: [
+      { id: "cu2.1", title: "Confirm all catch-up completed", kind: "person", who: ["Senior"], approval: { by: "AM" }, act: { type: "approve", btn: "Confirm completed", role: "Senior", gateOnCatchup: true } },
+    ] },
+  ],
+  uploads: [],
+  intake: [],
+  taskboard: [],
+};
+
+export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN];
 export const templateById = (id: string) => ONB_TEMPLATES.find((t) => t.id === id);
 
 export function stepCount(t: OnbTemplate) {

@@ -41,13 +41,16 @@ export async function requestPortalCode(token: string, email: string): Promise<{
   const admin = createAdminClient();
   const { data: link } = await admin
     .from("magic_links")
-    .select("id,email,org_id,run_id,expires_at")
+    .select("id,email,alt_emails,org_id,run_id,expires_at")
     .eq("token", token)
     .maybeSingle();
   if (!link || new Date(link.expires_at).getTime() < Date.now()) return { error: "This link has expired. Ask your account manager for a new one." };
   const configured = (link.email ?? "").trim().toLowerCase();
   if (!configured || configured === "client@example.com") return { error: "This portal isn't set up with your email yet. Please contact your account manager." };
-  if (email.trim().toLowerCase() !== configured) return { error: "That email doesn't match the one this onboarding was sent to." };
+  const entered = email.trim().toLowerCase();
+  // The original client email OR any teammate the client invited (alt_emails) can log in.
+  const allowed = [configured, ...((link.alt_emails ?? []) as string[]).map((e) => e.trim().toLowerCase())];
+  if (!allowed.includes(entered)) return { error: "That email isn't on this onboarding. Ask whoever received the link to add you as a teammate, then try again." };
 
   const code = makeCode();
   await admin.from("magic_links").update({
@@ -63,9 +66,31 @@ export async function requestPortalCode(token: string, email: string): Promise<{
   }
   const sender = await findEmailSender(link.org_id, amId);
   if (!sender) return { error: "Couldn't send the code (email not configured). Please contact your account manager." };
-  const res = await sendGmailAs(sender, link.email, "Your Finanshels portal access code", `Your one-time access code is: ${code}\n\nIt expires in 10 minutes.\n\nIf you didn't request this, you can ignore this email.`);
+  // Send the code to the address that asked for it (so invited teammates get their own).
+  const res = await sendGmailAs(sender, entered, "Your Finanshels portal access code", `Your one-time access code is: ${code}\n\nIt expires in 10 minutes.\n\nIf you didn't request this, you can ignore this email.`);
   if (!res.ok) return { error: "Couldn't send the code right now. Please try again or contact your account manager." };
   return { ok: true };
+}
+
+/** Client invites a teammate to the portal — they can then log in with their own email + code. */
+export async function addPortalAltEmail(token: string, email: string): Promise<{ error?: string; emails?: string[] }> {
+  const clean = email.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean)) return { error: "Enter a valid email address." };
+  const link = await resolve(token);
+  if (!link?.id) return { error: "Link invalid or expired." };
+  const admin = createAdminClient();
+  const { data: row } = await admin.from("magic_links").select("email,alt_emails").eq("id", link.id).maybeSingle();
+  const current = ((row?.alt_emails ?? []) as string[]).map((e) => e.trim().toLowerCase());
+  if (clean === (row?.email ?? "").trim().toLowerCase() || current.includes(clean)) return { emails: current };
+  const next = [...current, clean];
+  const { error } = await admin.from("magic_links").update({ alt_emails: next }).eq("id", link.id);
+  if (error) return { error: error.message };
+  await admin.from("notifications").insert({
+    org_id: link.org_id, run_id: link.run_id, kind: "info",
+    title: "Client invited a teammate to the portal", body: clean,
+  });
+  revalidatePath(`/portal/${token}`);
+  return { emails: next };
 }
 
 /** Step 2 of portal access: verify the code and set the access cookie. */

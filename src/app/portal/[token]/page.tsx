@@ -13,7 +13,7 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
 
   const { data: link } = await admin
     .from("magic_links")
-    .select("client_id,run_id,expires_at,email")
+    .select("client_id,run_id,expires_at,email,alt_emails")
     .eq("token", token)
     .maybeSingle();
 
@@ -57,6 +57,9 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
   const contract = (contractRow?.data ?? null) as PortalData["contract"];
   const signedOff = !!(signoffRow?.data as { signed?: boolean } | null)?.signed;
   const boardCols = (colsRow?.data as { columns?: string[] } | null)?.columns ?? null;
+
+  const { data: driveRow } = await admin.from("drive_folders").select("tree").eq("client_id", link.client_id).maybeSingle();
+  const driveLink = (driveRow?.tree as { link?: string } | null)?.link ?? null;
 
   const { data: accessRows } = link.run_id
     ? await admin.from("run_items").select("id,data,status").eq("run_id", link.run_id).eq("kind", "access").order("sort")
@@ -128,6 +131,9 @@ export default async function PortalPage({ params }: { params: Promise<{ token: 
     onboardingPartner,
     csm,
     access,
+    driveLink,
+    clientEmail: link.email ?? null,
+    altEmails: (link.alt_emails ?? []) as string[],
   };
 
   return <PortalView data={data} />;

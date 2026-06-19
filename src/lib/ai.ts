@@ -28,6 +28,15 @@ export async function getAiConfig(orgId: string): Promise<AiConfig> {
   if (data?.anthropic_key_enc) keys.anthropic = dec(data.anthropic_key_enc);
   if (data?.google_key_enc) keys.google = dec(data.google_key_enc);
 
+  // Guard against a key pasted into the wrong provider field (e.g. an OpenAI
+  // `sk-proj-…` key in the Anthropic box). A mismatched key would otherwise fail
+  // every Claude call before falling back — slower and noisy. Drop only when the
+  // key clearly belongs to a different provider.
+  const isAnthropic = (k?: string) => !!k && k.startsWith("sk-ant-");
+  const isOpenAi = (k?: string) => !!k && k.startsWith("sk-") && !k.startsWith("sk-ant-");
+  if (keys.anthropic && isOpenAi(keys.anthropic)) delete keys.anthropic;
+  if (keys.openai && isAnthropic(keys.openai)) delete keys.openai;
+
   return { keys, models: (data?.feature_models ?? {}) as AiConfig["models"] };
 }
 
@@ -36,6 +45,19 @@ function resolveModel(provider: Provider, model: string, apiKey: string) {
   if (provider === "anthropic") return createAnthropic({ apiKey })(model);
   return createGoogleGenerativeAI({ apiKey })(model);
 }
+
+// Usage optimisation: cap output tokens (the main cost driver) and keep
+// temperature low for structured/extraction work so the model returns clean
+// JSON on the first try (fewer retries). Generous cap on handover_summary —
+// it's reused for the deck, contract analysis, COA generation, etc.
+const FEATURE_TUNING: Record<AiFeature, { maxOutputTokens: number; temperature: number }> = {
+  brief: { maxOutputTokens: 1500, temperature: 0.4 },
+  coa: { maxOutputTokens: 2200, temperature: 0.2 },
+  agenda: { maxOutputTokens: 900, temperature: 0.4 },
+  mom: { maxOutputTokens: 1500, temperature: 0.2 },
+  welcome_email: { maxOutputTokens: 900, temperature: 0.4 },
+  handover_summary: { maxOutputTokens: 3000, temperature: 0.2 },
+};
 
 /**
  * Builds the ordered list of providers to try: the feature's configured provider
@@ -71,11 +93,14 @@ export async function runAi(
   let lastErr: unknown = null;
   for (const fm of chain) {
     const key = cfg.keys[fm.provider]!;
+    const tuning = FEATURE_TUNING[feature] ?? { maxOutputTokens: 1500, temperature: 0.3 };
     try {
       const { text, usage } = await generateText({
         model: resolveModel(fm.provider, fm.model, key),
         system: opts.system,
         prompt: opts.prompt,
+        maxOutputTokens: tuning.maxOutputTokens,
+        temperature: tuning.temperature,
       });
       const u = usage as { inputTokens?: number; outputTokens?: number; totalTokens?: number };
       await admin.from("ai_generations").insert({

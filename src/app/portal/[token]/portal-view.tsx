@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { confirmCoa, commentCoa, uploadDocFile, uploadDocsBatch, submitIntake, postPortalMessage, signOffOnboarding, attachPortalTaskFile, documentViewUrl, confirmAccessItem } from "./actions";
+import { confirmCoa, commentCoa, uploadDocFile, uploadDocsBatch, submitIntake, postPortalMessage, signOffOnboarding, attachPortalTaskFile, documentViewUrl, confirmAccessItem, addPortalAltEmail } from "./actions";
 import { renderSopLine } from "@/lib/access-sops";
 
 export interface PortalData {
@@ -31,6 +31,9 @@ export interface PortalData {
   onboardingPartner: string | null;
   csm: { name: string; email: string | null } | null;
   access: { rowId: string; label: string; method: string; email: string; sop: string[]; systemName?: string; status: string; note?: string }[];
+  driveLink: string | null;
+  clientEmail: string | null;
+  altEmails: string[];
 }
 export interface IntakePrepView {
   enabled?: boolean;
@@ -104,10 +107,16 @@ export function PortalView({ data }: { data: PortalData }) {
           <span className="mark"><Icon name="gauge" size={18} strokeWidth={2.2} /></span>
           <span className="word">Finan<span className="o">shels</span></span>
         </div>
-        <div className="cp-client-locked" title="This secure link is unique to your company">
-          <Icon name="building-2" size={13} />
-          <span className="nm">{data.clientName}</span>
-          <span className="lk"><Icon name="lock" size={11} /> Secure client link</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button type="button" onClick={() => { router.refresh(); note("Refreshed — showing the latest"); }} title="Refresh to see the latest updates"
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#fff", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px", fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)", cursor: "pointer" }}>
+            <Icon name="refresh-cw" size={13} /> Refresh
+          </button>
+          <div className="cp-client-locked" title="This secure link is unique to your company">
+            <Icon name="building-2" size={13} />
+            <span className="nm">{data.clientName}</span>
+            <span className="lk"><Icon name="lock" size={11} /> Secure client link</span>
+          </div>
         </div>
       </div>
 
@@ -137,6 +146,19 @@ export function PortalView({ data }: { data: PortalData }) {
 
       {toast && <div className="toast show green"><Icon name="check-circle" size={15} /><span>{toast}</span></div>}
     </div>
+  );
+}
+
+/* One-click copyable email pill. */
+function CopyEmail({ email, dark }: { email: string; dark?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => { navigator.clipboard?.writeText(email).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); };
+  return (
+    <button type="button" onClick={copy} title="Click to copy"
+      style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: dark ? "#fff" : "var(--ink-2)" }}>
+      <Icon name="mail" size={13} /> <span style={{ textDecoration: "underline dotted" }}>{email}</span>
+      <Icon name={copied ? "check" : "copy"} size={11} style={{ color: copied ? "var(--green)" : "var(--ink-4)" }} />
+    </button>
   );
 }
 
@@ -507,10 +529,10 @@ function AccessSection({ data, busy, run, go }: {
           </div>
 
           {a.email ? (
-            <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, background: "var(--bg-soft)", borderRadius: 9, padding: "9px 12px" }}>
-              <Icon name="mail" size={14} style={{ color: "var(--orange)" }} />
+            <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, background: "var(--bg-soft)", borderRadius: 9, padding: "9px 12px", flexWrap: "wrap" }}>
               <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Grant access to:</span>
-              <strong style={{ fontSize: 13.5, fontFamily: "DM Mono, monospace" }}>{a.email}</strong>
+              <CopyEmail email={a.email} />
+              <span style={{ fontSize: 11, color: "var(--ink-4)" }}>(click to copy)</span>
             </div>
           ) : (
             <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, background: "var(--red-soft)", borderRadius: 9, padding: "9px 12px", color: "var(--red)", fontSize: 12.5 }}>
@@ -539,10 +561,46 @@ function AccessSection({ data, busy, run, go }: {
         </div>
       ))}
 
+      <InviteTeammates data={data} />
+
       <div className="obv3-pbtn-row">
         <button className="obv3-pbtn secondary" onClick={() => go("intake")}><Icon name="arrow-left" size={14} /> Back</button>
         <button className="obv3-pbtn primary" onClick={() => go("tasks")}>Next — your task board <Icon name="arrow-right" size={15} /></button>
       </div>
+    </div>
+  );
+}
+
+/* Invite teammates: the client can let colleagues open this portal with their own email + a code. */
+function InviteTeammates({ data }: { data: PortalData }) {
+  const [emails, setEmails] = useState<string[]>(data.altEmails);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const add = () => {
+    const v = draft.trim();
+    if (!v) return;
+    setBusy(true); setMsg(null);
+    addPortalAltEmail(data.token, v).then((r) => {
+      setBusy(false);
+      if (r.error) setMsg(r.error);
+      else { setEmails(r.emails ?? emails); setDraft(""); setMsg("Added — they can now open this link and sign in with their email."); }
+    });
+  };
+  return (
+    <div className="obv3-pcard">
+      <div className="obv3-pcard-h">Need a teammate to help?</div>
+      <div className="obv3-pcard-sub" style={{ marginBottom: 12 }}>If someone on your team has the access or data we need, add their email below and share this same link. They sign in with their own email and a one-time code.</div>
+      {emails.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+          {emails.map((e) => <span key={e} className="pill" style={{ fontSize: 11 }}><Icon name="user-check" size={11} /> {e}</span>)}
+        </div>
+      )}
+      <div className="cp-add-row">
+        <input type="email" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} placeholder="teammate@yourcompany.com" />
+        <button type="button" onClick={add} disabled={busy || !draft.trim()}><Icon name="plus" size={13} /> {busy ? "Adding…" : "Add teammate"}</button>
+      </div>
+      {msg && <div style={{ fontSize: 12, color: "var(--green)", marginTop: 8 }}>{msg}</div>}
     </div>
   );
 }
@@ -617,7 +675,7 @@ function Tasks({ data, amInitials, amName, amEmail, busy, run, note, go }: {
         <div>
           <div className="ct-role">Your Account Manager</div>
           <div className="ct-name">{amName}</div>
-          {amEmail && <div className="ct-meta">{amEmail} · WhatsApp preferred</div>}
+          {amEmail && <div className="ct-meta"><CopyEmail email={amEmail} /> · WhatsApp preferred</div>}
         </div>
       </div>
 
@@ -838,7 +896,7 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
           <div className="cp-poc-eyebrow">Point of contact</div>
           <div className="cp-poc-name">{amName}</div>
           <div className="cp-poc-role">Account Manager — for scope, billing or anything else</div>
-          {amEmail && <div className="cp-poc-meta"><Icon name="mail" size={13} /> {amEmail}</div>}
+          {amEmail && <div className="cp-poc-meta"><CopyEmail email={amEmail} /></div>}
           <div className="cp-poc-meta"><Icon name="message-circle" size={13} /> WhatsApp preferred · mornings</div>
           {data.onboardingPartner && <div className="cp-poc-meta"><Icon name="user-check" size={13} /> Onboarding Partner · {data.onboardingPartner}</div>}
         </div>
@@ -851,6 +909,57 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
           <div className="cp-book-foot"><span className="pill green" style={{ fontSize: 10.5, height: 18 }}><span className="dot" />{live ? "Live" : "Setting up"}</span> VAT quarterly · CT annual</div>
         </div>
       </div>
+
+      {/* Your shared Drive folder */}
+      {data.driveLink && (
+        <div className="obv3-pcard" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div className="obv3-pcard-h">Your documents folder</div>
+            <div className="obv3-pcard-sub">Everything we collect and prepare lives in your shared Drive folder.</div>
+          </div>
+          <a className="obv3-pbtn primary" href={data.driveLink} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+            <Icon name="folder-open" size={15} /> Open your Drive folder
+          </a>
+        </div>
+      )}
+
+      {/* Engagement summary — scope / included / excluded / payment, from the analyzed contract */}
+      {data.contract && (data.contract.scope || data.contract.inclusions?.length || data.contract.exclusions?.length || data.contract.paymentTerms) && (
+        <div className="obv3-pcard">
+          <div className="obv3-pcard-h">Your engagement</div>
+          <div className="obv3-pcard-sub" style={{ marginBottom: 12 }}>A clear summary of what we&apos;ll do, what&apos;s included and excluded, and how billing works.</div>
+          {data.contract.scope && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 4 }}>Scope</div>
+              <div style={{ fontSize: 13, color: "var(--ink-1)" }}>{data.contract.scope}</div>
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            {data.contract.inclusions?.length ? (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--green)", marginBottom: 6 }}>Included</div>
+                {data.contract.inclusions.map((x, i) => (
+                  <div key={i} style={{ fontSize: 12.5, color: "var(--ink-1)", display: "flex", gap: 6, padding: "2px 0" }}><Icon name="check" size={12} style={{ color: "var(--green)", flexShrink: 0, marginTop: 3 }} /> {x}</div>
+                ))}
+              </div>
+            ) : null}
+            {data.contract.exclusions?.length ? (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 6 }}>Not included</div>
+                {data.contract.exclusions.map((x, i) => (
+                  <div key={i} style={{ fontSize: 12.5, color: "var(--ink-2)", display: "flex", gap: 6, padding: "2px 0" }}><Icon name="x" size={12} style={{ color: "var(--ink-4)", flexShrink: 0, marginTop: 3 }} /> {x}</div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          {data.contract.paymentTerms && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 4 }}>Payment terms</div>
+              <div style={{ fontSize: 12.5, color: "var(--ink-1)", lineHeight: 1.6 }}>{data.contract.paymentTerms}</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* What we deliver — from the contract analysis, with standard deadlines */}
       {(() => {
@@ -911,11 +1020,11 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
         <div className="obv3-pcard-h" style={{ marginBottom: 10 }}>Escalation path</div>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
           <span style={{ width: 22, height: 22, borderRadius: 999, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 11, flexShrink: 0 }}>1</span>
-          <div><div style={{ fontWeight: 700, color: "var(--ink-1)" }}>{amName}</div><div style={{ color: "var(--ink-3)" }}>Account Manager{amEmail ? ` · ${amEmail}` : ""}</div></div>
+          <div><div style={{ fontWeight: 700, color: "var(--ink-1)" }}>{amName}</div><div style={{ color: "var(--ink-3)", display: "flex", gap: 6, flexWrap: "wrap" }}>Account Manager{amEmail ? <CopyEmail email={amEmail} /> : null}</div></div>
         </div>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
           <span style={{ width: 22, height: 22, borderRadius: 999, background: "var(--bg)", color: "var(--ink-3)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 11, flexShrink: 0, border: "1.5px solid var(--border-strong)" }}>2</span>
-          <div><div style={{ fontWeight: 700, color: "var(--ink-1)" }}>{data.csm?.name ?? "Customer Success Manager"}</div><div style={{ color: "var(--ink-3)" }}>Customer Success Manager{data.csm?.email ? ` · ${data.csm.email}` : ""}</div></div>
+          <div><div style={{ fontWeight: 700, color: "var(--ink-1)" }}>{data.csm?.name ?? "Customer Success Manager"}</div><div style={{ color: "var(--ink-3)", display: "flex", gap: 6, flexWrap: "wrap" }}>Customer Success Manager{data.csm?.email ? <CopyEmail email={data.csm.email} /> : null}</div></div>
         </div>
       </div>
 

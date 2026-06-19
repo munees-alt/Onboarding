@@ -671,6 +671,35 @@ export async function escalateUrgentCompliance(
   return { created };
 }
 
+/**
+ * Catch-up handed to a DIFFERENT team → create a dedicated catch-up run for that team's AM,
+ * pre-seeded with the catch-up tasks. The AM then configures and assigns. Completes the origin step.
+ */
+export async function escalateCatchup(
+  runId: string, stepId: string, amId: string, amName: string,
+  tasks: Record<string, string>[],
+): Promise<{ error?: string; runId?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  if (!amId) return { error: "Pick the Account Manager for the catch-up team." };
+  const newRunId = await createRunFromTemplate(supabase, {
+    orgId: run.org_id, clientId: run.client_id, amId, templateId: "catchup",
+  });
+  const seed = tasks.filter((t) => Object.values(t).some((v) => v));
+  if (seed.length) {
+    await supabase.from("run_items").insert(seed.map((t, i) => ({ run_id: newRunId, client_id: run.client_id, kind: "catchup", data: t, status: t.status ?? "open", sort: i })));
+  }
+  await supabase.from("notifications").insert({
+    org_id: run.org_id, run_id: newRunId, recipient_id: amId, kind: "escalation",
+    title: "Catch-up accounting run created",
+    body: `${amName}, a catch-up run was created for your team${seed.length ? ` with ${seed.length} task(s) pre-seeded` : ""}. Configure the board and assign the owners.`,
+  });
+  await completeStep(runId, stepId);
+  revalidatePath(`/onboarding/${runId}`);
+  return { runId: newRunId };
+}
+
 export interface DiagramNode { id: string; label: string; type: string; x?: number; y?: number }
 export interface DiagramEdge { from: string; to: string }
 export interface DiagramInput { name: string; nodes: DiagramNode[]; edges?: DiagramEdge[] }
@@ -730,6 +759,19 @@ export async function saveBoardColumns(runId: string, columns: string[]): Promis
   return {};
 }
 
+/** Save the run's configurable task-status options (the Status dropdown choices). */
+export async function saveTaskStatuses(runId: string, statuses: string[]): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const clean = statuses.map((s) => s.trim()).filter(Boolean);
+  if (!clean.length) return { error: "Keep at least one status." };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "task_statuses");
+  await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "task_statuses", data: { statuses: clean }, status: "open" });
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 /** Returns a viewable URL for an uploaded document (Drive link as-is, or a signed Storage URL). */
 export async function getDocumentUrl(docId: string): Promise<{ error?: string; url?: string }> {
   const session = await getSession();
@@ -763,6 +805,12 @@ export async function requestDocReupload(runId: string, docId: string, note: str
     body: `📎 Please re-upload "${doc.label}": ${reason}`,
     task_ref: doc.label,
   });
+  // Email the client so they're alerted outside the portal too (best-effort).
+  await sendClientEmail(
+    runId,
+    `Action needed: please re-upload "${doc.label}"`,
+    `Hello,\n\nWe need you to re-upload one document for your onboarding:\n\n• ${doc.label}\nReason: ${reason}\n\nPlease open your secure portal → Documents and re-upload the corrected file. The item is highlighted there.\n\nThank you,\nFinanshels`,
+  ).catch(() => {});
   revalidatePath(`/onboarding/${runId}`);
   return {};
 }
