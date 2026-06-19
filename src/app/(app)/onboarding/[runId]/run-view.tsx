@@ -42,7 +42,7 @@ const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Seni
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
 import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
-import { WELCOME_EMAIL_SUBJECT } from "@/lib/welcome-email";
+import { WELCOME_EMAIL_SUBJECT, renderWhatsappWelcome } from "@/lib/welcome-email";
 
 const KIND_ICON: Record<string, { icon: string; color: string }> = {
   ai: { icon: "sparkles", color: "var(--purple)" },
@@ -428,6 +428,10 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
           stepId={actStep.id}
           actType={actStep.act!.type}
           title={actStep.title}
+          contacts={[
+            ...detail.assignPeople.filter((p) => /senior|team.?lead|account manager|^am$/i.test(p.role)).map((p) => p.name),
+            ...(detail.amName ? [detail.amName] : []),
+          ].filter((v, i, a) => v && a.indexOf(v) === i)}
           onClose={() => setActStep(null)}
           onDone={() => { setActStep(null); showToast(`${actStep.title} — done`); router.refresh(); }}
         />
@@ -1960,8 +1964,21 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Engagement</div><h2 className="fsdeck-h2">Contract Summary</h2></div></div>
           <div className="fsdeck-contract">
-            <div className="fsdeck-contract-main"><div className="fsdeck-softcol-h">Scope of work</div><p style={{ fontSize: 16, color: "var(--fsd-ink)", lineHeight: 1.55 }}>{d.contract.scope}</p>
-              <div className="fsdeck-services" style={{ marginTop: 14 }}>{(d.contract.highlights ?? []).map((h, i) => <span key={i} className="fsdeck-svc"><span className="dot" />{h}</span>)}</div>
+            <div className="fsdeck-contract-main" style={{ maxHeight: 372, overflowY: "auto", paddingRight: 8 }}>
+              <div className="fsdeck-softcol-h">Scope of work</div>
+              <p style={{ fontSize: 15, color: "var(--fsd-ink)", lineHeight: 1.55 }}>{d.contract.scope || "Not specified"}</p>
+              {(d.contract.highlights ?? []).length > 0 && (
+                <>
+                  <div className="fsdeck-softcol-h" style={{ marginTop: 16 }}>Included in scope</div>
+                  <div className="fsdeck-services" style={{ marginTop: 8 }}>{(d.contract.highlights ?? []).map((h, i) => <span key={i} className="fsdeck-svc"><span className="dot" />{h}</span>)}</div>
+                </>
+              )}
+              {(d.contract.exclusions ?? []).length > 0 && (
+                <>
+                  <div className="fsdeck-softcol-h" style={{ marginTop: 18, color: "#C2410C" }}>Out of scope</div>
+                  <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>{(d.contract.exclusions ?? []).map((x, i) => <li key={i} style={{ fontSize: 14, color: "#6B5440", lineHeight: 1.6 }}>{x}</li>)}</ul>
+                </>
+              )}
             </div>
             <div className="fsdeck-contract-side">
               <div className="fsdeck-side-row"><span>Payment</span><b>{d.contract.payment || "Not specified"}</b></div>
@@ -2089,18 +2106,32 @@ async function downloadDeckPptx(deck: DeckData) {
     s.addText(String(d), { x: x + 0.25, y: 3.25, w: 3.35, h: 1.9, fontSize: 12, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.05 });
   });
 
-  // 9. Contract
+  // 9. Contract — Scope, with Included / Out-of-scope columns.
+  const cExcl = (deck.contract?.exclusions || []).filter(Boolean);
+  const cIncl = (deck.contract?.highlights || []).filter(Boolean);
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Engagement", "Contract Summary");
-  s.addText("Scope", { x: 0.7, y: 2.0, w: 7.6, h: 0.3, fontSize: 13, bold: true, color: PPTX.orange, valign: "middle" });
-  s.addText(deck.contract?.scope || "Not specified", { x: 0.7, y: 2.35, w: 7.6, h: 1.1, fontSize: 12, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.05 });
-  s.addText((deck.contract?.highlights || []).map((h) => ({ text: h, options: { bullet: { code: "2022" }, fontSize: 12, color: PPTX.ink, breakLine: true, paraSpaceAfter: 4 } })), { x: 0.7, y: 3.55, w: 7.6, h: 2.9, valign: "top", lineSpacingMultiple: 1.05 });
-  s.addShape("roundRect", { x: 8.5, y: 2.0, w: 4.2, h: 4.4, fill: { color: PPTX.navy }, rectRadius: 0.1 });
-  s.addText("PAYMENT", { x: 8.75, y: 2.3, w: 3.7, h: 0.25, fontSize: 10, bold: true, color: PPTX.orange, valign: "middle" });
-  s.addText(deck.contract?.payment || "Not specified", { x: 8.75, y: 2.6, w: 3.7, h: 0.85, fontSize: 12, color: PPTX.white, valign: "top" });
-  s.addText("DURATION", { x: 8.75, y: 3.55, w: 3.7, h: 0.25, fontSize: 10, bold: true, color: PPTX.orange, valign: "middle" });
-  s.addText(deck.contract?.duration || "Not specified", { x: 8.75, y: 3.85, w: 3.7, h: 0.85, fontSize: 12, color: PPTX.white, valign: "top" });
-  s.addText("YOUR RESPONSIBILITIES", { x: 8.75, y: 4.8, w: 3.7, h: 0.25, fontSize: 10, bold: true, color: PPTX.orange, valign: "middle" });
-  s.addText(deck.contract?.responsibilities || "Not specified", { x: 8.75, y: 5.1, w: 3.7, h: 1.1, fontSize: 12, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
+  s.addText("SCOPE OF WORK", { x: 0.7, y: 1.95, w: 12, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
+  s.addText(deck.contract?.scope || "Not specified", { x: 0.7, y: 2.3, w: 12, h: 1.0, fontSize: 13, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.1 });
+  // Included card (white)
+  s.addShape("roundRect", { x: 0.7, y: 3.5, w: 5.9, h: 3.2, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+  s.addText("INCLUDED IN SCOPE", { x: 0.95, y: 3.72, w: 5.4, h: 0.3, fontSize: 11, bold: true, color: PPTX.navy, charSpacing: 1, valign: "middle" });
+  s.addText(cIncl.length ? cIncl.map((h) => ({ text: h, options: { bullet: { code: "2713" }, fontSize: 12, color: PPTX.ink, breakLine: true, paraSpaceAfter: 5 } })) : "As described in the engagement.", { x: 0.95, y: 4.15, w: 5.4, h: 2.4, fontSize: 12, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.05 });
+  // Out-of-scope card (light, orange accent)
+  s.addShape("roundRect", { x: 6.85, y: 3.5, w: 5.85, h: 3.2, fill: { color: "FFF1E6" }, line: { color: "F4D7BE", width: 1 }, rectRadius: 0.1 });
+  s.addText("OUT OF SCOPE", { x: 7.1, y: 3.72, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: "C2410C", charSpacing: 1, valign: "middle" });
+  s.addText(cExcl.length ? cExcl.map((x) => ({ text: x, options: { bullet: { code: "2022" }, fontSize: 12, color: "6B5440", breakLine: true, paraSpaceAfter: 5 } })) : "Nothing excluded — full scope as described.", { x: 7.1, y: 4.15, w: 5.35, h: 2.4, fontSize: 12, color: "6B5440", valign: "top", lineSpacingMultiple: 1.05 });
+
+  // 9b. Engagement terms — payment, duration, client responsibilities.
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Engagement", "Engagement Terms");
+  s.addShape("roundRect", { x: 0.7, y: 2.1, w: 5.9, h: 1.85, fill: { color: PPTX.navy }, rectRadius: 0.1 });
+  s.addText("PAYMENT", { x: 0.95, y: 2.35, w: 5.4, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
+  s.addText(deck.contract?.payment || "Not specified", { x: 0.95, y: 2.78, w: 5.4, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
+  s.addShape("roundRect", { x: 6.85, y: 2.1, w: 5.85, h: 1.85, fill: { color: PPTX.navy }, rectRadius: 0.1 });
+  s.addText("DURATION", { x: 7.1, y: 2.35, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
+  s.addText(deck.contract?.duration || "Not specified", { x: 7.1, y: 2.78, w: 5.35, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
+  s.addShape("roundRect", { x: 0.7, y: 4.15, w: 12, h: 2.5, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+  s.addText("YOUR RESPONSIBILITIES", { x: 0.95, y: 4.4, w: 11.5, h: 0.3, fontSize: 11, bold: true, color: PPTX.navy, charSpacing: 1, valign: "middle" });
+  s.addText(deck.contract?.responsibilities || "Not specified", { x: 0.95, y: 4.85, w: 11.5, h: 1.6, fontSize: 13, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.15 });
 
   // 10. Next steps
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Next", "Immediate Next Steps");
@@ -2220,7 +2251,8 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
           <DeckEdit n="5" label="Contract · scope" pill="client"><textarea className="fsdeck-edit" value={deck.contract.scope} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, scope: e.target.value } }))} rows={2} /></DeckEdit>
           <DeckEdit n="5.2" label="Contract · payment" pill="client"><input className="fsdeck-edit" value={deck.contract.payment} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, payment: e.target.value } }))} /></DeckEdit>
           <DeckEdit n="5.3" label="Contract · duration" pill="client"><input className="fsdeck-edit" value={deck.contract.duration} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, duration: e.target.value } }))} /></DeckEdit>
-          <DeckEdit n="5.4" label="Contract · your responsibilities" pill="client"><textarea className="fsdeck-edit" value={deck.contract.responsibilities} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, responsibilities: e.target.value } }))} rows={2} /></DeckEdit>
+          <DeckEdit n="5.4" label="Contract · out of scope (one per line)" pill="client"><textarea className="fsdeck-edit" value={(deck.contract.exclusions ?? []).join("\n")} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, exclusions: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) } }))} rows={3} /></DeckEdit>
+          <DeckEdit n="5.5" label="Contract · your responsibilities" pill="client"><textarea className="fsdeck-edit" value={deck.contract.responsibilities} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, responsibilities: e.target.value } }))} rows={2} /></DeckEdit>
 
           {deck.nextSteps?.map((s, i) => (
             <DeckEdit key={i} n={`6.${i + 1}`} label={`Next step — ${s.title || "title"}`} pill="ai">
@@ -2247,12 +2279,17 @@ function DeckEdit({ n, label, pill, children }: { n: string; label: string; pill
 }
 
 function AiTextModal({
-  runId, stepId, actType, title, onClose, onDone,
-}: { runId: string; stepId: string; actType: string; title: string; onClose: () => void; onDone: () => void }) {
+  runId, stepId, actType, title, contacts = [], onClose, onDone,
+}: { runId: string; stepId: string; actType: string; title: string; contacts?: string[]; onClose: () => void; onDone: () => void }) {
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
+  // WhatsApp welcome message (point-of-contact picker + copy).
+  const [waOpen, setWaOpen] = useState(false);
+  const [waContact, setWaContact] = useState(contacts[0] ?? "");
+  const [waCopied, setWaCopied] = useState(false);
+  const waText = renderWhatsappWelcome(waContact);
 
   const generate = () => {
     setPhase("loading"); setError(null);
@@ -2288,6 +2325,33 @@ function AiTextModal({
               <textarea className="notes" value={text} onChange={(e) => setText(e.target.value)} style={{ minHeight: 240, marginTop: 8, fontFamily: "inherit" }} />
               <button className="btn-soft" onClick={generate} style={{ marginTop: 8 }}><Icon name="rotate-ccw" size={13} /> Regenerate</button>
             </>
+          )}
+
+          {actType === "mom" && (
+            <div style={{ marginTop: 16, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+              <button onClick={() => setWaOpen((v) => !v)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "var(--bg-soft)", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, color: "var(--ink-2)" }}>
+                <Icon name="message-circle" size={15} style={{ color: "#25D366" }} /> WhatsApp group welcome message
+                <Icon name={waOpen ? "chevron-up" : "chevron-down"} size={15} style={{ marginLeft: "auto" }} />
+              </button>
+              {waOpen && (
+                <div style={{ padding: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Point of contact</span>
+                    {contacts.length > 0 ? (
+                      <select value={waContact} onChange={(e) => setWaContact(e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 13 }}>
+                        {contacts.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    ) : (
+                      <input value={waContact} onChange={(e) => setWaContact(e.target.value)} placeholder="Name shown in the message" style={{ border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 13, flex: 1, minWidth: 160 }} />
+                    )}
+                  </div>
+                  <textarea readOnly value={waText} style={{ width: "100%", minHeight: 168, border: "1px solid var(--border)", borderRadius: 8, padding: "9px 11px", fontSize: 13, lineHeight: 1.5, fontFamily: "inherit", background: "#fff", resize: "vertical" }} />
+                  <button className="btn-soft" style={{ marginTop: 8 }} onClick={() => { navigator.clipboard?.writeText(waText); setWaCopied(true); setTimeout(() => setWaCopied(false), 1800); }}>
+                    <Icon name={waCopied ? "check" : "copy"} size={13} /> {waCopied ? "Copied — paste into WhatsApp" : "Copy message"}
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
         <div className="ft">

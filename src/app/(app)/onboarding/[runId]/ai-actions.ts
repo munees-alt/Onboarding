@@ -48,7 +48,7 @@ import type { AiFeature } from "@/lib/ai-config";
 const TEXT_FEATURE_PROMPT: Record<string, { feature: AiFeature; instruction: string }> = {
   agenda: { feature: "agenda", instruction: "Write a polished, client-ready kickoff-call agenda as a short email with a greeting and 5-7 clear agenda points. Ready to send as-is." },
   ai: { feature: "mom", instruction: "Write professional minutes of meeting as a ready-to-send client email: warm greeting to the client by name, a short paragraph on what was covered, a 'Decisions' list, an 'Action items' list (each with owner and due date), 'Next steps', and a Finanshels sign-off. Complete and polished." },
-  mom: { feature: "mom", instruction: "Write ONLY the minutes-of-meeting body (no greeting, no sign-off — these are added by a surrounding template), based STRICTLY on the meeting notes provided (the recording link is for the client's reference — you cannot watch it, so do not invent anything not in the notes). Structure with these short labelled sections: 'Key points discussed'; 'Decisions made'; 'Action items' (each with owner and due date); 'Next steps'; and a final line with the recording link. Professional, specific to this meeting, concise." },
+  mom: { feature: "mom", instruction: "Write ONLY the minutes-of-meeting body. Do NOT write a 'Subject:' line, a 'Dear …' greeting, any opening pleasantry (e.g. 'I hope this finds you well', 'Below are the minutes…'), or any sign-off — these are all added by a surrounding template. Output PLAIN TEXT only: no markdown, no asterisks (**), no '#' headings. Base it STRICTLY on the meeting notes provided (the recording link is for the client's reference — you cannot watch it, so do not invent anything not in the notes). Structure with these short labelled sections, each label on its own line followed by its content: 'Meeting Overview'; 'Decisions'; 'Action Items' (each with owner and due date); 'Next Steps'; and a final line with the recording link. Professional, specific to this meeting, concise." },
   welcome_email: { feature: "welcome_email", instruction: "Write a warm, professional welcome email from the Finanshels account manager to the client after the kickoff call: thank them, confirm scope and timeline, note the COA review and next steps, sign off. Ready to send." },
   deck: { feature: "handover_summary", instruction: "Write a short, branded client onboarding deck as slide-by-slide content (Slide title + 1-2 lines each): Welcome, Scope of service, Your team, Timeline & milestones, What we need from you, How we work. Client-ready." },
   brief: { feature: "brief", instruction: "Write a sharp internal pre-call brief: business overview, UAE regulatory points (VAT/CT/WPS), the 4-5 best questions to ask on the call, risk/complexity flags, and a COA template recommendation. Concise and specific." },
@@ -443,7 +443,7 @@ export interface DeckData {
   whatWeUnderstood: { summary: string; tags: string[]; points: { icon: string; title: string; desc: string }[] };
   compliance: { ct: string; vat: string; wps: string };
   software: { recommendation: string; existing: string };
-  contract: { scope: string; highlights: string[]; payment: string; duration: string; responsibilities: string };
+  contract: { scope: string; highlights: string[]; exclusions: string[]; payment: string; duration: string; responsibilities: string };
   nextSteps: { icon: string; title: string; desc: string }[];
 }
 
@@ -488,7 +488,7 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
     `"whatWeUnderstood":{"summary":"2 specific sentences about THIS business","tags":["3-5 short attributes"],"points":[{"icon":"emoji","title":"","desc":""} x4]}, ` +
     `"compliance":{"ct":"CT note specific to this client","vat":"VAT note","wps":"WPS note"}, ` +
     `"software":{"recommendation":"why Zoho Books suits them","existing":"one line on reviewing existing tools"}, ` +
-    `"contract":{"scope":"","highlights":["",""],"payment":"","duration":"","responsibilities":""}, ` +
+    `"contract":{"scope":"","highlights":["what is INCLUDED in scope, 2-5 items"],"exclusions":["what is OUT of scope / not covered, 0-5 items"],"payment":"","duration":"","responsibilities":"what the CLIENT must do/provide (their responsibilities), not exclusions"}, ` +
     `"nextSteps":[{"icon":"emoji","title":"","desc":""} x3]}`;
 
   let parsed: Partial<DeckData> & { mission?: string };
@@ -514,7 +514,7 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
     whatWeUnderstood: parsed.whatWeUnderstood ?? { summary: businessDesc, tags: [client.industry ?? "SME", "UAE-based"], points: [] },
     compliance: parsed.compliance ?? { ct: "", vat: "", wps: "" },
     software: parsed.software ?? { recommendation: "", existing: "" },
-    contract: parsed.contract ?? { scope: "", highlights: [], payment: "", duration: "", responsibilities: "" },
+    contract: parsed.contract ? { ...parsed.contract, exclusions: parsed.contract.exclusions ?? [] } : { scope: "", highlights: [], exclusions: [], payment: "", duration: "", responsibilities: "" },
     nextSteps: parsed.nextSteps?.length ? parsed.nextSteps : [],
   };
 
@@ -534,9 +534,12 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
     deck.contract = {
       scope: c.scope || deck.contract.scope,
       highlights: highlights.length ? highlights : deck.contract.highlights,
+      // Exclusions get their own field now (no longer jammed into responsibilities).
+      exclusions: c.exclusions?.length ? c.exclusions : deck.contract.exclusions,
       payment: c.paymentTerms || deck.contract.payment,
       duration: (c.periodStart || c.periodEnd) ? `${c.periodStart ?? "—"} → ${c.periodEnd ?? "—"}` : deck.contract.duration,
-      responsibilities: c.exclusions?.length ? `Out of scope: ${c.exclusions.join(", ")}` : deck.contract.responsibilities,
+      // Keep the client's own responsibilities (from the deck prompt) distinct from exclusions.
+      responsibilities: deck.contract.responsibilities,
     };
   }
 
