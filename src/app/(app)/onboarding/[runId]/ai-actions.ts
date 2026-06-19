@@ -445,6 +445,7 @@ export interface DeckData {
   software: { recommendation: string; existing: string; plan: string };
   contract: { scope: string; highlights: string[]; exclusions: string[]; payment: string; duration: string; responsibilities: string };
   nextSteps: { icon: string; title: string; desc: string }[];
+  receivedDocs: string[];
 }
 
 /** Build (or load) the branded onboarding deck for the micro-team flow. Auto-filled
@@ -489,7 +490,8 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
     `"compliance":{"ct":"CT note specific to this client","vat":"VAT note","wps":"WPS note","tradeLicence":"trade licence note — that we track the licence renewal/expiry date and remind before it lapses"}, ` +
     `"software":{"recommendation":"why Zoho Books suits them","plan":"recommended Zoho Books subscription plan for this client — pick ONE of Standard / Professional / Premium and add a 4-8 word reason (e.g. 'Professional — multi-currency & purchase orders for trading')","existing":"one line on reviewing existing tools"}, ` +
     `"contract":{"scope":"","highlights":["what is INCLUDED in scope, 2-5 items"],"exclusions":["what is OUT of scope / not covered, 0-5 items"],"payment":"","duration":"","responsibilities":"what the CLIENT must do/provide (their responsibilities), not exclusions"}, ` +
-    `"nextSteps":[{"icon":"emoji","title":"","desc":""} x3]}`;
+    `"nextSteps":[{"icon":"emoji","title":"","desc":""} x3]}. ` +
+    `IMPORTANT for nextSteps: the contract is ALREADY signed — do NOT include "sign the contract" or anything about signing. The next steps reflect what happens after this call: we share a welcome email with the secure client-portal link; the client uploads the required documents and grants system access from the portal; then we begin setup.`;
 
   let parsed: Partial<DeckData> & { mission?: string };
   try {
@@ -499,6 +501,15 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
   } catch (err) {
     return { error: err instanceof Error ? err.message : "AI failed. Check your AI key in Settings." };
   }
+
+  // Documents already on file (e.g. collected by Sales before onboarding) — shown
+  // in the deck so the team doesn't re-request what's already received.
+  const { data: receivedRows } = await supabase
+    .from("documents")
+    .select("label,status")
+    .eq("client_id", run.client_id)
+    .eq("status", "uploaded");
+  const receivedDocs = (receivedRows ?? []).map((d) => d.label as string).filter(Boolean);
 
   const deck: DeckData = {
     clientName: client.name,
@@ -515,7 +526,12 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
     compliance: { ct: parsed.compliance?.ct ?? "", vat: parsed.compliance?.vat ?? "", wps: parsed.compliance?.wps ?? "", tradeLicence: parsed.compliance?.tradeLicence ?? "" },
     software: { recommendation: parsed.software?.recommendation ?? "", existing: parsed.software?.existing ?? "", plan: parsed.software?.plan ?? "" },
     contract: parsed.contract ? { ...parsed.contract, exclusions: parsed.contract.exclusions ?? [] } : { scope: "", highlights: [], exclusions: [], payment: "", duration: "", responsibilities: "" },
-    nextSteps: parsed.nextSteps?.length ? parsed.nextSteps : [],
+    nextSteps: parsed.nextSteps?.length ? parsed.nextSteps : [
+      { icon: "📧", title: "Welcome email & portal", desc: "We share your welcome email with a secure link to your client portal." },
+      { icon: "📂", title: "Documents & access", desc: "Upload any remaining documents and grant system access from the portal." },
+      { icon: "🚀", title: "We begin setup", desc: "We configure your books, compliance calendar and reporting." },
+    ],
+    receivedDocs,
   };
 
   // "What we understood" must be the high-quality business description (gpt-4o), not the

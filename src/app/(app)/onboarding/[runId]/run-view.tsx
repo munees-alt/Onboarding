@@ -1986,6 +1986,10 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
             <div className="fsdeck-softcol"><div className="fsdeck-softcol-h">If you have existing software</div><p>{d.software.existing}</p></div>
             <div className="fsdeck-softcol rec"><div className="fsdeck-softcol-h">Our recommendation · Zoho Books</div><p>{d.software.recommendation}</p>{d.software.plan && <div style={{ marginTop: 12, display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(249,115,22,0.15)", border: "1px solid var(--fsd-orange, #F97316)", color: "var(--fsd-orange, #F97316)", borderRadius: 8, padding: "6px 11px", fontSize: 13, fontWeight: 700 }}><Icon name="badge-check" size={14} /> Plan: {d.software.plan}</div>}</div>
           </div>
+          <div style={{ marginTop: 14, display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, color: "var(--fsd-ink-2, #51606E)", background: "rgba(249,115,22,0.08)", border: "1px solid var(--fsd-line, #ECE3D2)", borderRadius: 10, padding: "10px 14px" }}>
+            <Icon name="info" size={15} style={{ color: "var(--fsd-orange, #F97316)", flexShrink: 0, marginTop: 1 }} />
+            <span>The accounting software subscription is billed directly by the provider (e.g. Zoho) and paid by the client. It is <strong>not included</strong> in our service fees.</span>
+          </div>
         </div>
       );
     case 5:
@@ -1996,6 +2000,14 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
             <div className="fsdeck-softcol rec"><div className="fsdeck-softcol-h">Our solution</div><p>A dedicated, encrypted Google Drive organised by year and document type — controlled access, easy retrieval.</p></div>
             <div className="fsdeck-doclist"><div className="fsdeck-softcol-h">Documents we&apos;ll need</div><ul>{DECK_DOCS.map((x) => <li key={x}><span className="tick">✓</span>{x}</li>)}</ul></div>
           </div>
+          {(d.receivedDocs ?? []).length > 0 && (
+            <div style={{ marginTop: 14, background: "rgba(34,197,94,0.08)", border: "1px solid #BBE7C6", borderRadius: 10, padding: "10px 14px" }}>
+              <div className="fsdeck-softcol-h" style={{ color: "#15803D" }}>Already received{" "}<span style={{ fontWeight: 400, color: "var(--fsd-ink-2, #51606E)" }}>— no need to resend</span></div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                {(d.receivedDocs ?? []).map((x, i) => <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12.5, background: "#fff", border: "1px solid #BBE7C6", borderRadius: 999, padding: "4px 10px", color: "#15803D" }}><Icon name="check" size={12} /> {x}</span>)}
+              </div>
+            </div>
+          )}
         </div>
       );
     case 6:
@@ -2164,6 +2176,7 @@ async function downloadDeckPptx(deck: DeckData) {
     s.addShape("roundRect", { x: 7.1, y: 4.95, w: 5.35, h: 0.7, fill: { color: PPTX.orange }, rectRadius: 0.08 });
     s.addText(`Plan: ${deck.software.plan}`, { x: 7.25, y: 4.95, w: 5.05, h: 0.7, fontSize: 12, bold: true, color: PPTX.navy, valign: "middle" });
   }
+  s.addText("Note: the accounting software subscription is billed by the provider (e.g. Zoho) and paid by the client — not included in our service fees.", { x: 0.7, y: 6.0, w: 12, h: 0.7, fontSize: 11.5, italic: true, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.05 });
 
   // 7. Data — two columns: our solution (navy) + documents we'll need (checklist), matching the on-screen slide.
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 4", "Secure Data Management");
@@ -2173,6 +2186,9 @@ async function downloadDeckPptx(deck: DeckData) {
   s.addShape("roundRect", { x: 6.85, y: 2.2, w: 5.85, h: 4.4, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
   s.addText("DOCUMENTS WE'LL NEED", { x: 7.1, y: 2.45, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
   s.addText(DECK_DOCS.map((d) => ({ text: d, options: { bullet: { code: "2713" }, color: PPTX.ink, fontSize: 12.5, breakLine: true, paraSpaceAfter: 5 } })), { x: 7.1, y: 2.95, w: 5.35, h: 3.5, valign: "top", lineSpacingMultiple: 1.05 });
+  if ((deck.receivedDocs ?? []).length > 0) {
+    s.addText(`Already received (no need to resend): ${(deck.receivedDocs ?? []).join(", ")}`, { x: 0.7, y: 6.8, w: 12, h: 0.5, fontSize: 11.5, bold: true, color: "15803D", valign: "top", lineSpacingMultiple: 1.0 });
+  }
 
   // 8. Communication
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 5", "How We Stay Connected");
