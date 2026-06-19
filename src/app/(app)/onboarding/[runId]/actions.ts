@@ -878,6 +878,34 @@ export async function uploadDocForClient(runId: string, docId: string, formData:
   return {};
 }
 
+/** Lists the org's SOPs / templates for linking to internal projects & tasks. */
+export async function listSops(): Promise<{ sops: { id: string; title: string; flow: string | null; category: string | null; scope: string | null }[] }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { sops: [] };
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("sops")
+    .select("id,title,flow,category,scope")
+    .eq("org_id", session.profile.org_id)
+    .order("title");
+  return { sops: (data ?? []) as { id: string; title: string; flow: string | null; category: string | null; scope: string | null }[] };
+}
+
+/** Saves the SOPs/templates linked to this run's internal project & tasks. */
+export async function saveLinkedSops(runId: string, sops: { id: string; title: string }[]): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "linked_sops");
+  if (sops.length) {
+    await supabase.from("run_items").insert(
+      sops.map((s, i) => ({ run_id: runId, client_id: run.client_id, kind: "linked_sops", data: s, status: "open", sort: i })),
+    );
+  }
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 /** Save task-board SLA reminders for the run (notify the AM if a task stalls). */
 export async function saveTaskSla(runId: string, notStartedDays: number, notCompletedDays: number): Promise<{ error?: string }> {
   const supabase = await createClient();

@@ -9,7 +9,7 @@ import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboard
 import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, accessTypeById, type AccessItem } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateCatchup, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateCatchup, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, saveLinkedSops, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -380,6 +380,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
           stepId={actStep.id}
           kind={actStep.act.type === "catchup" ? "catchup" : actStep.act.type === "project" ? "project" : "compliance"}
           existing={detail.items[actStep.act.type === "catchup" ? "catchup" : actStep.act.type === "project" ? "project" : "compliance"] ?? []}
+          linkedSops={(detail.items["linked_sops"] ?? []).map((i) => i.data as { id: string; title: string })}
           people={detail.assignPeople}
           assignedTeam={detail.assignedTeam}
           onClose={() => setActStep(null)}
@@ -1641,10 +1642,11 @@ const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 const ITEM_TITLE: Record<string, string> = { catchup: "Catch-up board", project: "Internal projects & tasks", compliance: "Compliance calendar" };
 
 function ItemsBuilderModal({
-  runId, stepId, kind, existing, people = [], assignedTeam = [], onClose, onDone,
+  runId, stepId, kind, existing, linkedSops = [], people = [], assignedTeam = [], onClose, onDone,
 }: {
   runId: string; stepId: string; kind: string;
   existing: { id: string; data: Record<string, unknown>; status: string }[];
+  linkedSops?: { id: string; title: string }[];
   people?: { id: string; name: string; role: string }[];
   assignedTeam?: { id: string; name: string; role: string }[];
   onClose: () => void; onDone: () => void;
@@ -1672,6 +1674,10 @@ function ItemsBuilderModal({
   const [aiBusy, setAiBusy] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
   const [pBrief, setPBrief] = useState(""); // project AI: plain-language task list
+  // Link SOPs / templates to internal projects & tasks.
+  const [sopList, setSopList] = useState<{ id: string; title: string; flow: string | null; category: string | null }[]>([]);
+  const [linkedSopIds, setLinkedSopIds] = useState<string[]>(linkedSops.map((s) => s.id));
+  useEffect(() => { if (kind === "project") listSops().then((r) => setSopList(r.sops)); }, [kind]);
 
   const setCell = (i: number, k: string, v: string) => setRows((r) => r.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
   const addRow = () => setRows((r) => [...r, blankRow()]);
@@ -1707,6 +1713,9 @@ function ItemsBuilderModal({
     if (configurable) await saveBoardCols(runId, kind, cols);
     const res = await saveRunItems(runId, stepId, kind, items);
     if (res.error) { setInfo(res.error); return; }
+    if (kind === "project") {
+      await saveLinkedSops(runId, sopList.filter((s) => linkedSopIds.includes(s.id)).map((s) => ({ id: s.id, title: s.title })));
+    }
     if (after === "email") {
       const body = "Your compliance calendar:\n\n" + rows.map((r) => `• ${r.label} — ${r.type} — ${r.date}`).join("\n");
       const er = await sendClientEmail(runId, "Your Finanshels compliance calendar", body);
@@ -1761,6 +1770,27 @@ function ItemsBuilderModal({
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Describe the recurring tasks (optional AI)</div>
               <textarea className="notes" value={pBrief} onChange={(e) => setPBrief(e.target.value)} placeholder="e.g. Document request monthly 5th, bills & sales booking daily, salary processing monthly 25th, weekly sync meeting with client Thursday" style={{ minHeight: 56 }} />
               <button className="btn-ai" disabled={aiBusy || !pBrief.trim()} onClick={aiRecurring} style={{ marginTop: 6 }}><Icon name="sparkles" size={13} /> {aiBusy ? "Reading…" : "Generate tasks with AI"}</button>
+            </div>
+          )}
+          {kind === "project" && (
+            <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>Link SOPs / templates (optional)</div>
+              <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 8 }}>Attach the SOPs the team should follow for this client&apos;s recurring delivery. They show in the playbook.</div>
+              {sopList.length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--ink-4)" }}>No SOPs in your library yet — create them in the SOP Library.</div>
+              ) : (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {sopList.map((s) => {
+                    const on = linkedSopIds.includes(s.id);
+                    return (
+                      <button key={s.id} type="button" onClick={() => setLinkedSopIds((ids) => on ? ids.filter((x) => x !== s.id) : [...ids, s.id])}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "5px 10px", borderRadius: 999, cursor: "pointer", border: "1px solid " + (on ? "var(--orange)" : "var(--border)"), background: on ? "var(--orange-soft)" : "#fff", color: on ? "var(--orange)" : "var(--ink-2)" }}>
+                        <Icon name={on ? "check" : "plus"} size={12} /> {s.title}{s.flow ? ` · ${s.flow}` : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
           {configurable && (
@@ -2456,6 +2486,15 @@ function Playbook({ detail }: { detail: RunDetail }) {
       <PlaybookCard title={`Documents (${p.documents.filter((d) => d.status === "uploaded").length}/${p.documents.length})`}>
         {p.documents.map((d, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "3px 0" }}><Icon name={d.status === "uploaded" ? "check-circle" : "circle"} size={14} style={{ color: d.status === "uploaded" ? "var(--green)" : "var(--ink-4)" }} />{d.label}</div>)}
       </PlaybookCard>
+
+      {(detail.items["linked_sops"] ?? []).length > 0 && (
+        <PlaybookCard title="Linked SOPs & templates">
+          {(detail.items["linked_sops"] ?? []).map((it, i) => {
+            const s = it.data as { id: string; title: string };
+            return <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "3px 0" }}><Icon name="book-open" size={14} style={{ color: "var(--orange)" }} />{s.title}</div>;
+          })}
+        </PlaybookCard>
+      )}
 
       {p.diagrams.length > 0 && (
         <PlaybookCard title="Workflows">
