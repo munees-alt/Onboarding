@@ -1962,33 +1962,50 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
     case 7:
       return (
         <div className="fsdeck-slide fsdeck-content">
-          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Engagement</div><h2 className="fsdeck-h2">Contract Summary</h2></div></div>
-          <div className="fsdeck-contract">
-            <div className="fsdeck-contract-main" style={{ maxHeight: 372, overflowY: "auto", paddingRight: 8 }}>
-              <div className="fsdeck-softcol-h">Scope of work</div>
-              <p style={{ fontSize: 15, color: "var(--fsd-ink)", lineHeight: 1.55 }}>{d.contract.scope || "Not specified"}</p>
-              {(d.contract.highlights ?? []).length > 0 && (
-                <>
-                  <div className="fsdeck-softcol-h" style={{ marginTop: 16 }}>Included in scope</div>
-                  <div className="fsdeck-services" style={{ marginTop: 8 }}>{(d.contract.highlights ?? []).map((h, i) => <span key={i} className="fsdeck-svc"><span className="dot" />{h}</span>)}</div>
-                </>
-              )}
-              {(d.contract.exclusions ?? []).length > 0 && (
-                <>
-                  <div className="fsdeck-softcol-h" style={{ marginTop: 18, color: "#C2410C" }}>Out of scope</div>
-                  <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>{(d.contract.exclusions ?? []).map((x, i) => <li key={i} style={{ fontSize: 14, color: "#6B5440", lineHeight: 1.6 }}>{x}</li>)}</ul>
-                </>
-              )}
-            </div>
-            <div className="fsdeck-contract-side">
-              <div className="fsdeck-side-row"><span>Payment</span><b>{d.contract.payment || "Not specified"}</b></div>
-              <div className="fsdeck-side-row"><span>Duration</span><b>{d.contract.duration || "Not specified"}</b></div>
-              <div className="fsdeck-side-row"><span>Your responsibilities</span><b>{d.contract.responsibilities || "Not specified"}</b></div>
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Engagement</div><h2 className="fsdeck-h2">Scope of Work</h2></div></div>
+          <div style={{ maxHeight: 420, overflowY: "auto", paddingRight: 8 }}>
+            <div className="fsdeck-softcol-h">What we&apos;ll do</div>
+            <p style={{ fontSize: 16, color: "var(--fsd-ink)", lineHeight: 1.55 }}>{d.contract.scope || "Not specified"}</p>
+            <div className="fsdeck-grid2" style={{ marginTop: 18 }}>
+              <div>
+                <div className="fsdeck-softcol-h" style={{ color: "#15803D" }}>Included in scope</div>
+                {(d.contract.highlights ?? []).length > 0
+                  ? <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>{(d.contract.highlights ?? []).map((h, i) => <li key={i} style={{ fontSize: 14, color: "var(--fsd-ink)", lineHeight: 1.7 }}>{h}</li>)}</ul>
+                  : <p style={{ fontSize: 14, color: "var(--fsd-ink-2, #51606E)", marginTop: 8 }}>As described in the engagement.</p>}
+              </div>
+              <div>
+                <div className="fsdeck-softcol-h" style={{ color: "#C2410C" }}>Out of scope</div>
+                {(d.contract.exclusions ?? []).length > 0
+                  ? <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>{(d.contract.exclusions ?? []).map((x, i) => <li key={i} style={{ fontSize: 14, color: "#6B5440", lineHeight: 1.7 }}>{x}</li>)}</ul>
+                  : <p style={{ fontSize: 14, color: "var(--fsd-ink-2, #51606E)", marginTop: 8 }}>Nothing excluded — full scope as described.</p>}
+              </div>
             </div>
           </div>
         </div>
       );
     case 8:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Engagement</div><h2 className="fsdeck-h2">Engagement Terms</h2></div></div>
+          <div style={{ maxHeight: 420, overflowY: "auto", paddingRight: 8 }}>
+            <div className="fsdeck-grid2">
+              <div className="fsdeck-softcard" style={{ background: "var(--fsd-navy, #082032)", color: "#fff", borderRadius: 12, padding: 18 }}>
+                <div className="fsdeck-softcol-h" style={{ color: "var(--fsd-orange, #F97316)" }}>Payment — how it works</div>
+                <p style={{ fontSize: 15, lineHeight: 1.55, marginTop: 8 }}>{d.contract.payment || "Not specified"}</p>
+              </div>
+              <div className="fsdeck-softcard" style={{ background: "var(--fsd-navy, #082032)", color: "#fff", borderRadius: 12, padding: 18 }}>
+                <div className="fsdeck-softcol-h" style={{ color: "var(--fsd-orange, #F97316)" }}>Engagement period</div>
+                <p style={{ fontSize: 15, lineHeight: 1.55, marginTop: 8 }}>{d.contract.duration || "Not specified"}</p>
+              </div>
+            </div>
+            <div style={{ border: "1px solid var(--fsd-line, #ECE3D2)", borderRadius: 12, padding: 18, marginTop: 16 }}>
+              <div className="fsdeck-softcol-h" style={{ color: "var(--fsd-orange, #F97316)" }}>What we need from you</div>
+              <p style={{ fontSize: 15, color: "var(--fsd-ink)", lineHeight: 1.6, marginTop: 8 }}>{d.contract.responsibilities || "Not specified"}</p>
+            </div>
+          </div>
+        </div>
+      );
+    case 9:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Next</div><h2 className="fsdeck-h2">Immediate Next Steps</h2></div></div>
@@ -2012,7 +2029,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
   }
 }
 
-const DECK_TITLES = ["Welcome", "Roadmap", "What We Understood", "Compliance", "Software", "Data", "Communication", "Contract", "Next Steps", "Thank You"];
+const DECK_TITLES = ["Welcome", "Roadmap", "What We Understood", "Compliance", "Software", "Data", "Communication", "Scope", "Terms", "Next Steps", "Thank You"];
 
 // Load pptxgenjs from CDN (no npm dep) to export the deck as a real .pptx.
 let pptxPromise: Promise<unknown> | null = null;
@@ -2109,8 +2126,8 @@ async function downloadDeckPptx(deck: DeckData) {
   // 9. Contract — Scope, with Included / Out-of-scope columns.
   const cExcl = (deck.contract?.exclusions || []).filter(Boolean);
   const cIncl = (deck.contract?.highlights || []).filter(Boolean);
-  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Engagement", "Contract Summary");
-  s.addText("SCOPE OF WORK", { x: 0.7, y: 1.95, w: 12, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Engagement", "Scope of Work");
+  s.addText("WHAT WE'LL DO", { x: 0.7, y: 1.95, w: 12, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
   s.addText(deck.contract?.scope || "Not specified", { x: 0.7, y: 2.3, w: 12, h: 1.0, fontSize: 13, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.1 });
   // Included card (white)
   s.addShape("roundRect", { x: 0.7, y: 3.5, w: 5.9, h: 3.2, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
@@ -2130,7 +2147,7 @@ async function downloadDeckPptx(deck: DeckData) {
   s.addText("DURATION", { x: 7.1, y: 2.35, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
   s.addText(deck.contract?.duration || "Not specified", { x: 7.1, y: 2.78, w: 5.35, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
   s.addShape("roundRect", { x: 0.7, y: 4.15, w: 12, h: 2.5, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
-  s.addText("YOUR RESPONSIBILITIES", { x: 0.95, y: 4.4, w: 11.5, h: 0.3, fontSize: 11, bold: true, color: PPTX.navy, charSpacing: 1, valign: "middle" });
+  s.addText("WHAT WE NEED FROM YOU", { x: 0.95, y: 4.4, w: 11.5, h: 0.3, fontSize: 11, bold: true, color: PPTX.navy, charSpacing: 1, valign: "middle" });
   s.addText(deck.contract?.responsibilities || "Not specified", { x: 0.95, y: 4.85, w: 11.5, h: 1.6, fontSize: 13, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.15 });
 
   // 10. Next steps

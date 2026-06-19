@@ -923,11 +923,11 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
         </div>
       )}
 
-      {/* Engagement summary — scope / included / excluded / payment, from the analyzed contract */}
-      {data.contract && (data.contract.scope || data.contract.inclusions?.length || data.contract.exclusions?.length || data.contract.paymentTerms) && (
+      {/* Engagement · Scope — scope / included / excluded only, from the analyzed contract */}
+      {data.contract && (data.contract.scope || data.contract.inclusions?.length || data.contract.exclusions?.length) && (
         <div className="obv3-pcard">
-          <div className="obv3-pcard-h">Your engagement</div>
-          <div className="obv3-pcard-sub" style={{ marginBottom: 12 }}>A clear summary of what we&apos;ll do, what&apos;s included and excluded, and how billing works.</div>
+          <div className="obv3-pcard-h">Your engagement · Scope</div>
+          <div className="obv3-pcard-sub" style={{ marginBottom: 12 }}>What we&apos;ll do for you, and what&apos;s included and excluded.</div>
           {data.contract.scope && (
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 4 }}>Scope</div>
@@ -952,12 +952,32 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
               </div>
             ) : null}
           </div>
-          {data.contract.paymentTerms && (
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 4 }}>Payment terms</div>
-              <div style={{ fontSize: 12.5, color: "var(--ink-1)", lineHeight: 1.6 }}>{data.contract.paymentTerms}</div>
-            </div>
-          )}
+        </div>
+      )}
+
+      {/* Engagement · Terms — how billing works + what we need from you */}
+      {data.contract && (data.contract.paymentTerms || data.contract.periodStart || data.contract.periodEnd || data.contract.scope) && (
+        <div className="obv3-pcard">
+          <div className="obv3-pcard-h">Engagement terms</div>
+          <div className="obv3-pcard-sub" style={{ marginBottom: 12 }}>How billing works, the engagement period, and what we need from you.</div>
+          <div style={{ display: "grid", gridTemplateColumns: (data.contract.periodStart || data.contract.periodEnd) ? "2fr 1fr" : "1fr", gap: 16 }}>
+            {data.contract.paymentTerms && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 4 }}>Payment — how it works</div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-1)", lineHeight: 1.6 }}>{data.contract.paymentTerms}</div>
+              </div>
+            )}
+            {(data.contract.periodStart || data.contract.periodEnd) && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 4 }}>Period</div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{data.contract.periodStart ?? "—"} → {data.contract.periodEnd ?? "—"}</div>
+              </div>
+            )}
+          </div>
+          <div style={{ marginTop: 14, background: "var(--bg-soft)", borderRadius: 10, padding: "11px 14px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--orange)", marginBottom: 4 }}>What we need from you</div>
+            <div style={{ fontSize: 12.5, color: "var(--ink-1)", lineHeight: 1.6 }}>Please complete the <strong>Documents</strong> and <strong>Access</strong> steps below — sharing those is everything we need from you to get started.</div>
+          </div>
         </div>
       )}
 
