@@ -442,7 +442,7 @@ export interface DeckData {
   agenda: { num: string; label: string; desc: string }[];
   whatWeUnderstood: { summary: string; tags: string[]; points: { icon: string; title: string; desc: string }[] };
   compliance: { ct: string; vat: string; wps: string };
-  software: { recommendation: string; existing: string };
+  software: { recommendation: string; existing: string; plan: string };
   contract: { scope: string; highlights: string[]; exclusions: string[]; payment: string; duration: string; responsibilities: string };
   nextSteps: { icon: string; title: string; desc: string }[];
 }
@@ -487,7 +487,7 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
     `"agenda":[{"num":"01","label":"","desc":""} ... 6 items], ` +
     `"whatWeUnderstood":{"summary":"2 specific sentences about THIS business","tags":["3-5 short attributes"],"points":[{"icon":"emoji","title":"","desc":""} x4]}, ` +
     `"compliance":{"ct":"CT note specific to this client","vat":"VAT note","wps":"WPS note"}, ` +
-    `"software":{"recommendation":"why Zoho Books suits them","existing":"one line on reviewing existing tools"}, ` +
+    `"software":{"recommendation":"why Zoho Books suits them","plan":"recommended Zoho Books subscription plan for this client — pick ONE of Standard / Professional / Premium and add a 4-8 word reason (e.g. 'Professional — multi-currency & purchase orders for trading')","existing":"one line on reviewing existing tools"}, ` +
     `"contract":{"scope":"","highlights":["what is INCLUDED in scope, 2-5 items"],"exclusions":["what is OUT of scope / not covered, 0-5 items"],"payment":"","duration":"","responsibilities":"what the CLIENT must do/provide (their responsibilities), not exclusions"}, ` +
     `"nextSteps":[{"icon":"emoji","title":"","desc":""} x3]}`;
 
@@ -513,7 +513,7 @@ export async function generateDeck(runId: string, force = false): Promise<{ erro
     ],
     whatWeUnderstood: parsed.whatWeUnderstood ?? { summary: businessDesc, tags: [client.industry ?? "SME", "UAE-based"], points: [] },
     compliance: parsed.compliance ?? { ct: "", vat: "", wps: "" },
-    software: parsed.software ?? { recommendation: "", existing: "" },
+    software: { recommendation: parsed.software?.recommendation ?? "", existing: parsed.software?.existing ?? "", plan: parsed.software?.plan ?? "" },
     contract: parsed.contract ? { ...parsed.contract, exclusions: parsed.contract.exclusions ?? [] } : { scope: "", highlights: [], exclusions: [], payment: "", duration: "", responsibilities: "" },
     nextSteps: parsed.nextSteps?.length ? parsed.nextSteps : [],
   };

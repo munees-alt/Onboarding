@@ -1984,7 +1984,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 3</div><h2 className="fsdeck-h2">Accounting Software</h2></div></div>
           <div className="fsdeck-twocol">
             <div className="fsdeck-softcol"><div className="fsdeck-softcol-h">If you have existing software</div><p>{d.software.existing}</p></div>
-            <div className="fsdeck-softcol rec"><div className="fsdeck-softcol-h">Our recommendation · Zoho Books</div><p>{d.software.recommendation}</p></div>
+            <div className="fsdeck-softcol rec"><div className="fsdeck-softcol-h">Our recommendation · Zoho Books</div><p>{d.software.recommendation}</p>{d.software.plan && <div style={{ marginTop: 12, display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(249,115,22,0.15)", border: "1px solid var(--fsd-orange, #F97316)", color: "var(--fsd-orange, #F97316)", borderRadius: 8, padding: "6px 11px", fontSize: 13, fontWeight: 700 }}><Icon name="badge-check" size={14} /> Plan: {d.software.plan}</div>}</div>
           </div>
         </div>
       );
@@ -2153,7 +2153,11 @@ async function downloadDeckPptx(deck: DeckData) {
   s.addText(deck.software?.existing || "", { x: 0.95, y: 2.95, w: 5.4, h: 2.65, fontSize: 12, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.05 });
   s.addShape("roundRect", { x: 6.85, y: 2.2, w: 5.85, h: 3.6, fill: { color: PPTX.navy }, rectRadius: 0.1 });
   s.addText("Our recommendation · Zoho Books", { x: 7.1, y: 2.45, w: 5.35, h: 0.4, fontSize: 13, bold: true, color: PPTX.orange, valign: "middle" });
-  s.addText(deck.software?.recommendation || "", { x: 7.1, y: 2.95, w: 5.35, h: 2.65, fontSize: 12, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
+  s.addText(deck.software?.recommendation || "", { x: 7.1, y: 2.95, w: 5.35, h: deck.software?.plan ? 1.85 : 2.65, fontSize: 12, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
+  if (deck.software?.plan) {
+    s.addShape("roundRect", { x: 7.1, y: 4.95, w: 5.35, h: 0.7, fill: { color: PPTX.orange }, rectRadius: 0.08 });
+    s.addText(`Plan: ${deck.software.plan}`, { x: 7.25, y: 4.95, w: 5.05, h: 0.7, fontSize: 12, bold: true, color: PPTX.navy, valign: "middle" });
+  }
 
   // 7. Data — two columns: our solution (navy) + documents we'll need (checklist), matching the on-screen slide.
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Phase 4", "Secure Data Management");
@@ -2314,6 +2318,7 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
           <DeckEdit n="3.3" label="Compliance · WPS" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.wps} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, wps: e.target.value } }))} rows={2} /></DeckEdit>
 
           <DeckEdit n="4" label="Software recommendation" pill="ai"><textarea className="fsdeck-edit" value={deck.software.recommendation} onChange={(e) => set((d) => ({ ...d, software: { ...d.software, recommendation: e.target.value } }))} rows={2} /></DeckEdit>
+          <DeckEdit n="4.1" label="Zoho subscription plan" pill="ai"><input className="fsdeck-edit" value={deck.software.plan ?? ""} onChange={(e) => set((d) => ({ ...d, software: { ...d.software, plan: e.target.value } }))} placeholder="e.g. Professional — multi-currency & purchase orders" /></DeckEdit>
 
           <DeckEdit n="5" label="Contract · scope" pill="client"><textarea className="fsdeck-edit" value={deck.contract.scope} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, scope: e.target.value } }))} rows={2} /></DeckEdit>
           <DeckEdit n="5.2" label="Contract · payment" pill="client"><input className="fsdeck-edit" value={deck.contract.payment} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, payment: e.target.value } }))} /></DeckEdit>
