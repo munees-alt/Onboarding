@@ -1887,33 +1887,37 @@ export async function getAmlClients(): Promise<{
     signingLink: string | null; signingCompletedLink: string | null;
     completedAt: string | null; driveLink: string | null; runId: string | null;
     assignedTo: string | null; assignedToName: string | null;
+    teamMembers: { role: string; name: string; email: string | null }[];
   }[];
   amlTeam: { id: string; name: string }[];
 }> {
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in.", clients: [], amlTeam: [] };
-  const supabase = await createClient();
   const admin = createAdminClient();
 
   // Use admin client to bypass RLS — the page-level access check already gates who can call this
   const [{ data: amlRows }, { data: allMembers }] = await Promise.all([
     admin.from("aml_records").select("*").eq("org_id", session.profile.org_id),
-    admin.from("team_members").select("id,full_name,reports_to").eq("org_id", session.profile.org_id).eq("active", true),
+    admin.from("team_members").select("id,full_name,email,role,reports_to").eq("org_id", session.profile.org_id).eq("active", true),
   ]);
   if (!amlRows?.length) return { clients: [], amlTeam: [] };
 
   const clientIds = amlRows.map((r) => r.client_id as string);
 
-  const [{ data: clientRows }, { data: driveFolders }, { data: runRows }] = await Promise.all([
-    admin.from("clients").select("id,name,status").in("id", clientIds),
+  const [{ data: clientRows }, { data: driveFolders }, { data: runRows }, { data: runTeamRows }] = await Promise.all([
+    admin.from("clients").select("id,name,status,am_id").in("id", clientIds),
     admin.from("drive_folders").select("client_id,tree").in("client_id", clientIds),
     admin.from("onboarding_runs").select("id,client_id").in("client_id", clientIds).not("status", "in", "(archived,closed)").order("created_at", { ascending: false }),
+    admin.from("run_team").select("run_id,team_member_id,role").in("run_id",
+      (await admin.from("onboarding_runs").select("id").in("client_id", clientIds).not("status", "in", "(archived,closed)")).data?.map(r => r.id) ?? []
+    ),
   ]);
 
   // Build AML team (Krishna's subtree)
-  const members = (allMembers ?? []) as { id: string; full_name: string; reports_to: string | null }[];
+  const members = (allMembers ?? []) as { id: string; full_name: string; email: string | null; role: string; reports_to: string | null }[];
+  const memberById = new Map(members.map(m => [m.id as string, m]));
   const krishna = members.find((m) => m.full_name.toLowerCase().includes("krishna"));
-  let amlTeamIds = new Set<string>();
+  const amlTeamIds = new Set<string>();
   if (krishna) {
     amlTeamIds.add(krishna.id);
     const q = [krishna.id];
@@ -1922,10 +1926,8 @@ export async function getAmlClients(): Promise<{
       for (const m of members) { if (m.reports_to === p && !amlTeamIds.has(m.id)) { amlTeamIds.add(m.id); q.push(m.id); } }
     }
   }
-  // Subordinates only (not head) for assignment picker
   const subordinates = krishna ? [...amlTeamIds].filter(id => id !== krishna.id) : [...amlTeamIds];
-  const amlTeam = subordinates.map(id => ({ id, name: members.find(m => m.id === id)?.full_name ?? id }));
-  const memberNameById = new Map(members.map(m => [m.id as string, m.full_name as string]));
+  const amlTeam = subordinates.map(id => ({ id, name: memberById.get(id)?.full_name ?? id }));
 
   const amlByClient = new Map((amlRows ?? []).map((r) => [r.client_id as string, r]));
   const driveByClient = new Map((driveFolders ?? []).map((d) => [d.client_id as string, ((d.tree as { link?: string } | null)?.link) ?? null]));
@@ -1933,12 +1935,40 @@ export async function getAmlClients(): Promise<{
   for (const r of (runRows ?? [])) {
     if (!runByClient.has(r.client_id as string)) runByClient.set(r.client_id as string, r.id as string);
   }
+  // run_team indexed by run_id
+  const teamByRun = new Map<string, { team_member_id: string; role: string }[]>();
+  for (const rt of (runTeamRows ?? [])) {
+    if (!teamByRun.has(rt.run_id as string)) teamByRun.set(rt.run_id as string, []);
+    teamByRun.get(rt.run_id as string)!.push({ team_member_id: rt.team_member_id as string, role: rt.role as string });
+  }
+
+  const ROLE_LABEL: Record<string, string> = { am: "AM", team_lead: "Team Lead", senior: "Senior", junior: "Junior", associate: "Associate", intern: "Intern" };
 
   return {
     amlTeam,
     clients: (clientRows ?? []).map((c) => {
       const aml = amlByClient.get(c.id);
       const assignedTo = (aml?.assigned_to as string | null) ?? null;
+      const runId = runByClient.get(c.id) ?? null;
+
+      // Build team list: AM first, then run team members (Team Lead, Senior)
+      const teamMap = new Map<string, { role: string; name: string; email: string | null }>();
+      if (c.am_id) {
+        const am = memberById.get(c.am_id as string);
+        if (am) teamMap.set(am.id, { role: "AM", name: am.full_name, email: am.email ?? null });
+      }
+      if (runId) {
+        for (const rt of teamByRun.get(runId) ?? []) {
+          const m = memberById.get(rt.team_member_id);
+          if (m && !teamMap.has(m.id)) {
+            const roleLabel = ROLE_LABEL[m.role] ?? m.role;
+            if (["team_lead", "senior", "junior"].includes(m.role)) {
+              teamMap.set(m.id, { role: roleLabel, name: m.full_name, email: m.email ?? null });
+            }
+          }
+        }
+      }
+
       return {
         clientId: c.id,
         clientName: c.name,
@@ -1948,9 +1978,10 @@ export async function getAmlClients(): Promise<{
         signingCompletedLink: (aml?.signing_completed_link as string | null) ?? null,
         completedAt: (aml?.completed_at as string | null) ?? null,
         driveLink: driveByClient.get(c.id) ?? null,
-        runId: runByClient.get(c.id) ?? null,
+        runId,
         assignedTo,
-        assignedToName: assignedTo ? (memberNameById.get(assignedTo) ?? null) : null,
+        assignedToName: assignedTo ? (memberById.get(assignedTo)?.full_name ?? null) : null,
+        teamMembers: [...teamMap.values()],
       };
     }),
   };

@@ -15,6 +15,7 @@ type AmlClient = {
   signingLink: string | null; signingCompletedLink: string | null;
   completedAt: string | null; driveLink: string | null; runId: string | null;
   assignedTo: string | null; assignedToName: string | null;
+  teamMembers: { role: string; name: string; email: string | null }[];
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -212,6 +213,8 @@ function AmlClientRow({
 }: {
   c: AmlClient; onEdit: () => void; canEdit: boolean; isHead: boolean; onAssign?: () => void;
 }) {
+  const [teamOpen, setTeamOpen] = useState(false);
+
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
       <div style={{ flex: 1, minWidth: 200 }}>
@@ -219,6 +222,20 @@ function AmlClientRow({
           {c.clientName}
         </Link>
         {c.notes && <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>{c.notes}</div>}
+        {/* Team popover */}
+        {teamOpen && c.teamMembers.length > 0 && (
+          <div style={{ marginTop: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", display: "inline-flex", flexDirection: "column", gap: 6, minWidth: 260 }}>
+            {c.teamMembers.map((m) => (
+              <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-3)", width: 72, flexShrink: 0 }}>{m.role}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-1)" }}>{m.name}</span>
+                {m.email && (
+                  <a href={`mailto:${m.email}`} style={{ fontSize: 12, color: "#3b82f6", textDecoration: "none" }}>{m.email}</a>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         {/* Assigned team member — shown for head */}
         {isHead && (
           <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
@@ -265,6 +282,16 @@ function AmlClientRow({
           <Link href={`/onboarding/${c.runId}`} style={{ fontSize: 12, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 4, textDecoration: "none" }}>
             <Icon name="file-text" size={11} /> Run
           </Link>
+        )}
+        {/* Team view icon */}
+        {c.teamMembers.length > 0 && (
+          <button
+            onClick={() => setTeamOpen((v) => !v)}
+            title="View client team"
+            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: teamOpen ? "var(--orange)" : "var(--ink-3)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+          >
+            <Icon name="users" size={14} />
+          </button>
         )}
         {canEdit && (
           <button className="btn-ghost" style={{ fontSize: 12, padding: "3px 10px" }} onClick={onEdit}>Update</button>
