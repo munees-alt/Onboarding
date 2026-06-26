@@ -114,7 +114,7 @@ export async function createRunFromTemplate(
   const { error: te } = await supabase.from("run_steps").insert(steps);
   if (te) throw new Error(te.message);
 
-  // Pre-load the template's document checklist so the client portal has it.
+  // Pre-load the template's document checklist so the onboarding portal has it.
   if (tpl.uploads?.length) {
     await supabase.from("documents").insert(
       tpl.uploads.map((u) => ({

@@ -3,7 +3,7 @@
 import { Icon } from "@/components/icon";
 
 /* A Finanshels-branded, presentable rendering of an SOP / access guide.
-   Used both in the team SOP library and on the client portal so clients see a
+   Used both in the team SOP library and on the onboarding portal so clients see a
    polished branded document (not just a text list). Opens as a modal and can be
    printed / saved as a clean branded PDF. */
 

@@ -79,7 +79,7 @@
         { "no": "8.3", "title": "Handover summary PDF auto-generated", "description": "Client overview, COA summary, contacts, timeline, open items and all links.", "type": "automated", "role": "am", "ai": true, "approval": false },
         { "no": "8.4", "title": "Regular team notified", "description": "FinChat briefing to all assigned regular team members with the handover PDF, playbook and Drive links.", "type": "automated", "role": "am", "ai": false, "approval": false },
         { "no": "8.5", "title": "Regular team confirms receipt", "description": "Assigned Senior Accountant confirms receipt — one click, cannot be skipped.", "type": "internal_confirm", "role": "senior", "ai": false, "approval": true },
-        { "no": "8.6", "title": "Run close sequence", "description": "CRM tag → Active, task board pushed to PMS, client portal → You Are Live, Drive access shared, recurring runs created, VAT/CT deadlines added.", "type": "automated", "role": "am", "ai": false, "approval": false }
+        { "no": "8.6", "title": "Run close sequence", "description": "CRM tag → Active, task board pushed to PMS, onboarding portal → You Are Live, Drive access shared, recurring runs created, VAT/CT deadlines added.", "type": "automated", "role": "am", "ai": false, "approval": false }
       ]
     }
   ]

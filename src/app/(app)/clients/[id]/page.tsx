@@ -1,5 +1,7 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { getSession } from "@/lib/auth";
+import { isMasterAdmin } from "@/lib/roles";
 import { templateById } from "@/lib/onboarding-templates";
 import { ClientPlaybook, type PlaybookData } from "./client-playbook-view";
 
@@ -10,6 +12,10 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
   const { data: client } = await supabase.from("clients").select("*").eq("id", id).maybeSingle();
   if (!client) notFound();
 
+  // Editing the playbook is Master-Admin-only; everyone else gets a read-only view.
+  const session = await getSession();
+  const canEdit = isMasterAdmin(session?.teamMember?.role ?? session?.profile.role ?? "other");
+
   // Is Zoho Books connected anywhere in the org? (live client figures come from there)
   const { count: zohoCount } = await supabase
     .from("member_connections")
@@ -17,6 +23,49 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
     .eq("provider", "zoho")
     .eq("connected", true);
   const zohoConnected = (zohoCount ?? 0) > 0;
+
+  // Org-wide extra-field schema (grows as calls surface new facts). Shared by all clients.
+  const { data: fieldDefRows } = await supabase
+    .from("client_field_defs")
+    .select("key,label,sort")
+    .eq("org_id", client.org_id)
+    .order("sort")
+    .order("created_at");
+  const fieldDefs = (fieldDefRows ?? []) as { key: string; label: string; sort: number }[];
+
+  // Current portal-access emails (primary + invited teammates) from the client's portal link.
+  const { data: portalLink } = await supabase
+    .from("magic_links")
+    .select("email,alt_emails")
+    .eq("client_id", id).eq("purpose", "portal")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const portalAccess = {
+    email: (portalLink?.email as string | null) ?? client.primary_contact_email ?? null,
+    altEmails: (portalLink?.alt_emails as string[] | null) ?? [],
+  };
+
+  // Client Drive folder link (created at client creation), saved meetings + the latest
+  // contract analysis (whichever run had it analysed last — the playbook surfaces the
+  // engagement scope / inclusions / exclusions / payment / deliverables in their own card).
+  const [{ data: driveRow }, { data: meetingRows }, { data: contractRow }, { data: paymentPlanRow }, { data: paymentEntryRows }] = await Promise.all([
+    supabase.from("drive_folders").select("tree").eq("client_id", id).maybeSingle(),
+    supabase.from("client_meetings").select("id,title,meeting_date,recording_link,notes,summary,source,created_at").eq("client_id", id).order("meeting_date", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false }),
+    supabase.from("run_items")
+      .select("data,created_at,onboarding_runs!inner(client_id)")
+      .eq("onboarding_runs.client_id", id)
+      .eq("kind", "contract")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase.from("client_payment_plans").select("*").eq("client_id", id).maybeSingle(),
+    supabase.from("client_payment_entries").select("*").eq("client_id", id).order("due_date"),
+  ]);
+  const driveLink = ((driveRow?.tree as { link?: string } | null)?.link) ?? null;
+  const meetings = (meetingRows ?? []) as PlaybookData["meetings"];
+  const contract = (contractRow?.data ?? null) as PlaybookData["contract"];
+  const contractAnalysedAt = (contractRow?.created_at ?? null) as string | null;
 
   const { data: runs } = await supabase
     .from("onboarding_runs")
@@ -32,7 +81,7 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
         supabase.from("intake_forms").select("submitted,status").eq("run_id", runId).maybeSingle(),
         supabase.from("coa_instances").select("accounts,ai_rationale,base_industry,client_signed_off").eq("run_id", runId).maybeSingle(),
         supabase.from("tasks").select("title,status,type,owner_kind,client_visible,service").eq("run_id", runId).order("sort"),
-        supabase.from("run_items").select("kind,data,status").eq("run_id", runId).order("sort"),
+        supabase.from("run_items").select("id,kind,data,status").eq("run_id", runId).order("sort"),
         supabase.from("run_diagrams").select("name,nodes").eq("run_id", runId).order("sort"),
         supabase.from("documents").select("label,status").eq("client_id", id).order("created_at"),
         supabase.from("run_messages").select("author_name,author_role,body,created_at").eq("run_id", runId).order("created_at"),
@@ -47,7 +96,7 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
     if (tm) teamMap[t.role_in_run] = tm.full_name;
   });
 
-  const itemRows = ((items as { data: unknown }).data ?? []) as { kind: string; data: Record<string, unknown>; status: string }[];
+  const itemRows = ((items as { data: unknown }).data ?? []) as { id: string; kind: string; data: Record<string, unknown>; status: string }[];
   const byKind = (k: string) => itemRows.filter((r) => r.kind === k);
 
   const data: PlaybookData = {
@@ -71,11 +120,21 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
     compliance: byKind("compliance").map((r) => r.data),
     catchup: byKind("catchup").map((r) => ({ ...r.data, _status: r.status })),
     triage: byKind("triage").map((r) => r.data),
+    access: byKind("access").map((r) => ({ ...(r.data as Record<string, unknown>), rowId: r.id, _status: r.status })) as PlaybookData["access"],
     diagrams: (((diagrams as { data: unknown }).data ?? []) as { name: string; nodes: { id: string; label: string; type: string }[] }[]),
     documents: (((docs as { data: unknown }).data ?? []) as { label: string; status: string }[]),
     messages: (((messages as { data: unknown }).data ?? []) as PlaybookData["messages"]),
     escalations: (((escalations as { data: unknown }).data ?? []) as PlaybookData["escalations"]),
     zohoConnected,
+    fieldDefs,
+    portalAccess,
+    driveLink,
+    meetings,
+    contract,
+    contractAnalysedAt,
+    canEdit,
+    paymentPlan: (paymentPlanRow as Record<string, unknown> | null) ?? null,
+    paymentEntries: ((paymentEntryRows ?? []) as Record<string, unknown>[]),
   };
 
   return <ClientPlaybook data={data} />;

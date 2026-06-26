@@ -24,8 +24,10 @@ const SCOPES = [
   { id: "industry", label: "Industry", icon: "layers" },
 ];
 const FLOWS = [
+  { id: "onboarding", label: "Onboarding" },
   { id: "accounting", label: "Accounting" },
-  { id: "tax", label: "Tax" },
+  { id: "tax", label: "Taxation" },
+  { id: "auditing", label: "Auditing" },
   { id: "general", label: "General" },
 ];
 const CAT_LABEL: Record<string, string> = { bank: "Bank", gateway: "Payment gateway", fta: "FTA", vat: "VAT", ct: "Corporate Tax" };

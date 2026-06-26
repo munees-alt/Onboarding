@@ -5,7 +5,13 @@
 // {email} is replaced at render time with the run's authorised-user email
 // (defaults to AUTHORISED_USER_EMAIL).
 
-export const AUTHORISED_USER_EMAIL = "suhail@finanshels.com";
+export const AUTHORISED_USER_EMAIL = "secure@finanshels.com";
+
+/** Short, email-safe slug for the per-client secure alias (e.g. secure+freshdaily@finanshels.com). */
+export function clientEmailSlug(name: string): string {
+  const first = (name || "client").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return first.slice(0, 12) || "client";
+}
 
 export interface AccessType {
   id: string;
@@ -111,6 +117,18 @@ export function renderSopLine(line: string, email: string): string {
   return line.replace(/\{email\}/g, email || AUTHORISED_USER_EMAIL);
 }
 
+/** How the client shares this access:
+ *   viewer      — they add us as a read-only / authorised user (the SOP flow).
+ *   credentials — they paste the login username + password into the portal; we store it encrypted. */
+export type AccessMode = "viewer" | "credentials";
+
+/** Default SOP shown for a credentials-mode access — the client just pastes the login below. */
+export const CREDENTIALS_SOP = [
+  "Copy your login username and password for this system.",
+  "Paste them into the secure Username and Password boxes below.",
+  "Click Save — your team receives them encrypted and confirms here once verified.",
+];
+
 /** Shape stored per access item in run_items (kind = 'access'). */
 export interface AccessItem {
   id: string;        // access type id (or custom id)
@@ -121,4 +139,11 @@ export interface AccessItem {
   systemName?: string; // e.g. specific bank / gateway name
   status: "requested" | "granted";
   note?: string;     // client note on grant
+  accessMode?: AccessMode; // default "viewer"
+  sharedVia?: string;  // how it was shared, set by the team: "Email" | "Zoho Vault" | "Viewer access" | "Credentials" | …
+  manual?: boolean;    // true when the team added/edited this from the client playbook (vs configured on the run/confirmed in the portal)
+  // Credentials mode only — password is encrypted at rest (AES-256, see crypto.ts).
+  credUsername?: string;
+  credPasswordEnc?: string;
+  credSavedAt?: string;
 }

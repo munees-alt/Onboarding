@@ -116,6 +116,100 @@ export async function sendGmailAs(teamMemberId: string, to: string, subject: str
   return { ok: true };
 }
 
+/** Lists Gmail message ids matching a Gmail search query (e.g. 'from:sales@finanshels.com newer_than:7d'). */
+export async function listGmailMessages(teamMemberId: string, query: string, max = 25): Promise<string[]> {
+  return listGmailMessageIds(teamMemberId, { q: query, max });
+}
+
+/** Lists the member's Gmail labels (id + name) so we can watch a named label like "Cadence Onboarding". */
+export async function listGmailLabels(teamMemberId: string): Promise<{ id: string; name: string }[]> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return [];
+  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return [];
+  const j = (await res.json()) as { labels?: { id: string; name: string }[] };
+  return (j.labels ?? []).map((l) => ({ id: l.id, name: l.name }));
+}
+
+/** Lists Gmail message ids by free-text query and/or label ids (e.g. {labelIds:[id], q:'after:1700000000'}). */
+export async function listGmailMessageIds(
+  teamMemberId: string,
+  opts: { q?: string; labelIds?: string[]; max?: number },
+): Promise<string[]> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return [];
+  const params = new URLSearchParams();
+  if (opts.q) params.set("q", opts.q);
+  for (const id of opts.labelIds ?? []) params.append("labelIds", id);
+  params.set("maxResults", String(opts.max ?? 25));
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return [];
+  const j = (await res.json()) as { messages?: { id: string }[] };
+  return (j.messages ?? []).map((m) => m.id);
+}
+
+export interface GmailMessage { id: string; subject: string; from: string; date: string; body: string; }
+
+/** Decodes base64url Gmail body parts into a UTF-8 string. */
+function decodeB64Url(data: string): string {
+  return Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8");
+}
+
+/** Converts an HTML email body to line-structured plain text. Table rows and block
+ * elements become newlines, table cells become spaces, so "Label: value" stays on one
+ * line — which is what the field parser relies on. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<\/(td|th)>/gi, "\t")
+    .replace(/<\/(tr|p|div|li|h[1-6])>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Walks a Gmail payload tree, preferring text/plain, falling back to a structured text/html. */
+function extractGmailBody(payload: Record<string, unknown> | undefined): string {
+  if (!payload) return "";
+  const body = payload.body as { data?: string } | undefined;
+  const mime = payload.mimeType as string | undefined;
+  if (mime === "text/plain" && body?.data) return decodeB64Url(body.data);
+  const parts = (payload.parts as Record<string, unknown>[] | undefined) ?? [];
+  // Prefer plain text anywhere in the tree.
+  for (const p of parts) { const t = extractGmailBody(p); if (t && (p.mimeType as string) === "text/plain") return t; }
+  for (const p of parts) { const t = extractGmailBody(p); if (t) return t; }
+  if (mime === "text/html" && body?.data) return htmlToText(decodeB64Url(body.data));
+  return "";
+}
+
+/** Fetches one Gmail message with its subject, from, date and decoded text body. */
+export async function getGmailMessage(teamMemberId: string, messageId: string): Promise<GmailMessage | null> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return null;
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const j = (await res.json()) as { id: string; payload?: Record<string, unknown> };
+  const headers = ((j.payload?.headers as { name: string; value: string }[] | undefined) ?? []);
+  const h = (name: string) => headers.find((x) => x.name.toLowerCase() === name.toLowerCase())?.value ?? "";
+  return { id: j.id, subject: h("Subject"), from: h("From"), date: h("Date"), body: extractGmailBody(j.payload) };
+}
+
 /** Find a Drive folder by name under an optional parent, creating it if missing. Returns the folder id. */
 async function ensureDriveFolder(token: string, name: string, parentId?: string): Promise<{ id: string; link: string } | null> {
   const safe = name.replace(/'/g, "\\'");
@@ -258,4 +352,63 @@ export async function downloadDriveFile(teamMemberId: string, fileId: string): P
   });
   if (!res.ok) return null;
   return Buffer.from(await res.arrayBuffer());
+}
+
+/** Find a folder id by name under a parent (search only, no create). */
+async function findFolderId(token: string, name: string, parentId?: string): Promise<string | null> {
+  const safe = name.replace(/'/g, "\\'");
+  const q = ["mimeType='application/vnd.google-apps.folder'", `name='${safe}'`, "trashed=false", parentId ? `'${parentId}' in parents` : null].filter(Boolean).join(" and ");
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) return null;
+  return (await r.json()).files?.[0]?.id ?? null;
+}
+async function listChildren(token: string, parentId: string): Promise<{ id: string; name: string; mimeType: string }[]> {
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${parentId}' in parents and trashed=false`)}&fields=files(id,name,mimeType)&pageSize=200`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) return [];
+  return (await r.json()).files ?? [];
+}
+
+/**
+ * Lists every (non-folder) file in the client's Drive "Company Documents" folder and its
+ * sub-folders. Falls back to the client root folder if "Company Documents" isn't found.
+ */
+export async function listClientDriveDocs(teamMemberId: string, clientName: string): Promise<{ id: string; name: string; mimeType: string }[]> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return [];
+  const rootId = (await getDriveRootFolderId(teamMemberId)) ?? (await findFolderId(token, "Cadence"));
+  if (!rootId) return [];
+  const clientId = await findFolderId(token, clientName, rootId);
+  if (!clientId) return [];
+  return listDocsUnderFolder(token, clientId);
+}
+
+/**
+ * Lists the client's documents starting from a KNOWN client-folder id (saved at client creation
+ * in drive_folders.tree.id) — no fragile name matching. Reads the "Company Documents" sub-folder
+ * (or the folder itself) and recurses through nested sub-folders so files filed two levels deep
+ * (e.g. Company Documents/Company/Trade Licence.pdf) are still found.
+ */
+export async function listDriveDocsByFolderId(teamMemberId: string, clientFolderId: string): Promise<{ id: string; name: string; mimeType: string }[]> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return [];
+  return listDocsUnderFolder(token, clientFolderId);
+}
+
+/** Shared: from a client folder, descend into "Company Documents" (if present) and collect files
+ *  across nested sub-folders (depth-limited to avoid runaway crawls). */
+async function listDocsUnderFolder(token: string, clientFolderId: string): Promise<{ id: string; name: string; mimeType: string }[]> {
+  const baseId = (await findFolderId(token, "Company Documents", clientFolderId)) ?? clientFolderId;
+  const isFolder = (m: string) => m === "application/vnd.google-apps.folder";
+  const out: { id: string; name: string; mimeType: string }[] = [];
+  const seen = new Set<string>();
+  const walk = async (folderId: string, depth: number) => {
+    if (depth > 3 || seen.has(folderId)) return;
+    seen.add(folderId);
+    for (const f of await listChildren(token, folderId)) {
+      if (isFolder(f.mimeType)) await walk(f.id, depth + 1);
+      else out.push(f);
+    }
+  };
+  await walk(baseId, 0);
+  return out;
 }

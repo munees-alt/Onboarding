@@ -54,7 +54,7 @@ const FEATURE_TUNING: Record<AiFeature, { maxOutputTokens: number; temperature: 
   brief: { maxOutputTokens: 1500, temperature: 0.4 },
   coa: { maxOutputTokens: 2200, temperature: 0.2 },
   agenda: { maxOutputTokens: 900, temperature: 0.4 },
-  mom: { maxOutputTokens: 1500, temperature: 0.2 },
+  mom: { maxOutputTokens: 2800, temperature: 0.2 },
   welcome_email: { maxOutputTokens: 900, temperature: 0.4 },
   handover_summary: { maxOutputTokens: 3000, temperature: 0.2 },
 };

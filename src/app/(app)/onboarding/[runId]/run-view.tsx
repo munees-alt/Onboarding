@@ -6,10 +6,13 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
 import { useIdentity } from "@/components/identity-context";
 import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboarding-templates";
-import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, accessTypeById, type AccessItem } from "@/lib/access-sops";
+import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, CREDENTIALS_SOP, accessTypeById, clientEmailSlug, type AccessItem, type AccessMode } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateCatchup, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, saveLinkedSops, createSalesUploadLink, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, dispatchIntakeLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateUrgentComplianceServices, escalateCatchup, suggestCatchupAssignee, getCatchupGautham, setRunBlocked, suggestAssignee, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, saveAccountingSoftware, createComplianceRenewalRun, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, listTemplatesLite, saveLinkedSops, createSalesUploadLink, revealAccessCredentials, suggestTaxAssignee, pushCoaToZoho, markDocReceivedOutside, markAccessReceivedOutside, addDocFollowupNote, addAccessFollowupNote, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { loadSlackComposerOptions, listRunAttachableDocs, sendSlackSetupRequest } from "./slack-actions";
+import { getPortalAccessCode } from "@/app/portal/[token]/actions";
+import { canManageCoa, canRevealAccessCredentials } from "@/lib/roles";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -27,13 +30,16 @@ const WHO_ROLE: Record<string, string> = {
   intern: "intern",
 };
 function stepRequiredRole(step: TemplateStep): string | null {
-  if (step.approval?.by) { const r = WHO_ROLE[step.approval.by.trim().toLowerCase()]; if (r) return r; }
-  for (const w of step.who ?? []) { const r = WHO_ROLE[w.trim().toLowerCase()]; if (r) return r; }
-  if (step.assignRole) return step.assignRole;
-  if (step.act?.role) { const r = WHO_ROLE[step.act.role.trim().toLowerCase()]; if (r) return r; }
+  // 2026-06-22 rule: only the confirm/sign-off action (act.type "approve") is gated to AM.
+  // Everything else — including Senior prep work — is open to all team roles.
+  if (step.act?.type === "approve") { const r = step.approval?.by ? WHO_ROLE[step.approval.by.trim().toLowerCase()] : null; return r ?? "am"; }
   return null;
 }
+// 2026-06-23: gating OFF (user request) — no per-step "view only" locks; every role can action
+// every step on every template. Mirrors ENFORCE_STEP_ROLES + requiredRoleForStep in actions.ts.
+const ENFORCE_STEP_ROLES = false;
 function canEditStep(myRole: string, step: TemplateStep): boolean {
+  if (!ENFORCE_STEP_ROLES) return true;
   const req = stepRequiredRole(step);
   if (!req) return true;
   return (STEP_ROLE_RANK[myRole] ?? 0) >= (STEP_ROLE_RANK[req] ?? 99);
@@ -41,7 +47,11 @@ function canEditStep(myRole: string, step: TemplateStep): boolean {
 const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior", junior: "Junior", team_lead: "Team Lead", ops_head: "Ops", intern: "Intern" };
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
-import { generateCoa, saveCoa, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
+import { generateCoa, saveCoa, generateTaxCodes, saveTaxCodes, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, generateOnePager, saveOnePagerNotes, regenerateOnePager, generateTaskBoardEmailDraft, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
+import { formatEngagementPeriod } from "@/lib/contract-format";
+import { archiveUrgentRun } from "../../my-work/actions";
+import { cleanDocLabels } from "@/lib/doc-labels";
+import { INTAKE_EMAIL_SUBJECT, renderIntakeEmail, renderIntakeWhatsapp } from "@/lib/welcome-email";
 import { WELCOME_EMAIL_SUBJECT, renderWhatsappWelcome } from "@/lib/welcome-email";
 
 const KIND_ICON: Record<string, { icon: string; color: string }> = {
@@ -55,7 +65,7 @@ const TABS = [
   { id: "team", label: "Team View", icon: "users" },
   { id: "tasks", label: "Task Board", icon: "kanban" },
   { id: "playbook", label: "Playbook", icon: "book-open" },
-  { id: "portal", label: "Client Portal", icon: "external-link" },
+  { id: "portal", label: "Onboarding Portal", icon: "external-link" },
 ] as const;
 
 export function RunView({ detail, template }: { detail: RunDetail; template: OnbTemplate }) {
@@ -118,12 +128,16 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
     else if (role.includes("senior")) anchor = assigneeBySlot["team lead"] ?? null;
     else if (role.includes("junior")) anchor = assigneeBySlot["senior"] ?? null;
     else anchor = detail.amId;
-    if (!anchor) return [];
-    // Whole subtree below the anchor (e.g. a Team Lead's Seniors AND their Juniors) so a step
-    // can be assigned to more than one role together — e.g. a Senior and a Junior on the same step.
-    const sub = descendantsOf(anchor);
-    if (sub.length) return sub;
-    return orgChildren[anchor] ?? [];
+    // If the chain is broken (no AM picked, or upstream slot not assigned yet), don't
+    // hard-block — fall back to the org-scoped pool so a Team Lead can still configure
+    // and assign without waiting on the AM. Gautham feedback 2026-06-24.
+    if (anchor) {
+      const sub = descendantsOf(anchor);
+      if (sub.length) return sub;
+      const direct = orgChildren[anchor] ?? [];
+      if (direct.length) return direct;
+    }
+    return detail.assignPeople;
   };
 
   // Opening a step's action: the task-board step jumps to the board instead of a modal.
@@ -167,6 +181,15 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         <Link href="/onboarding" style={{ fontSize: 12, color: "var(--ink-3)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
           <Icon name="arrow-left" size={13} /> Back to Onboarding
         </Link>
+        {detail.group && <GroupSwitcherPill group={detail.group} currentRunId={detail.runId} />}
+        {detail.blockedReason && (
+          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, background: "var(--red-soft, #fdecec)", border: "1px solid var(--red)" }}>
+            <Icon name="pause-circle" size={14} />
+            <strong style={{ fontSize: 12.5, color: "var(--red)" }}>BLOCKED · {detail.blockedReason}</strong>
+            <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>SLA + compliance alerts paused while this run is blocked.</span>
+            <BlockControls runId={detail.runId} currentReason={detail.blockedReason} compact onChange={() => router.refresh()} />
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 8, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0, fontSize: 19 }}>{detail.clientName}</h2>
           <span className="pill amber"><span className="dot" /> In Progress</span>
@@ -184,7 +207,10 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
             <Icon name="message-square" size={13} /> Chat
             {chatUnread && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: "50%", background: "var(--red)", border: "1.5px solid #fff" }} />}
           </button>
-          <button className="btn-ghost" style={{ color: "var(--red)" }}><Icon name="ban" size={13} /> Void</button>
+          {!detail.blockedReason && (
+            <BlockControls runId={detail.runId} currentReason={null} compact={false} onChange={() => router.refresh()} />
+          )}
+          <DeleteRunButton runId={detail.runId} />
         </div>
         <div className="tabs-row" style={{ marginTop: 10, marginBottom: -12, borderBottom: "none" }}>
           {TABS.map((t) => (
@@ -334,6 +360,8 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
       ) : tab === "tasks" ? (
         <div className="scroll"><div className="page"><TaskBoard
           runId={detail.runId}
+          clientName={detail.clientName}
+          contactName={(detail.playbook?.profile as { owner_name?: string | null } | undefined)?.owner_name ?? null}
           tasks={detail.tasks}
           owners={taskOwners}
           columns={(() => { const c = detail.items["board_columns"]?.[0]?.data?.columns; return Array.isArray(c) && c.length ? (c as string[]) : DEFAULT_BOARD_COLUMNS; })()}
@@ -365,6 +393,15 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
+      {actStep && actStep.act?.type === "taxcodes" && (
+        <TaxCodesBuilderModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Tax codes saved"); router.refresh(); }}
+        />
+      )}
+
       {actStep && actStep.act?.type === "diagram" && (
         <DiagramBuilderModal
           runId={detail.runId}
@@ -388,15 +425,6 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      {actStep && actStep.act?.type === "intake" && (
-        <IntakeBuilderModal
-          runId={detail.runId}
-          stepId={actStep.id}
-          onClose={() => setActStep(null)}
-          onDone={(msg) => { setActStep(null); showToast(msg); router.refresh(); }}
-        />
-      )}
-
       {actStep && actStep.act?.type === "drivelink" && (
         <DriveBuilderModal
           runId={detail.runId}
@@ -415,6 +443,15 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
+      {actStep && actStep.act?.type === "onepager" && (
+        <OnePagerModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("One-pager saved"); router.refresh(); }}
+        />
+      )}
+
       {actStep && actStep.act?.type === "deck" && (
         <DeckModal
           runId={detail.runId}
@@ -423,7 +460,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      {actStep && ["agenda", "ai", "mom"].includes(actStep.act?.type ?? "") && (
+      {actStep && ["agenda", "ai", "mom", "datareq", "report"].includes(actStep.act?.type ?? "") && (
         <AiTextModal
           runId={detail.runId}
           stepId={actStep.id}
@@ -470,7 +507,48 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      {actStep && !["coa", "diagram", "catchup", "project", "calendar", "triage", "agenda", "ai", "mom", "deck", "uploads", "intake", "drivelink", "access", "contract"].includes(actStep.act?.type ?? "") && (
+      {actStep && actStep.act?.type === "accountingsoftware" && (
+        <AccountingSoftwareModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Accounting software saved to the client playbook"); router.refresh(); }}
+        />
+      )}
+
+      {actStep && actStep.act?.type === "zoho" && (
+        <ZohoPushModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("COA pushed to Zoho"); router.refresh(); }}
+        />
+      )}
+
+      {actStep && actStep.act?.type === "catchup_config" && (
+        <CatchupConfigModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Catch-up configuration saved"); router.refresh(); }}
+        />
+      )}
+
+      {actStep && actStep.act?.type === "urgent_config" && (
+        <UrgentConfigModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          people={(() => {
+            const ams = detail.assignPeople.filter((p) => p.role === "am" || /account manager/i.test(p.role)).map((p) => ({ id: p.id, name: p.name }));
+            if (ams.length) return ams;
+            return detail.amId ? [{ id: detail.amId, name: detail.amName ?? "Account Manager" }] : [];
+          })()}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Urgent compliance configuration saved"); router.refresh(); }}
+        />
+      )}
+
+      {actStep && !["coa", "diagram", "catchup", "project", "calendar", "triage", "agenda", "ai", "mom", "datareq", "report", "deck", "uploads", "intake", "drivelink", "access", "contract", "accountingsoftware", "zoho", "onepager", "catchup_config", "urgent_config"].includes(actStep.act?.type ?? "") && (
         <RunStepModal
           runId={detail.runId}
           step={actStep}
@@ -583,18 +661,71 @@ function RunStepModal({
   const [notes, setNotes] = useState("");
   const [link, setLink] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  const [intake, setIntake] = useState<{ portalUrl: string; clientEmail: string; emailSubject: string; emailBody: string; whatsappBody: string } | null>(null);
+  const [intakeMsg, setIntakeMsg] = useState<string | null>(null);
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
+  const [waCopied, setWaCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [items, setItems] = useState<string[]>(act?.items ?? []);
   const [cover, setCover] = useState<string[]>(act?.cover ?? []);
+  // Extra teammate emails the AM wants to add to this onboarding portal link.
+  // Chip-list UI: add by pressing Enter, remove with the X. Saved into
+  // magic_links.alt_emails on dispatch — those emails can then open the portal too.
+  const [altEmails, setAltEmails] = useState<string[]>([]);
+  const [altDraft, setAltDraft] = useState("");
+  const [altErr, setAltErr] = useState<string | null>(null);
 
   const allItemsDone = items.length > 0 && items.every((_, i) => checked["i" + i]);
   const allCoverDone = cover.length === 0 || cover.every((_, i) => checked["c" + i]);
 
+  const isValidEmail = (e: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e.trim());
+  const addAltEmail = () => {
+    const v = altDraft.trim().toLowerCase();
+    if (!v) return;
+    if (!isValidEmail(v)) { setAltErr("Enter a valid email address."); return; }
+    if (intake && v === intake.clientEmail.trim().toLowerCase()) { setAltErr("Already the primary email."); return; }
+    if (altEmails.includes(v)) { setAltErr("Already added."); return; }
+    setAltEmails((a) => [...a, v]);
+    setAltDraft("");
+    setAltErr(null);
+  };
+
   const doDispatch = async () => {
     setWorking(true);
-    const res = await dispatchMagicLink(runId);
+    setIntakeMsg(null);
+    // Steps flagged `act.intake === true` (the Stage 1 "Send intake form")
+    // generate the PUBLIC NO-LOGIN intake link (/intake/<token>) — autosave,
+    // no OTP. All other dispatch steps (e.g. "Re-send portal link") still
+    // dispatch the OTP-gated onboarding portal link, optionally adding extra
+    // teammate emails to magic_links.alt_emails.
+    const res = act?.intake
+      ? await dispatchIntakeLink(runId)
+      : await dispatchMagicLink(runId, altEmails);
     setWorking(false);
-    if (res.url) setLink(res.url);
+    if (res.error) { setIntakeMsg(res.error); return; }
+    // For OTP-gated dispatch the server returns the final alt_emails list.
+    if (!act?.intake && Array.isArray((res as { altEmails?: string[] }).altEmails)) {
+      setAltEmails(((res as { altEmails?: string[] }).altEmails ?? []) as string[]);
+    }
+    if (res.url) {
+      setLink(res.url);
+      const fields = { contactName: res.contactName, companyName: res.clientName, portalUrl: res.url };
+      setIntake({
+        portalUrl: res.url,
+        clientEmail: res.email ?? "",
+        emailSubject: INTAKE_EMAIL_SUBJECT,
+        emailBody: renderIntakeEmail(fields),
+        whatsappBody: renderIntakeWhatsapp(fields),
+      });
+    }
   };
+  // Auto-generate the link as soon as the dispatch step is opened, so the team
+  // sees the email/WhatsApp templates pre-filled and ready to send.
+  useEffect(() => {
+    if (type === "dispatch" && !intake && !working) doDispatch();
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [type]);
   const doDrive = () => setLink(`/drive/${runId.slice(0, 8)}`);
 
   let body: React.ReactNode;
@@ -642,14 +773,117 @@ function RunStepModal({
   } else if (type === "approve") {
     body = <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6 }}>Sign off as <strong>{act?.role ?? "approver"}</strong>. {act?.rework ? "You can also send this back for rework." : ""}</div>;
   } else if (type === "dispatch") {
-    canConfirm = !!link;
+    canConfirm = !!intake;
     body = (
       <div>
-        <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 12 }}>Generate the 7-day client magic link and send it to the client's email + Fincore chat.</div>
-        {link ? (
-          <div className="sop-ref-bar"><Icon name="link" size={14} /> Magic link ready <a href={link} target="_blank" rel="noreferrer">Open portal →</a></div>
-        ) : (
-          <button className="btn-ai" disabled={working} onClick={doDispatch}><Icon name="send" size={14} /> {working ? "Sending…" : "Dispatch magic link"}</button>
+        <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 12 }}>
+          Send (or re-send) the onboarding portal link. The secure link is auto-generated below — copy or send the email + WhatsApp templates to the client. They log in with their email and a one-time code. Add extra teammate emails to give them their own access to the same portal.
+        </div>
+        {!intake && working && <div style={{ fontSize: 13, color: "var(--ink-3)" }}>Generating link…</div>}
+        {!intake && !working && intakeMsg && (
+          <div style={{ fontSize: 13, color: "var(--red)", marginBottom: 8 }}>{intakeMsg} <button className="btn-ghost" onClick={doDispatch} style={{ marginLeft: 8 }}>Try again</button></div>
+        )}
+        {intake && (
+          <>
+            {/* Link bar */}
+            <div className="sop-ref-bar" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <Icon name="link" size={14} />
+              <span style={{ fontSize: 12.5, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 360 }}>{intake.portalUrl}</span>
+              <button className="btn-ghost" style={{ marginLeft: "auto" }} onClick={() => { navigator.clipboard?.writeText(intake.portalUrl); setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1800); }}>
+                <Icon name={linkCopied ? "check" : "copy"} size={12} /> {linkCopied ? "Copied" : "Copy link"}
+              </button>
+              <a href={intake.portalUrl} target="_blank" rel="noreferrer" className="btn-ghost"><Icon name="external-link" size={12} /> Open portal</a>
+            </div>
+
+            {/* Additional emails (OTP-gated portal dispatch only — the no-login intake
+                link doesn't email-gate, so adding extra emails is meaningless there). */}
+            {!act?.intake && (
+              <div style={{ marginTop: 12, border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--bg-soft)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <Icon name="users" size={14} style={{ color: "var(--ink-2)" }} />
+                  <span style={{ fontSize: 12.5, fontWeight: 700 }}>Additional emails</span>
+                  <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>· also able to open this onboarding portal</span>
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 8 }}>Add any teammate at the client who should also be able to sign in (finance, ops, founder). They each get a one-time code to their own email. Press Enter to add, click × to remove.</div>
+                {altEmails.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                    {altEmails.map((e) => (
+                      <span key={e} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 8px", background: "#fff", border: "1px solid var(--border)", borderRadius: 999 }}>
+                        {e}
+                        <button className="icon-btn" aria-label={`Remove ${e}`} style={{ color: "var(--red)" }} onClick={() => setAltEmails((a) => a.filter((x) => x !== e))}>
+                          <Icon name="x" size={11} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    value={altDraft}
+                    onChange={(e) => { setAltDraft(e.target.value); if (altErr) setAltErr(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addAltEmail(); } }}
+                    placeholder="teammate@client.com"
+                    style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 7, padding: "6px 9px", fontSize: 13 }}
+                  />
+                  <button className="btn-ghost" onClick={addAltEmail} disabled={!altDraft.trim()}>
+                    <Icon name="plus" size={12} /> Add
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    onClick={doDispatch}
+                    disabled={working}
+                    title="Save these emails to the link and re-render the templates"
+                  >
+                    <Icon name={working ? "loader" : "refresh-ccw"} size={12} /> {working ? "Saving…" : "Save & refresh"}
+                  </button>
+                </div>
+                {altErr && <div style={{ fontSize: 11.5, color: "var(--red)", marginTop: 6 }}>{altErr}</div>}
+              </div>
+            )}
+
+            {/* Email template */}
+            <div style={{ marginTop: 14, border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <Icon name="mail" size={14} style={{ color: "var(--orange)" }} />
+                <span style={{ fontSize: 12.5, fontWeight: 700 }}>Email template</span>
+                <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>· To: {intake.clientEmail || "—"}</span>
+              </div>
+              <input value={intake.emailSubject} onChange={(e) => setIntake({ ...intake, emailSubject: e.target.value })} style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 9px", fontSize: 13, fontWeight: 600, marginBottom: 6 }} placeholder="Subject" />
+              <textarea value={intake.emailBody} onChange={(e) => setIntake({ ...intake, emailBody: e.target.value })} style={{ width: "100%", minHeight: 180, border: "1px solid var(--border)", borderRadius: 7, padding: "8px 10px", fontSize: 13, lineHeight: 1.5, fontFamily: "inherit", resize: "vertical" }} />
+              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                <button className="btn-ghost" onClick={() => { navigator.clipboard?.writeText(`Subject: ${intake.emailSubject}\n\n${intake.emailBody}`); setEmailCopied(true); setTimeout(() => setEmailCopied(false), 1800); }}>
+                  <Icon name={emailCopied ? "check" : "copy"} size={13} /> {emailCopied ? "Copied" : "Copy email"}
+                </button>
+                <button className="btn-ai" disabled={emailSending || !intake.clientEmail} onClick={async () => {
+                  setEmailSending(true); setIntakeMsg(null);
+                  const r = await sendClientEmail(runId, intake.emailSubject, intake.emailBody);
+                  setEmailSending(false);
+                  setIntakeMsg(r.error ? `Couldn't send: ${r.error}` : "Sent via your connected Gmail.");
+                }}>
+                  <Icon name="send" size={13} /> {emailSending ? "Sending…" : "Send via my Gmail"}
+                </button>
+              </div>
+            </div>
+
+            {/* WhatsApp template */}
+            <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <Icon name="message-circle" size={14} style={{ color: "#25D366" }} />
+                <span style={{ fontSize: 12.5, fontWeight: 700 }}>WhatsApp message</span>
+              </div>
+              <textarea value={intake.whatsappBody} onChange={(e) => setIntake({ ...intake, whatsappBody: e.target.value })} style={{ width: "100%", minHeight: 110, border: "1px solid var(--border)", borderRadius: 7, padding: "8px 10px", fontSize: 13, lineHeight: 1.5, fontFamily: "inherit", resize: "vertical" }} />
+              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                <button className="btn-ghost" onClick={() => { navigator.clipboard?.writeText(intake.whatsappBody); setWaCopied(true); setTimeout(() => setWaCopied(false), 1800); }}>
+                  <Icon name={waCopied ? "check" : "copy"} size={13} /> {waCopied ? "Copied" : "Copy message"}
+                </button>
+                <a className="btn-ghost" href={`https://wa.me/?text=${encodeURIComponent(intake.whatsappBody)}`} target="_blank" rel="noreferrer">
+                  <Icon name="external-link" size={13} /> Open in WhatsApp
+                </a>
+              </div>
+            </div>
+
+            {intakeMsg && <div style={{ fontSize: 12.5, marginTop: 10, color: /Couldn|error/i.test(intakeMsg) ? "var(--red)" : "var(--green)" }}>{intakeMsg}</div>}
+          </>
         )}
       </div>
     );
@@ -688,6 +922,21 @@ function RunStepModal({
       </div>
     </div>
   );
+}
+
+// Download rows as a CSV (opens directly in Excel). UTF-8 BOM keeps accents/£ correct.
+function downloadCsvRows(filename: string, rows: (string | number)[][]) {
+  const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+function exportCoaCsv(filename: string, lines: CoaLine[]) {
+  const rows: (string | number)[][] = [["Section", "Code", "Account", "Included"]];
+  lines.forEach((l) => rows.push([l.section, l.code, l.account, l.include ? "Yes" : "No"]));
+  downloadCsvRows(filename, rows);
 }
 
 function CoaBuilderModal({
@@ -785,6 +1034,9 @@ function CoaBuilderModal({
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           {phase === "review" && (
+            <button className="btn-ghost" onClick={() => exportCoaCsv(`coa-${industry || "client"}.csv`, lines)}><Icon name="download" size={13} /> Export to Excel</button>
+          )}
+          {phase === "review" && (
             <button className="btn-primary" disabled={saving || !lines.some((l) => l.include)} onClick={() => startSave(async () => { const r = await saveCoa(runId, stepId, lines, rationale, industry); if (!r.error) onDone(); })}>
               {saving ? "Saving…" : "Save COA & send for AM review"}
             </button>
@@ -810,6 +1062,18 @@ function AssignPicker({
   const [sel, setSel] = useState<Record<string, boolean>>({});
   const [q, setQ] = useState("");
   const primary = (primaryRole ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+  // Capacity-based auto-suggest — pre-tick the lowest-active-run person for this role.
+  const [suggested, setSuggested] = useState<{ id: string; name: string; currentLoad: number } | null>(null);
+  useEffect(() => {
+    if (!primary) return;
+    if (!["senior", "junior", "team_lead"].includes(primary)) return;
+    suggestAssignee(primary).then((r) => {
+      if (!r) return;
+      setSuggested(r);
+      setSel((s) => (s[r.id] ? s : { ...s, [r.id]: true }));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primary]);
   const sorted = [...people].sort((a, b) => {
     const ap = a.role === primary ? 0 : 1, bp = b.role === primary ? 0 : 1;
     if (ap !== bp) return ap - bp;
@@ -824,6 +1088,7 @@ function AssignPicker({
     <div style={{ width: "100%", maxWidth: 470, border: "1px solid var(--border)", borderRadius: 10, padding: 10, background: "#fff" }}>
       <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 6 }}>
         Assign {primaryRole ? <strong>{primaryRole}</strong> : "people"} — pick one or more.{optional ? " Optional." : ""}
+        {suggested && <span style={{ display: "block", marginTop: 4, fontSize: 11.5, color: "var(--orange)" }}>Auto-picked by capacity: <strong>{suggested.name}</strong> ({suggested.currentLoad} active runs). Untick to choose someone else.</span>}
       </div>
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people…" style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 9px", fontSize: 12.5, marginBottom: 8 }} />
       <div style={{ maxHeight: 190, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
@@ -955,6 +1220,7 @@ function StepBox({
 }
 
 function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat: () => void }) {
+  const { effectiveRole } = useIdentity();
   const [copied, setCopied] = useState(false);
   // Optional Sales upload link (generated on demand — not part of any template).
   const [salesUrl, setSalesUrl] = useState<string | null>(null);
@@ -979,6 +1245,8 @@ function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat
   const docReceived = docs.filter((d) => d.status === "uploaded").length;
   const intakeSubmitted = !!detail.playbook.intake;
   const coaSignedOff = !!detail.playbook.coa?.signedOff;
+  const accessItems = detail.items["access"] ?? [];
+  const accessShared = accessItems.filter((r) => r.status === "granted" || (r.data as { status?: string }).status === "granted").length;
 
   const groups: { label: string; items: typeof visible }[] = cols && cols.length
     ? cols.map((c) => ({ label: c, items: visible.filter((t) => (t.boardColumn && cols.includes(t.boardColumn) ? t.boardColumn : cols[0]) === c) }))
@@ -1000,7 +1268,7 @@ function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat
     <>
       <div className="section-head">
         <div>
-          <h2 style={{ fontSize: 16 }}>Client portal — live mirror</h2>
+          <h2 style={{ fontSize: 16 }}>Onboarding portal — live mirror</h2>
           <div className="sub">Exactly what {detail.clientName} sees, and what they&apos;ve done. Updates here in real time.</div>
         </div>
         <button className="btn-ghost" onClick={onOpenChat}><Icon name="message-square" size={13} /> Open chat</button>
@@ -1024,6 +1292,9 @@ function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat
         </div>
       </div>
 
+      {/* Backup: the current portal access code (AM / Master Admin only), in case the client didn't receive the email */}
+      {link && canManageCoa(effectiveRole) && <PortalCodeBackup runId={detail.runId} />}
+
       {/* Optional: Sales upload link — share with Sales to drop in docs they already collected */}
       <div className="runs-card" style={{ padding: 14, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -1043,10 +1314,14 @@ function ClientPortalTab({ detail, onOpenChat }: { detail: RunDetail; onOpenChat
 
       {/* Progress chips */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-        <MirrorChip icon="file-text" label="Documents" value={`${docReceived}/${docs.length} received`} done={docs.length > 0 && docReceived === docs.length} />
+        <MirrorChip icon="file-text" label="Documents" value={`${docReceived}/${docs.length} received`} done={docs.length > 0 && docReceived === docs.length} total={docs.length} />
         <MirrorChip icon="clipboard-list" label="Intake form" value={intakeSubmitted ? "Submitted" : "Awaiting client"} done={intakeSubmitted} />
         <MirrorChip icon="check-circle" label="COA sign-off" value={coaSignedOff ? "Signed off" : "Pending"} done={coaSignedOff} />
+        <MirrorChip icon="key-round" label="Access" value={`${accessShared}/${accessItems.length} shared`} done={accessItems.length > 0 && accessShared === accessItems.length} total={accessItems.length} />
       </div>
+
+      {/* Access shared — what the client has granted, incl. encrypted logins the team can reveal */}
+      {accessItems.length > 0 && <AccessMirrorPanel runId={detail.runId} items={accessItems} canReveal={canRevealAccessCredentials(effectiveRole)} />}
 
       {/* Sign-off proof — durable evidence the client confirmed their setup */}
       {(() => {
@@ -1103,42 +1378,222 @@ function DocReviewRow({ runId, doc }: { runId: string; doc: RunDetail["playbook"
   const [busy, start] = useTransition();
   const [flagging, setFlagging] = useState(false);
   const [note, setNote] = useState("");
+  const [receiving, setReceiving] = useState(false);
+  const [receiveNote, setReceiveNote] = useState("");
+  const [fuOpen, setFuOpen] = useState(false);
+  const [fuNote, setFuNote] = useState("");
+  const [err, setErr] = useState<string | null>(null);
   const uploaded = doc.status === "uploaded";
   const rejected = doc.status === "rejected";
+  const pending = !uploaded && !rejected;
 
   const view = async () => { const r = await getDocumentUrl(doc.id); if (r.url) window.open(r.url, "_blank", "noopener"); };
   const send = () => start(async () => { await requestDocReupload(runId, doc.id, note); setFlagging(false); setNote(""); router.refresh(); });
   const upload = (file: File) => start(async () => { const fd = new FormData(); fd.append("file", file); await uploadDocForClient(runId, doc.id, fd); router.refresh(); });
+  const markReceived = () => start(async () => {
+    setErr(null);
+    const r = await markDocReceivedOutside(runId, doc.id, receiveNote);
+    if (r.error) { setErr(r.error); return; }
+    setReceiving(false); setReceiveNote(""); router.refresh();
+  });
+  const sendFu = () => start(async () => {
+    setErr(null);
+    const r = await addDocFollowupNote(runId, doc.id, fuNote);
+    if (r.error) { setErr(r.error); return; }
+    setFuOpen(false); setFuNote(""); router.refresh();
+  });
 
   return (
     <div style={{ borderBottom: "1px solid var(--border)", padding: "7px 0" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, flexWrap: "wrap" }}>
         <span style={{ color: uploaded ? "var(--green)" : rejected ? "var(--red)" : "var(--ink-4)" }}><Icon name={uploaded ? "check-circle" : rejected ? "rotate-ccw" : "circle"} size={14} /></span>
-        <span style={{ flex: 1 }}>{doc.label}</span>
+        <span style={{ flex: 1, minWidth: 160 }}>{doc.label}</span>
         {(uploaded || rejected) && doc.storagePath && <button className="btn-ghost" style={{ padding: "3px 8px" }} onClick={view}><Icon name="eye" size={13} /> View</button>}
         <label className="btn-ghost" style={{ padding: "3px 8px", cursor: busy ? "default" : "pointer" }}>
           <Icon name="upload" size={13} /> {busy ? "…" : uploaded ? "Replace" : "Upload"}
           <input type="file" hidden disabled={busy} onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} />
         </label>
+        {pending && <button className="btn-ghost" style={{ padding: "3px 8px" }} onClick={() => { setReceiving((v) => !v); setFuOpen(false); }}><Icon name="inbox" size={13} /> Mark received outside portal</button>}
+        {pending && <button className="btn-ghost" style={{ padding: "3px 8px" }} onClick={() => { setFuOpen((v) => !v); setReceiving(false); }}><Icon name="message-square" size={13} /> Add follow-up note</button>}
         {uploaded && <button className="btn-ghost" style={{ padding: "3px 8px", color: "var(--red)" }} onClick={() => setFlagging((v) => !v)}><Icon name="flag" size={13} /> Request re-upload</button>}
         <span className={"pill " + (uploaded ? "green" : rejected ? "red" : "gray")} style={{ fontSize: 10 }}>{uploaded ? "Received" : rejected ? "Re-upload asked" : "Pending"}</span>
       </div>
+      {uploaded && doc.receivedOutsidePortal && doc.receivedNote && (
+        <div style={{ marginLeft: 22, marginTop: 4, fontSize: 12, color: "var(--ink-3)" }}>📥 Marked received by team — note: {doc.receivedNote}</div>
+      )}
       {rejected && doc.reviewNote && <div style={{ marginLeft: 22, marginTop: 4, fontSize: 12, color: "var(--red)" }}>Asked to re-upload: {doc.reviewNote}</div>}
+      {pending && doc.followupNote && (
+        <div style={{ marginLeft: 22, marginTop: 4, fontSize: 12, color: "var(--ink-3)" }}>Follow-up note: {doc.followupNote}</div>
+      )}
       {flagging && (
         <div style={{ marginLeft: 22, marginTop: 8, display: "flex", gap: 8, alignItems: "flex-start" }}>
           <textarea className="notes" value={note} onChange={(e) => setNote(e.target.value)} placeholder="What's wrong with it? (the client sees this)" style={{ flex: 1, minHeight: 44, fontSize: 12.5 }} />
           <button className="btn-primary" disabled={busy} onClick={send}>{busy ? "Sending…" : "Send"}</button>
         </div>
       )}
+      {receiving && (
+        <div style={{ marginLeft: 22, marginTop: 8, display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <textarea className="notes" value={receiveNote} onChange={(e) => setReceiveNote(e.target.value)} placeholder="Where did you receive it? (e.g. emailed by client on 24 Jun)" style={{ flex: 1, minHeight: 44, fontSize: 12.5 }} />
+          <button className="btn-primary" disabled={busy || !receiveNote.trim()} onClick={markReceived}>{busy ? "Saving…" : "Save"}</button>
+        </div>
+      )}
+      {fuOpen && (
+        <div style={{ marginLeft: 22, marginTop: 8, display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <textarea className="notes" value={fuNote} onChange={(e) => setFuNote(e.target.value)} placeholder="Update on the follow-up (resets the SLA window for the next auto-task)" style={{ flex: 1, minHeight: 44, fontSize: 12.5 }} />
+          <button className="btn-primary" disabled={busy || !fuNote.trim()} onClick={sendFu}>{busy ? "Saving…" : "Save"}</button>
+        </div>
+      )}
+      {err && <div style={{ marginLeft: 22, marginTop: 4, fontSize: 12, color: "var(--red)" }}>{err}</div>}
     </div>
   );
 }
 
-function MirrorChip({ icon, label, value, done }: { icon: string; label: string; value: string; done: boolean }) {
+function MirrorChip({ icon, label, value, done, total }: { icon: string; label: string; value: string; done: boolean; total?: number }) {
+  // "0 of 0" reads as a problem — when there are no items to track, surface a green "Completed" pill instead.
+  const empty = typeof total === "number" && total === 0;
+  const displayValue = empty ? "Completed — no items requested" : value;
+  const isDone = empty || done;
   return (
     <div style={{ flex: 1, minWidth: 150, background: "#fff", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--ink-3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}><Icon name={icon} size={12} /> {label}</div>
-      <div style={{ fontSize: 14, fontWeight: 700, marginTop: 4, color: done ? "var(--green)" : "var(--ink-1)" }}>{value}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, marginTop: 4, color: isDone ? "var(--green)" : "var(--ink-1)" }}>{displayValue}</div>
+    </div>
+  );
+}
+
+// Backup for the portal access code: when the client doesn't receive the emailed OTP, the team
+// can read them the current code here. It refreshes each time the client requests a new code.
+function PortalCodeBackup({ runId }: { runId: string }) {
+  const [state, setState] = useState<{ code?: string; secondsLeft?: number; sentTo?: string; error?: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = async () => { setBusy(true); const r = await getPortalAccessCode(runId); setBusy(false); setState(r); };
+  const mins = state?.secondsLeft ? Math.max(1, Math.round(state.secondsLeft / 60)) : 0;
+  return (
+    <div className="runs-card" style={{ padding: 14, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ width: 30, height: 30, borderRadius: 8, background: "var(--bg-soft)", color: "var(--ink-2)", display: "grid", placeItems: "center" }}><Icon name="key-round" size={15} /></span>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>Access code — backup</div>
+          <div style={{ fontSize: 12, color: "var(--ink-3)" }}>If the client didn&apos;t get the emailed code, read them the current one. It changes each time they request a new code and expires 10 minutes after it&apos;s sent.</div>
+        </div>
+        <button className="btn-ghost" disabled={busy} onClick={load}><Icon name={busy ? "loader" : "eye"} size={13} /> {busy ? "Checking…" : "Show current code"}</button>
+      </div>
+      {state?.error && <div style={{ fontSize: 12.5, color: "var(--amber)", marginTop: 10 }}>{state.error}</div>}
+      {state?.code && (
+        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, background: "var(--bg-soft)", borderRadius: 9, padding: "10px 14px", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: "DM Mono, monospace", fontSize: 22, fontWeight: 700, letterSpacing: "0.18em" }}>{state.code}</span>
+          <span style={{ fontSize: 12, color: "var(--ink-3)" }}>valid ~{mins} min{state.sentTo ? ` · sent to ${state.sentTo}` : ""}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Team-side mirror of the access requests: status per system, plus reveal of any
+// encrypted login the client stored (credentials mode).
+function AccessMirrorPanel({ runId, items, canReveal }: { runId: string; items: { id: string; data: Record<string, unknown>; status: string }[]; canReveal: boolean }) {
+  const router = useRouter();
+  const [shown, setShown] = useState<Record<string, { username: string; password: string }>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<Record<string, string>>({});
+  const [actionOpen, setActionOpen] = useState<Record<string, "receive" | "followup" | null>>({});
+  const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
+  const reveal = async (rowId: string) => {
+    if (shown[rowId]) { setShown((s) => { const n = { ...s }; delete n[rowId]; return n; }); return; }
+    setBusy(rowId); setErr((e) => ({ ...e, [rowId]: "" }));
+    const r = await revealAccessCredentials(runId, rowId);
+    setBusy(null);
+    if (r.error) setErr((e) => ({ ...e, [rowId]: r.error! }));
+    else setShown((s) => ({ ...s, [rowId]: { username: r.username ?? "", password: r.password ?? "" } }));
+  };
+  const submitReceive = async (rowId: string) => {
+    setBusy(rowId); setErr((e) => ({ ...e, [rowId]: "" }));
+    const r = await markAccessReceivedOutside(runId, rowId, noteDraft[rowId] ?? "");
+    setBusy(null);
+    if (r.error) { setErr((e) => ({ ...e, [rowId]: r.error! })); return; }
+    setActionOpen((s) => ({ ...s, [rowId]: null }));
+    setNoteDraft((s) => ({ ...s, [rowId]: "" }));
+    router.refresh();
+  };
+  const submitFollowup = async (rowId: string) => {
+    setBusy(rowId); setErr((e) => ({ ...e, [rowId]: "" }));
+    const r = await addAccessFollowupNote(runId, rowId, noteDraft[rowId] ?? "");
+    setBusy(null);
+    if (r.error) { setErr((e) => ({ ...e, [rowId]: r.error! })); return; }
+    setActionOpen((s) => ({ ...s, [rowId]: null }));
+    setNoteDraft((s) => ({ ...s, [rowId]: "" }));
+    router.refresh();
+  };
+  return (
+    <div className="runs-card" style={{ padding: 16, marginBottom: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}><Icon name="key-round" size={14} /> Access shared by the client</div>
+      <div style={{ display: "grid", gap: 8 }}>
+        {items.map((r) => {
+          const d = r.data as { label?: string; systemName?: string; method?: string; accessMode?: string; status?: string; note?: string; email?: string; credUsername?: string; credPasswordEnc?: string; items?: Array<{ confirmed?: boolean; receivedOutsidePortal?: boolean; receivedNote?: string; followupNote?: string }>; receivedOutsidePortal?: boolean; receivedNote?: string; followupNote?: string };
+          const granted = r.status === "granted" || d.status === "granted";
+          const isCred = d.accessMode === "credentials";
+          const itemsArr = Array.isArray(d.items) ? d.items : [];
+          // surface notes from the first item (or top-level if no items array)
+          const recOutside = itemsArr.some((it) => it.receivedOutsidePortal) || !!d.receivedOutsidePortal;
+          const recNote = itemsArr.find((it) => it.receivedNote)?.receivedNote ?? d.receivedNote;
+          const fuNote = itemsArr.find((it) => it.followupNote && !it.confirmed)?.followupNote ?? d.followupNote;
+          const open = actionOpen[r.id] ?? null;
+          return (
+            <div key={r.id} style={{ border: "1px solid var(--border)", borderRadius: 9, padding: "10px 12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{d.label ?? "Access"}{d.systemName ? ` · ${d.systemName}` : ""}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{isCred ? "Login credentials" : `Viewer access${d.email ? ` · ${d.email}` : ""}`}</div>
+                </div>
+                <span className={"pill " + (granted ? "green" : "gray")} style={{ fontSize: 10.5 }}><span className="dot" />{granted ? (isCred ? "Login on file" : "Granted") : "Awaiting client"}</span>
+                {!granted && (
+                  <>
+                    <button className="btn-ghost" style={{ padding: "3px 8px" }} onClick={() => setActionOpen((s) => ({ ...s, [r.id]: open === "receive" ? null : "receive" }))}><Icon name="inbox" size={13} /> Mark received outside portal</button>
+                    <button className="btn-ghost" style={{ padding: "3px 8px" }} onClick={() => setActionOpen((s) => ({ ...s, [r.id]: open === "followup" ? null : "followup" }))}><Icon name="message-square" size={13} /> Add follow-up note</button>
+                  </>
+                )}
+                {isCred && d.credPasswordEnc && (
+                  canReveal ? (
+                    <button className="btn-ghost" onClick={() => reveal(r.id)} disabled={busy === r.id}>
+                      <Icon name={shown[r.id] ? "eye-off" : "eye"} size={13} /> {busy === r.id ? "…" : shown[r.id] ? "Hide" : "Reveal login"}
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: 11.5, color: "var(--ink-3)" }} title="Only Senior, Team Lead, AM or admin can see the password.">
+                      <Icon name="lock" size={12} /> Restricted
+                    </span>
+                  )
+                )}
+              </div>
+              {d.note && !isCred && <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>Note: {d.note}</div>}
+              {granted && recOutside && recNote && (
+                <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>📥 Marked received by team — note: {recNote}</div>
+              )}
+              {!granted && fuNote && (
+                <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>Follow-up note: {fuNote}</div>
+              )}
+              {open === "receive" && (
+                <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <textarea className="notes" value={noteDraft[r.id] ?? ""} onChange={(e) => setNoteDraft((s) => ({ ...s, [r.id]: e.target.value }))} placeholder="Where / how did the client share it? (e.g. WhatsApp on 22 Jun)" style={{ flex: 1, minHeight: 44, fontSize: 12.5 }} />
+                  <button className="btn-primary" disabled={busy === r.id || !(noteDraft[r.id] ?? "").trim()} onClick={() => submitReceive(r.id)}>{busy === r.id ? "Saving…" : "Save"}</button>
+                </div>
+              )}
+              {open === "followup" && (
+                <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <textarea className="notes" value={noteDraft[r.id] ?? ""} onChange={(e) => setNoteDraft((s) => ({ ...s, [r.id]: e.target.value }))} placeholder="Update on the follow-up (extends the SLA window)" style={{ flex: 1, minHeight: 44, fontSize: 12.5 }} />
+                  <button className="btn-primary" disabled={busy === r.id || !(noteDraft[r.id] ?? "").trim()} onClick={() => submitFollowup(r.id)}>{busy === r.id ? "Saving…" : "Save"}</button>
+                </div>
+              )}
+              {err[r.id] && <div style={{ fontSize: 12, color: "var(--red)", marginTop: 6 }}>{err[r.id]}</div>}
+              {shown[r.id] && (
+                <div style={{ marginTop: 8, background: "var(--bg-soft)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5, display: "grid", gap: 4, fontFamily: "DM Mono, monospace" }}>
+                  <div><span style={{ color: "var(--ink-3)" }}>Username:</span> {shown[r.id].username || "—"}</div>
+                  <div><span style={{ color: "var(--ink-3)" }}>Password:</span> {shown[r.id].password || "—"}</div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1156,9 +1611,11 @@ const inputStyle: React.CSSProperties = { border: "1px solid var(--border)", bor
 const statusLabel = (s: string) => TASK_STATUS_LABEL[s] ?? s.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 function TaskBoard({
-  runId, tasks, owners, columns, statuses, sla, confirmStepId, onConfirmStep, onOpenChat,
+  runId, clientName, contactName, tasks, owners, columns, statuses, sla, confirmStepId, onConfirmStep, onOpenChat,
 }: {
   runId: string;
+  clientName: string;
+  contactName: string | null;
   tasks: TaskRow[];
   owners: { id: string; name: string }[];
   columns: string[];
@@ -1182,6 +1639,12 @@ function TaskBoard({
   const shownTasks = tasks.filter((t) => taskFilter === "all" ? true : taskFilter === "done" ? t.status === "complete" : t.status !== "complete");
   const [slaStart, setSlaStart] = useState(String(sla?.notStartedDays ?? 1));
   const [slaDone, setSlaDone] = useState(String(sla?.notCompletedDays ?? 7));
+  const [draft, setDraft] = useState<{ subject: string; body: string; whatsapp: string } | null>(null);
+  const [copied, setCopied] = useState<"subject" | "body" | "all" | "wa" | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const [draftErr, setDraftErr] = useState<string | null>(null);
+  const [draftTab, setDraftTab] = useState<"email" | "whatsapp">("email");
+  const [includeForm, setIncludeForm] = useState(true);
 
   const change = (fn: () => Promise<{ error?: string }>) =>
     start(async () => { const r = await fn(); if (r?.error) { setToast(r.error); setTimeout(() => setToast(null), 2400); } router.refresh(); });
@@ -1197,16 +1660,42 @@ function TaskBoard({
       router.refresh();
     });
 
-  const emailSummary = () =>
-    start(async () => {
-      const label = (s: string) => ({ not_started: "Not started", in_progress: "In progress", complete: "Done", needs_input: "Needs your input", blocked: "Blocked" }[s] ?? s);
-      const body = "Here is the latest status of your onboarding tasks:\n\n" +
-        tasks.map((t) => `• ${t.title} — ${label(t.status)}`).join("\n") +
-        "\n\nReply to this email if anything needs a change.\n\n— Your Finanshels team";
-      const r = await sendClientEmail(runId, "Your onboarding — task summary", body);
-      setToast(r.error ? r.error : "Task summary emailed to the client");
-      setTimeout(() => setToast(null), 2600);
-    });
+  const openEmailDraft = async (opts?: { includeForm?: boolean }) => {
+    const incForm = opts?.includeForm ?? includeForm;
+    setDraftErr(null);
+    setCopied(null);
+    setDrafting(true);
+    setDraft({ subject: `Your Onboarding: Where We Are + What's Next <> ${clientName}`, body: "", whatsapp: "" });
+    try {
+      const completed = tasks.filter((t) => t.status === "complete").map((t) => ({ title: t.title, notes: t.notes }));
+      const inProgress = tasks.filter((t) => t.status !== "complete").map((t) => ({ title: t.title, notes: t.notes }));
+      const r = await generateTaskBoardEmailDraft(runId, { clientName, contactName, completed, inProgress, includeForm: incForm });
+      if (r.error || !r.body) {
+        setDraftErr(r.error || "AI failed");
+      } else {
+        setDraft({
+          subject: r.subject || `Your Onboarding: Where We Are + What's Next <> ${clientName}`,
+          body: r.body,
+          whatsapp: r.whatsapp || "",
+        });
+      }
+    } catch (e) {
+      setDraftErr(e instanceof Error ? e.message : "AI failed");
+    } finally {
+      setDrafting(false);
+    }
+  };
+
+  const copyText = async (text: string, which: "subject" | "body" | "all" | "wa") => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(which);
+      setTimeout(() => setCopied(null), 1800);
+    } catch {
+      setToast("Couldn't copy — select the text manually.");
+      setTimeout(() => setToast(null), 2400);
+    }
+  };
 
   return (
     <>
@@ -1218,10 +1707,9 @@ function TaskBoard({
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button className="btn-ghost" onClick={onOpenChat}><Icon name="message-square" size={13} /> Chat</button>
           <button className="btn-ghost" onClick={() => setNudgeOpen(true)}><Icon name="bell" size={13} /> Nudge team</button>
-          <button className="btn-ghost" onClick={() => setColMgr([...columns])}><Icon name="columns" size={13} /> Manage columns</button>
           <button className="btn-ghost" onClick={() => setStatusMgr([...statuses])}><Icon name="list-checks" size={13} /> Manage statuses</button>
           <button className="btn-ghost" onClick={() => setSlaOpen(true)}><Icon name="bell-ring" size={13} /> Reminders</button>
-          <button className="btn-ghost" onClick={emailSummary} disabled={busy || tasks.length === 0}><Icon name="mail" size={13} /> Email summary</button>
+          <button className="btn-ghost" onClick={() => openEmailDraft()} disabled={tasks.length === 0}><Icon name="mail" size={13} /> Email summary</button>
           <button className="btn-primary" disabled={busy} onClick={() => change(() => addTask(runId, { title: "New task", boardColumn: columns[0] }))}>
             <Icon name="plus" size={14} /> Add task
           </button>
@@ -1239,7 +1727,7 @@ function TaskBoard({
 
       <div className="runs-card">
         <table className="runs-table">
-          <thead><tr><th style={{ minWidth: 200 }}>Task</th><th>Owner</th><th>Column</th><th>Type</th><th>Due</th><th>Client sees</th><th>Status</th><th>Chat</th><th></th></tr></thead>
+          <thead><tr><th style={{ minWidth: 220 }}>Task name</th><th style={{ minWidth: 140 }}>Owner</th><th style={{ width: 140 }}>Due date</th><th style={{ width: 140 }}>Status</th><th style={{ minWidth: 220 }}>Notes</th><th style={{ width: 36 }}></th></tr></thead>
           <tbody>
             {shownTasks.map((t) => (
               <tr key={t.id}>
@@ -1266,49 +1754,34 @@ function TaskBoard({
                   </select>
                 </td>
                 <td>
-                  <select
-                    value={t.boardColumn && columns.includes(t.boardColumn) ? t.boardColumn : columns[0]}
-                    disabled={busy}
-                    onChange={(e) => change(() => updateTask(runId, t.id, { boardColumn: e.target.value }))}
-                    style={{ ...inputStyle, minWidth: 110 }}
-                  >
-                    {columns.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </td>
-                <td>
-                  <select value={t.type} disabled={busy} onChange={(e) => change(() => updateTask(runId, t.id, { type: e.target.value }))} style={inputStyle}>
-                    {TASK_TYPES.map((s) => <option key={s} value={s}>{TASK_TYPE_LABEL[s]}</option>)}
-                  </select>
-                </td>
-                <td>
                   <input
+                    type="date"
                     defaultValue={t.due ?? ""}
                     disabled={busy}
-                    placeholder="e.g. Day 4"
-                    onBlur={(e) => { if ((e.target.value || "") !== (t.due ?? "")) change(() => updateTask(runId, t.id, { due: e.target.value })); }}
-                    style={{ ...inputStyle, width: 90 }}
+                    onChange={(e) => { if ((e.target.value || null) !== (t.due ?? null)) change(() => updateTask(runId, t.id, { due: e.target.value })); }}
+                    style={{ ...inputStyle, width: 130 }}
                   />
                 </td>
-                <td><input type="checkbox" checked={t.clientVisible} disabled={busy} onChange={(e) => change(() => toggleTaskVisible(runId, t.id, e.target.checked))} style={{ accentColor: "var(--orange)" }} /></td>
                 <td>
                   <select value={t.status} disabled={busy} onChange={(e) => change(() => setTaskStatus(runId, t.id, e.target.value))} style={inputStyle}>
                     {(statuses.includes(t.status) ? statuses : [t.status, ...statuses]).map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
                   </select>
                 </td>
                 <td>
-                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    <button className="icon-btn" disabled={busy} title="Open task chat" onClick={() => setChatTask(t.title)} aria-label="Task chat"><Icon name="message-square" size={14} /></button>
-                    {(t.status === "needs_input" || t.status === "blocked") && (
-                      <button className="icon-btn" disabled={busy} title="Notify the client this needs their input" onClick={() => change(() => notifyClientOnTask(runId, t.title))} style={{ color: "var(--orange)" }} aria-label="Notify client"><Icon name="at-sign" size={14} /></button>
-                    )}
-                  </div>
+                  <input
+                    defaultValue={t.notes ?? ""}
+                    disabled={busy}
+                    placeholder="Anything you want to write…"
+                    onBlur={(e) => { if ((e.target.value || "") !== (t.notes ?? "")) change(() => updateTask(runId, t.id, { notes: e.target.value })); }}
+                    style={{ ...inputStyle, width: "100%" }}
+                  />
                 </td>
                 <td>
                   <button className="icon-btn" disabled={busy} onClick={() => change(() => deleteTask(runId, t.id))} style={{ color: "var(--red)" }} aria-label="Delete task"><Icon name="trash-2" size={14} /></button>
                 </td>
               </tr>
             ))}
-            {!shownTasks.length && <tr><td colSpan={9} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>{tasks.length ? "No tasks match this filter." : "No tasks yet — click “Add task”."}</td></tr>}
+            {!shownTasks.length && <tr><td colSpan={6} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>{tasks.length ? "No tasks match this filter." : "No tasks yet — click “Add task”."}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1409,6 +1882,91 @@ function TaskBoard({
 
       {chatTask && <TeamTaskChat runId={runId} task={chatTask} onClose={() => setChatTask(null)} />}
 
+      {draft && (
+        <div className="modal-overlay open" onClick={() => { if (!drafting) setDraft(null); }}>
+          <div className="modal" style={{ width: 660 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd">
+              <h3>Client update draft — Email + WhatsApp</h3>
+              <div className="sub">AI-drafted from this task board using your OpenAI key. Switch tabs to view each channel, edit, then copy & paste. Nothing is sent automatically.</div>
+            </div>
+            <div className="bd" style={{ maxHeight: "64vh" }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <button className={"tab-pill" + (draftTab === "email" ? " active" : "")} onClick={() => setDraftTab("email")} disabled={drafting}><Icon name="mail" size={12} /> Email</button>
+                <button className={"tab-pill" + (draftTab === "whatsapp" ? " active" : "")} onClick={() => setDraftTab("whatsapp")} disabled={drafting}><Icon name="message-square" size={12} /> WhatsApp</button>
+                <label style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--ink-2)" }}>
+                  <input
+                    type="checkbox"
+                    checked={includeForm}
+                    onChange={(e) => { const v = e.target.checked; setIncludeForm(v); openEmailDraft({ includeForm: v }); }}
+                    disabled={drafting}
+                  />
+                  Include feedback form link
+                </label>
+              </div>
+
+              {draftTab === "email" ? (
+                <>
+                  <div className="field">
+                    <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span>Subject</span>
+                      <button className="btn-ghost" style={{ padding: "2px 8px", fontSize: 12 }} disabled={drafting || !draft.subject} onClick={() => copyText(draft.subject, "subject")}>
+                        <Icon name={copied === "subject" ? "check" : "copy"} size={12} /> {copied === "subject" ? "Copied" : "Copy"}
+                      </button>
+                    </label>
+                    <input value={draft.subject} onChange={(e) => setDraft((d) => (d ? { ...d, subject: e.target.value } : d))} style={inputStyle} disabled={drafting} />
+                  </div>
+                  <div className="field" style={{ marginTop: 10 }}>
+                    <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span>Body {drafting && <span style={{ fontSize: 11, color: "var(--ink-4)", marginLeft: 6 }}>· generating…</span>}</span>
+                      <button className="btn-ghost" style={{ padding: "2px 8px", fontSize: 12 }} disabled={drafting || !draft.body} onClick={() => copyText(draft.body, "body")}>
+                        <Icon name={copied === "body" ? "check" : "copy"} size={12} /> {copied === "body" ? "Copied" : "Copy"}
+                      </button>
+                    </label>
+                    <textarea
+                      className="notes"
+                      value={drafting ? "Drafting with AI… this usually takes a few seconds." : draft.body}
+                      onChange={(e) => setDraft((d) => (d ? { ...d, body: e.target.value } : d))}
+                      style={{ minHeight: 320, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12.5, whiteSpace: "pre-wrap" }}
+                      disabled={drafting}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="field" style={{ marginTop: 4 }}>
+                  <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>WhatsApp message {drafting && <span style={{ fontSize: 11, color: "var(--ink-4)", marginLeft: 6 }}>· generating…</span>}</span>
+                    <button className="btn-ghost" style={{ padding: "2px 8px", fontSize: 12 }} disabled={drafting || !draft.whatsapp} onClick={() => copyText(draft.whatsapp, "wa")}>
+                      <Icon name={copied === "wa" ? "check" : "copy"} size={12} /> {copied === "wa" ? "Copied" : "Copy"}
+                    </button>
+                  </label>
+                  <textarea
+                    className="notes"
+                    value={drafting ? "Drafting with AI…" : draft.whatsapp}
+                    onChange={(e) => setDraft((d) => (d ? { ...d, whatsapp: e.target.value } : d))}
+                    style={{ minHeight: 320, fontSize: 13, whiteSpace: "pre-wrap" }}
+                    disabled={drafting}
+                  />
+                </div>
+              )}
+              {draftErr && <div style={{ marginTop: 6, color: "var(--red)", fontSize: 12 }}>AI: {draftErr}</div>}
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setDraft(null)} disabled={drafting}>Close</button>
+              <button className="btn-ghost" onClick={() => openEmailDraft()} disabled={drafting}><Icon name="refresh-cw" size={13} /> Regenerate</button>
+              {draftTab === "email" ? (
+                <button className="btn-primary" disabled={drafting || !draft.body} onClick={() => copyText(`Subject: ${draft.subject}\n\n${draft.body}`, "all")}>
+                  <Icon name={copied === "all" ? "check" : "copy"} size={13} /> {copied === "all" ? "Copied subject + body" : "Copy subject + body"}
+                </button>
+              ) : (
+                <button className="btn-primary" disabled={drafting || !draft.whatsapp} onClick={() => copyText(draft.whatsapp, "wa")}>
+                  <Icon name={copied === "wa" ? "check" : "copy"} size={13} /> {copied === "wa" ? "Copied" : "Copy WhatsApp message"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {toast && <div className="toast show green"><Icon name="check-circle" size={15} /><span>{toast}</span></div>}
     </>
   );
@@ -1477,6 +2035,140 @@ const NODE_STYLE: Record<string, { bg: string; color: string; label: string }> =
   decision: { bg: "var(--amber)", color: "#fff", label: "Decision" },
   end: { bg: "var(--red)", color: "#fff", label: "End" },
 };
+
+// ── Tax codes builder ─────────────────────────────────────────────────────
+type TaxKind = "standard" | "zero" | "exempt" | "rcm" | "out_of_scope";
+interface TaxRow { code: string; name: string; rate: number; kind: TaxKind; notes?: string }
+const TAX_KIND_OPTIONS: { v: TaxKind; label: string }[] = [
+  { v: "standard", label: "Standard" },
+  { v: "zero", label: "Zero-rated" },
+  { v: "exempt", label: "Exempt" },
+  { v: "rcm", label: "Reverse charge" },
+  { v: "out_of_scope", label: "Out of scope" },
+];
+function exportTaxCodesCsv(filename: string, industry: string, codes: TaxRow[]) {
+  const rows: (string | number)[][] = [["Code", "Name", "Rate %", "Kind", "Notes", "Industry"]];
+  codes.forEach((c) => rows.push([c.code, c.name, c.rate, c.kind, c.notes ?? "", industry]));
+  downloadCsvRows(filename, rows);
+}
+
+function TaxCodesBuilderModal({ runId, stepId, onClose, onDone }: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
+  const supabase = createClient();
+  const [codes, setCodes] = useState<TaxRow[]>([]);
+  const [industry, setIndustry] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [genBusy, genStart] = useTransition();
+  const [saveBusy, saveStart] = useTransition();
+  const [msg, setMsg] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    // Hydrate from any prior save on this run; otherwise leave empty until "Generate".
+    supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "tax_codes").maybeSingle().then(({ data }) => {
+      const d = data?.data as { industry?: string; codes?: TaxRow[] } | null;
+      if (d?.codes?.length) { setCodes(d.codes); setIndustry(d.industry ?? ""); }
+      setLoading(false);
+    });
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const setRow = (i: number, patch: Partial<TaxRow>) => setCodes((arr) => arr.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const addRow = () => setCodes((arr) => [...arr, { code: "", name: "", rate: 0, kind: "standard" }]);
+  const removeRow = (i: number) => setCodes((arr) => arr.filter((_, j) => j !== i));
+
+  const generate = () => genStart(async () => {
+    setMsg(null);
+    const r = await generateTaxCodes(runId);
+    if (r.error && !r.codes) { setMsg(r.error); return; }
+    if (r.codes) setCodes(r.codes);
+    if (r.industry) setIndustry(r.industry);
+    if (r.error) setMsg(r.error); // partial: e.g. AI failed but baseline returned
+  });
+
+  const save = () => saveStart(async () => {
+    setMsg(null);
+    const r = await saveTaxCodes(runId, stepId, industry, codes);
+    if (r.error) setMsg(r.error);
+    else onDone();
+  });
+
+  const filtered = codes.filter((c) => {
+    if (!search.trim()) return true;
+    const q = search.trim().toLowerCase();
+    return c.code.toLowerCase().includes(q) || c.name.toLowerCase().includes(q) || (c.notes ?? "").toLowerCase().includes(q);
+  });
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 920, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd">
+          <h3>Tax codes for this client</h3>
+          <div className="sub">Generate from the master list + AI for the client&apos;s industry. Edit, then save — the team picks from these on the run&apos;s books and filings.</div>
+        </div>
+        <div className="bd" style={{ maxHeight: "66vh" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            <div style={{ flex: "1 1 200px", minWidth: 180 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--ink-3)" }}>Industry</label>
+              <input value={industry} onChange={(e) => setIndustry(e.target.value)} placeholder="e.g. E-commerce" style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 9px", fontSize: 13 }} />
+            </div>
+            <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search codes…" style={{ border: "1px solid var(--border)", borderRadius: 7, padding: "6px 9px", fontSize: 12.5, alignSelf: "flex-end" }} />
+            <button className="btn-ai" disabled={genBusy} onClick={generate} style={{ alignSelf: "flex-end" }}>
+              <Icon name="sparkles" size={13} /> {genBusy ? "Generating…" : codes.length ? "Re-generate from AI" : "Generate from AI"}
+            </button>
+            <button className="btn-ghost" disabled={!codes.length} onClick={() => exportTaxCodesCsv(`tax-codes-${(industry || "client").replace(/\s+/g, "-").toLowerCase()}.csv`, industry || "—", codes)} style={{ alignSelf: "flex-end" }}>
+              <Icon name="download" size={13} /> Export CSV
+            </button>
+            <button className="btn-ghost" onClick={addRow} style={{ alignSelf: "flex-end" }}>
+              <Icon name="plus" size={13} /> Add code
+            </button>
+          </div>
+
+          {loading && <div style={{ padding: 20, textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>Loading…</div>}
+          {!loading && codes.length === 0 && (
+            <div style={{ background: "var(--bg-soft)", border: "1px dashed var(--border)", borderRadius: 8, padding: "16px 18px", textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
+              Nothing yet. Click <strong>Generate from AI</strong> to pull the UAE baseline + the industry overlay for this client.
+            </div>
+          )}
+
+          {!loading && codes.length > 0 && (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "120px 1.4fr 70px 130px 1.4fr 40px", padding: "8px 12px", background: "var(--bg-soft)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)" }}>
+                <div>Code</div><div>Name</div><div>Rate %</div><div>Kind</div><div>Notes</div><div></div>
+              </div>
+              {filtered.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "var(--ink-3)", fontSize: 12.5 }}>Nothing matches.</div>
+              ) : codes.map((c, i) => {
+                if (search.trim() && !filtered.includes(c)) return null;
+                return (
+                  <div key={i} style={{ display: "grid", gridTemplateColumns: "120px 1.4fr 70px 130px 1.4fr 40px", padding: "8px 12px", borderTop: "1px solid var(--border)", alignItems: "center", gap: 6, fontSize: 13 }}>
+                    <input value={c.code} onChange={(e) => setRow(i, { code: e.target.value })} style={taxInp()} placeholder="VAT-S5" />
+                    <input value={c.name} onChange={(e) => setRow(i, { name: e.target.value })} style={taxInp()} placeholder="Standard rated 5%" />
+                    <input type="number" value={c.rate} onChange={(e) => setRow(i, { rate: Number(e.target.value) })} style={taxInp()} step={0.5} min={0} />
+                    <select value={c.kind} onChange={(e) => setRow(i, { kind: e.target.value as TaxKind })} style={taxInp()}>
+                      {TAX_KIND_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+                    </select>
+                    <input value={c.notes ?? ""} onChange={(e) => setRow(i, { notes: e.target.value })} style={taxInp()} placeholder="Optional notes" />
+                    <button className="icon-btn" style={{ color: "var(--red)" }} onClick={() => removeRow(i)} aria-label="Delete row"><Icon name="trash-2" size={13} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {msg && <div style={{ marginTop: 10, background: "var(--bg-soft)", border: "1px solid var(--border)", borderRadius: 7, padding: "7px 10px", fontSize: 12.5 }}>{msg}</div>}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saveBusy}>Cancel</button>
+          <button className="btn-primary" disabled={saveBusy || codes.length === 0} onClick={save}>{saveBusy ? "Saving…" : "Save tax codes"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function taxInp(): React.CSSProperties {
+  return { border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12.5, background: "#fff", color: "var(--ink-1)", fontFamily: "inherit" };
+}
 
 const DIAG_NODE_W = 156;
 const DIAG_NODE_H = 54;
@@ -1693,14 +2385,30 @@ function ItemsBuilderModal({
     getBoardCols(runId, kind).then((r) => { if (r.cols) setCols(r.cols); });
   }, [runId, kind, configurable]);
   const fields = cols;
-  // Catch-up can be assigned to the onboarding team that's already on the run, or
-  // handed to a different team — the owner dropdown is filtered to the org chart.
-  const [catchupTeam, setCatchupTeam] = useState<"my" | "other">("my");
+  // Catch-up routes to the ALC team (Anju) by default — the user can switch
+  // to the onboarding team if they want to handle it in-house.
+  const [catchupTeam, setCatchupTeam] = useState<"my" | "other">(kind === "catchup" ? "other" : "my");
   const [catchupAm, setCatchupAm] = useState("");
   // Catch-up is optional — the team can declare there's no backlog and skip it.
   const [catchupNeeded, setCatchupNeeded] = useState(existing.length > 0);
   const ownerPool = (catchupTeam === "my" && assignedTeam.length ? assignedTeam : people);
-  const amPool = people.filter((p) => p.role === "am" || /account manager/i.test(p.role));
+  const baseAmPool = people.filter((p) => p.role === "am" || /account manager/i.test(p.role));
+  const [alcSuggested, setAlcSuggested] = useState<{ id: string; name: string } | null>(null);
+  useEffect(() => {
+    if (kind !== "catchup") return;
+    suggestCatchupAssignee().then((r) => {
+      const pick = r.suggested ?? r.head ?? null;
+      if (pick) {
+        setAlcSuggested(pick);
+        setCatchupAm((cur) => cur || pick.id);
+      }
+    });
+  }, [kind]);
+  const amPool = (() => {
+    if (!alcSuggested) return baseAmPool;
+    const exists = baseAmPool.some((p) => p.id === alcSuggested.id);
+    return exists ? baseAmPool : [{ id: alcSuggested.id, name: `${alcSuggested.name} (ALC team)`, role: "am" }, ...baseAmPool];
+  })();
   const blankRow = () => kind === "project" ? { task: "", cadence: "monthly", when: "" } : Object.fromEntries(fields.map((f) => [f.k, ""]));
   const [rows, setRows] = useState<Record<string, string>[]>(existing.length ? existing.map((e) => e.data as Record<string, string>) : [blankRow()]);
   const [saving, start] = useTransition();
@@ -1709,23 +2417,36 @@ function ItemsBuilderModal({
   const [pBrief, setPBrief] = useState(""); // project AI: plain-language task list
   // Link SOPs / templates to internal projects & tasks.
   const [sopList, setSopList] = useState<{ id: string; title: string; flow: string | null; category: string | null }[]>([]);
+  const [tplList, setTplList] = useState<{ id: string; name: string }[]>([]);
   const [linkedSopIds, setLinkedSopIds] = useState<string[]>(linkedSops.map((s) => s.id));
-  useEffect(() => { if (kind === "project") listSops().then((r) => setSopList(r.sops)); }, [kind]);
+  useEffect(() => { if (kind === "project") { listSops().then((r) => setSopList(r.sops)); listTemplatesLite().then((r) => setTplList(r.templates)); } }, [kind]);
 
   const setCell = (i: number, k: string, v: string) => setRows((r) => r.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
   const addRow = () => setRows((r) => [...r, blankRow()]);
   const del = (i: number) => setRows((r) => r.filter((_, j) => j !== i));
 
-  const aiCompliance = async () => { setAiBusy(true); setInfo(null); const r = await generateCompliance(runId); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type }))); };
+  const aiCompliance = async () => {
+    setAiBusy(true); setInfo(null);
+    const r = await generateCompliance(runId);
+    setAiBusy(false);
+    if (r.error) setInfo(r.error);
+    else if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type, reminderDays: String(i.reminderDays ?? 30) })));
+  };
   const aiComplianceDocs = async () => {
     setAiBusy(true); setInfo(null);
     const r = await generateComplianceFromDocs(runId);
     setAiBusy(false);
     if (r.error) { setInfo(r.error); return; }
     if (r.empty) { setInfo(r.scanned ? "Read the uploaded documents but found no expiry/renewal dates in them." : "No documents in the folder yet — the calendar is built from your documents' expiry dates. Ask the client to upload documents first."); return; }
-    if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type })));
+    if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type, reminderDays: String(i.reminderDays ?? 30) })));
   };
   const aiRecurring = async () => { setAiBusy(true); setInfo(null); const r = await generateRecurringTasks(runId, pBrief); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ task: i.task, cadence: CADENCES.includes(i.cadence) ? i.cadence : "monthly", when: i.when }))); };
+  // Spin a tracked compliance item into a lightweight renewal run (one task, no config) in My Work.
+  const makeRenewal = (row: Record<string, string>) => start(async () => {
+    setInfo(null);
+    const r = await createComplianceRenewalRun(runId, { label: row.label, type: row.type, date: row.date });
+    setInfo(r.error ? r.error : `Renewal task created in My Work for the assigned AM${row.date ? ` (due ${row.date})` : ""}.`);
+  });
 
   const saveItems = (after?: "email") => start(async () => {
     // No catch-up needed → save an empty board and complete the step (go straight to go-live).
@@ -1782,8 +2503,8 @@ function ItemsBuilderModal({
             <div style={{ background: "var(--bg-soft)", borderRadius: 8, padding: 12, marginBottom: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Who runs the catch-up?</div>
               <div className="radio-row">
-                <label className={"radio" + (catchupTeam === "my" ? " selected" : "")}><input type="radio" checked={catchupTeam === "my"} onChange={() => setCatchupTeam("my")} /><div><div className="r-ttl">Same onboarding team</div><div className="r-desc">The team already assigned to this run.</div></div></label>
-                <label className={"radio" + (catchupTeam === "other" ? " selected" : "")}><input type="radio" checked={catchupTeam === "other"} onChange={() => setCatchupTeam("other")} /><div><div className="r-ttl">A different catch-up team</div><div className="r-desc">Creates a separate catch-up run for that team&apos;s AM to configure & assign.</div></div></label>
+                <label className={"radio" + (catchupTeam === "other" ? " selected" : "")}><input type="radio" checked={catchupTeam === "other"} onChange={() => setCatchupTeam("other")} /><div><div className="r-ttl">ALC catch-up team{alcSuggested ? ` (${alcSuggested.name})` : ""}</div><div className="r-desc">Creates a parallel catch-up run for the ALC team — Anju by default. They configure and assign.</div></div></label>
+                <label className={"radio" + (catchupTeam === "my" ? " selected" : "")}><input type="radio" checked={catchupTeam === "my"} onChange={() => setCatchupTeam("my")} /><div><div className="r-ttl">In-house — same onboarding team</div><div className="r-desc">The Senior/Junior already on this run handle it. No parallel run.</div></div></label>
               </div>
               {catchupTeam === "other" && (
                 <div style={{ marginTop: 10 }}>
@@ -1847,7 +2568,7 @@ function ItemsBuilderModal({
           {!(kind === "catchup" && !catchupNeeded) && (<>
           {kind === "project" ? (
             <table className="runs-table" style={{ border: "1px solid var(--border)", borderRadius: 8 }}>
-              <thead><tr><th style={{ minWidth: 200 }}>Task</th><th>Cadence</th><th>When</th><th></th></tr></thead>
+              <thead><tr><th style={{ minWidth: 180 }}>Task</th><th>Cadence</th><th>When</th><th>SOP</th><th>Template</th><th></th></tr></thead>
               <tbody>
                 {rows.map((row, i) => {
                   const cad = row.cadence || "monthly";
@@ -1875,6 +2596,18 @@ function ItemsBuilderModal({
                           </select>
                         )}
                       </td>
+                      <td>
+                        <select value={row.sop ?? ""} onChange={(e) => setCell(i, "sop", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12, maxWidth: 150 }}>
+                          <option value="">— SOP —</option>
+                          {sopList.map((s) => <option key={s.id} value={s.title}>{s.title}</option>)}
+                        </select>
+                      </td>
+                      <td>
+                        <select value={row.template ?? ""} onChange={(e) => setCell(i, "template", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12, maxWidth: 150 }}>
+                          <option value="">— Template —</option>
+                          {tplList.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                        </select>
+                      </td>
                       <td><button className="icon-btn" onClick={() => del(i)} style={{ color: "var(--red)" }}><Icon name="trash-2" size={13} /></button></td>
                     </tr>
                   );
@@ -1883,7 +2616,7 @@ function ItemsBuilderModal({
             </table>
           ) : (
           <table className="runs-table" style={{ border: "1px solid var(--border)", borderRadius: 8 }}>
-            <thead><tr>{fields.map((f) => <th key={f.k}>{f.l}</th>)}<th></th></tr></thead>
+            <thead><tr>{fields.map((f) => <th key={f.k}>{f.l}</th>)}{kind === "compliance" && <th title="Days before the due date that an AM heads-up is fired">Reminder (days)</th>}<th></th></tr></thead>
             <tbody>
               {rows.map((row, i) => (
                 <tr key={i}>
@@ -1904,12 +2637,21 @@ function ItemsBuilderModal({
                       )}
                     </td>
                   ))}
-                  <td><button className="icon-btn" onClick={() => del(i)} style={{ color: "var(--red)" }}><Icon name="trash-2" size={13} /></button></td>
+                  {kind === "compliance" && (
+                    <td><input type="number" min={1} value={row.reminderDays ?? "30"} onChange={(e) => setCell(i, "reminderDays", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, width: 80 }} /></td>
+                  )}
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {kind === "compliance" && (row.label || row.type) && (
+                      <button className="icon-btn" title="Create a renewal task in My Work for this item" disabled={saving} onClick={() => makeRenewal(row)} style={{ color: "var(--orange)" }}><Icon name="calendar-plus" size={14} /></button>
+                    )}
+                    <button className="icon-btn" onClick={() => del(i)} style={{ color: "var(--red)" }}><Icon name="trash-2" size={13} /></button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
           )}
+          {kind === "compliance" && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 6 }}><Icon name="calendar-plus" size={12} /> The calendar icon on a row creates a renewal task in the AM&apos;s My Work — no step setup needed. Items also auto-create a task when their due date arrives.</div>}
           <button className="add-link" onClick={addRow} style={{ marginTop: 8 }}><Icon name="plus" size={12} /> Add row</button>
           </>)}
           {info && <div style={{ fontSize: 12.5, color: "var(--amber)", marginTop: 8 }}>{info}</div>}
@@ -1927,28 +2669,86 @@ function ItemsBuilderModal({
 function TriageModal({
   runId, stepId, people, onClose, onDone,
 }: { runId: string; stepId: string; people: { id: string; name: string }[]; onClose: () => void; onDone: () => void }) {
-  const [rows, setRows] = useState<{ item: string; memberId: string; severity: string }[]>([{ item: "", memberId: "", severity: "High" }]);
+  // Tax items default to the Tax Head (Gautam Sanoj). Per-row "Auto-assign by
+  // load" picks the least-loaded member of his subtree using the capacity logic.
+  const [taxHead, setTaxHead] = useState<{ id: string; name: string } | null>(null);
+  const [rows, setRows] = useState<{ item: string; memberId: string; severity: string; isTax: boolean }[]>([{ item: "", memberId: "", severity: "High", isTax: true }]);
   const [saving, start] = useTransition();
-  const set = (i: number, k: string, v: string) => setRows((r) => r.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
+  const [assigning, setAssigning] = useState<number | null>(null);
+
+  useEffect(() => {
+    suggestTaxAssignee().then((r) => {
+      if (r.head) {
+        setTaxHead(r.head);
+        // Pre-fill the Tax Head into all tax-flagged rows that aren't already set.
+        setRows((rs) => rs.map((x) => (x.isTax && !x.memberId ? { ...x, memberId: r.head!.id } : x)));
+      }
+    });
+  }, []);
+
+  const set = (i: number, k: string, v: string | boolean) => setRows((r) => r.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
+
+  // Make sure the Tax Head shows up in the dropdown even if he's not in `people`.
+  const dropdownPeople = (() => {
+    if (!taxHead) return people;
+    if (people.some((p) => p.id === taxHead.id)) return people;
+    return [{ id: taxHead.id, name: `${taxHead.name} (Tax Head)` }, ...people];
+  })();
+
+  const autoAssignRow = (i: number) => {
+    setAssigning(i);
+    suggestTaxAssignee().then((r) => {
+      setAssigning(null);
+      if (r.suggested) {
+        set(i, "memberId", r.suggested.id);
+        // Also add into the dropdown list if not present.
+        if (!dropdownPeople.some((p) => p.id === r.suggested!.id)) {
+          // No-op for state — render adds dynamically below.
+        }
+      }
+    });
+  };
+
   return (
     <div className="modal-overlay open" onClick={onClose}>
-      <div className="modal" style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
-        <div className="hd"><h3>Urgent compliance triage</h3><div className="sub">Flag penalty-risk items (CT / VAT / WPS / AML) and route each to an Account Manager. A fast-track run is created for that AM to configure and assign the owner.</div></div>
+      <div className="modal" style={{ width: 760, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd">
+          <h3>Urgent compliance triage</h3>
+          <div className="sub">Flag penalty-risk items (CT / VAT / WPS / AML) and route each to an owner. Tax items default to <strong>{taxHead?.name ?? "the Tax Head"}</strong> — he can click <em>Auto-assign by load</em> to push it to the lowest-load member of his team.</div>
+        </div>
         <div className="bd">
-          {rows.map((row, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-              <input placeholder="Risk item (e.g. CT registration overdue)" value={row.item} onChange={(e) => set(i, "item", e.target.value)} style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", fontSize: 13 }} />
-              <select value={row.severity} onChange={(e) => set(i, "severity", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 8px" }}>{["High", "Medium", "Low"].map((s) => <option key={s}>{s}</option>)}</select>
-              <select value={row.memberId} onChange={(e) => set(i, "memberId", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 8px", maxWidth: 170 }}><option value="">To which AM…</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-            </div>
-          ))}
-          <button className="add-link" onClick={() => setRows((r) => [...r, { item: "", memberId: "", severity: "High" }])}><Icon name="plus" size={12} /> Add item</button>
-          <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 10, display: "flex", gap: 6, alignItems: "flex-start" }}><Icon name="info" size={13} /> Each item creates a new run for the chosen AM. The run&apos;s steps start from a fast-track template the AM then configures for the specific item.</div>
+          {rows.map((row, i) => {
+            const namedAssignee = dropdownPeople.find((p) => p.id === row.memberId)?.name;
+            const showFallback = row.memberId && !namedAssignee;  // when auto-assign sets to someone not in `people`
+            return (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 110px 200px auto", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                <input placeholder="Risk item (e.g. CT registration overdue)" value={row.item} onChange={(e) => set(i, "item", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", fontSize: 13 }} />
+                <select value={row.severity} onChange={(e) => set(i, "severity", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 8px", fontSize: 13 }}>{["High", "Medium", "Low"].map((s) => <option key={s}>{s}</option>)}</select>
+                <select value={row.memberId} onChange={(e) => set(i, "memberId", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 8px", fontSize: 13 }}>
+                  <option value="">Assign to…</option>
+                  {dropdownPeople.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {showFallback && <option value={row.memberId}>{row.memberId} (auto-assigned)</option>}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => autoAssignRow(i)}
+                  disabled={assigning === i || saving}
+                  title="Pick the least-loaded tax-team member"
+                  className="btn-ghost"
+                  style={{ fontSize: 11.5, padding: "5px 8px", whiteSpace: "nowrap" }}
+                >
+                  <Icon name="zap" size={11} /> {assigning === i ? "…" : "Auto-assign"}
+                </button>
+              </div>
+            );
+          })}
+          <button className="add-link" onClick={() => setRows((r) => [...r, { item: "", memberId: taxHead?.id ?? "", severity: "High", isTax: true }])}><Icon name="plus" size={12} /> Add item</button>
+          <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 10, display: "flex", gap: 6, alignItems: "flex-start" }}><Icon name="info" size={13} /> Each item creates a new run for the assigned owner. <em>Auto-assign by load</em> uses the tax-team capacity ceiling from Settings.</div>
         </div>
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn-ghost" disabled={saving} onClick={() => start(async () => { await escalateUrgentCompliance(runId, stepId, []); onDone(); })}>No urgent items</button>
-          <button className="btn-primary" disabled={saving} onClick={() => start(async () => { const items = rows.filter((r) => r.item.trim() && r.memberId).map((r) => ({ item: r.item.trim(), amId: r.memberId, amName: people.find((p) => p.id === r.memberId)?.name ?? "", severity: r.severity })); const res = await escalateUrgentCompliance(runId, stepId, items); if (!res.error) onDone(); })}>{saving ? "Creating run(s)…" : "Create run(s) for AM"}</button>
+          <button className="btn-primary" disabled={saving} onClick={() => start(async () => { const items = rows.filter((r) => r.item.trim() && r.memberId).map((r) => ({ item: r.item.trim(), amId: r.memberId, amName: dropdownPeople.find((p) => p.id === r.memberId)?.name ?? (taxHead?.id === r.memberId ? taxHead.name : ""), severity: r.severity })); const res = await escalateUrgentCompliance(runId, stepId, items); if (!res.error) onDone(); })}>{saving ? "Creating run(s)…" : "Create run(s) for owner"}</button>
         </div>
       </div>
     </div>
@@ -1964,22 +2764,108 @@ const DECK_PHASES = [
 ];
 const DECK_DOCS = ["Trade licence", "MOA & AOA", "Owner passports & Emirates IDs", "CT registration", "VAT certificate (if any)", "Prior financial statements", "Bank statements", "Commercial contracts"];
 
+const DECK_STATS = [
+  { v: "7000+", l: "Happy Founders" },
+  { v: "4.9", l: "Trustpilot Rating" },
+  { v: "136+", l: "Smart Solutions Team" },
+  { v: "9.4", l: "NPS Score" },
+];
+const DECK_FOUNDER_QUOTE = `"From starting our own businesses in the past, we know that running the back-office was a major distraction; and working with technically challenged accountants was no fun at all. Of all industries out there, accounting was one of the few that had yet to be modernised. We are not just an accounting firm — we want to completely change the way that business owners think about their finances."`;
+const DECK_FOUNDER_NAME = "Muhammed Shafeekh · Founder & CEO, Finanshels";
+const DECK_VALUES = [
+  { n: "01", t: "Personalised Service", d: "Tailoring solutions to your specific business needs." },
+  { n: "02", t: "Transparency & Compliance", d: "We ensure all regulations are met and provide clear communication." },
+  { n: "03", t: "End-to-End Support", d: "From planning to execution, continuous support for your success." },
+];
+const DECK_SERVICES = [
+  { t: "Accounting & Analytics", d: "Efficient financial management and insightful analytics to support business growth." },
+  { t: "Audit", d: "Ensure financial accuracy and compliance with expert audit services." },
+  { t: "VAT Registration & Filing", d: "Timely VAT filing and registration with the Federal Tax Authority." },
+  { t: "Corporate Tax Registration & Filing", d: "Ensure your business is registered and CT filed accurately to avoid penalties." },
+  { t: "AML", d: "Comprehensive services ensuring compliance with all relevant laws and regulations." },
+  { t: "Liquidation", d: "Close your business with confidence — expert liquidation services for DDA compliance." },
+  { t: "Fractional CFO", d: "Access to experienced CFOs without the full-time commitment." },
+  { t: "Outsourced Finance Operations", d: "Tailored financial strategies and operations management to optimise efficiency." },
+];
+const DECK_TESTIMONIALS = [
+  { q: "Fast, friendly, and very professional. I love how communicative they were handling our Corporate tax registration.", n: "Abdulla Al-Ogail", r: "Co-founder & CEO · OLYMON" },
+  { q: "I've worked with Finanshels in auditing our financial statements & submitting the corporate tax return. Very professional and on the agreed timeline.", n: "Maged Yousry", r: "Manager · Estaie Tech" },
+  { q: "Always very responsive, supportive, with a business mindset and open to feedback. Very happy I took the decision to work with them.", n: "Szilvia Vitos", r: "Founder · LIVVITY" },
+  { q: "They designed an accounting system tailor-made to our needs & completely automated our finance operations just like they promised.", n: "Jeremy Khatar", r: "CEO · Ronin Global LLC, USA" },
+];
+
 function deckSlide(d: DeckData, idx: number): React.ReactNode {
   const wu = d.whatWeUnderstood;
+  // New slide order (15 slides): 0 Cover · 1 Our Story · 2 Mission · 3 Services ·
+  // 4 Roadmap · 5 What We Understood · 6 Compliance · 7 Software · 8 Data ·
+  // 9 Connected · 10 Scope · 11 Terms · 12 Next Steps · 13 Testimonials · 14 Thanks
   switch (idx) {
     case 0:
       return (
         <div className="fsdeck-slide fsdeck-cover">
           <div className="fsdeck-cover-glow" />
           <div className="fsdeck-cover-body">
-            <div className="fsdeck-eyebrow orange">Welcome to Finanshels</div>
+            <div className="fsdeck-eyebrow orange">Trusted by 7,000+ SMEs · Welcome to Finanshels</div>
             <h1 className="fsdeck-cover-title">Welcome,<br /><span className="o">{d.clientName}</span></h1>
-            <div className="fsdeck-cover-mission">{d.mission}</div>
+            <div className="fsdeck-cover-mission">Welcome to Finanshels, {d.clientName}! We&apos;re excited to streamline your accounting and tax processes, ensuring compliance and efficiency.</div>
           </div>
           <div className="fsdeck-cover-foot">Finanshels Onboarding · Your partner in financial growth</div>
         </div>
       );
     case 1:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Trusted by 7,000+ SMEs</div><h2 className="fsdeck-h2">Our Story</h2></div></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 24, alignItems: "stretch" }}>
+            <div style={{ background: "var(--fsd-cream, #FFF7E9)", border: "1px solid var(--fsd-line, #ECE3D2)", borderRadius: 14, padding: 22, fontSize: 14, lineHeight: 1.6, color: "var(--fsd-ink, #1B2733)" }}>
+              <div style={{ fontSize: 32, color: "var(--fsd-orange, #F97316)", lineHeight: 0.9, marginBottom: 4 }}>“</div>
+              <div style={{ fontStyle: "italic" }}>{DECK_FOUNDER_QUOTE.replace(/^"|"$/g, "")}</div>
+              <div style={{ fontWeight: 700, marginTop: 14, color: "var(--fsd-navy, #082032)" }}>— {DECK_FOUNDER_NAME}</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateRows: "repeat(4, 1fr)", gap: 10 }}>
+              {DECK_STATS.map((s) => (
+                <div key={s.l} style={{ background: "#fff", border: "1px solid var(--fsd-line, #ECE3D2)", borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ fontSize: 11.5, color: "var(--fsd-ink-2, #51606E)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>{s.l}</div>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: "var(--fsd-orange, #F97316)" }}>{s.v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    case 2:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Trusted by 7,000+ SMEs</div><h2 className="fsdeck-h2">Our Mission &amp; Values</h2></div></div>
+          <div style={{ fontSize: 14, color: "var(--fsd-ink-2, #51606E)", lineHeight: 1.6, marginBottom: 18 }}>
+            We&apos;re on a mission to simplify financial life for SMEs through a technology-first approach — giving founders the tools they need to manage finance seamlessly and stay on top of every regulation.
+          </div>
+          <div className="fsdeck-grid3">
+            {DECK_VALUES.map((v) => (
+              <div key={v.n} className="fsdeck-phase" style={{ background: "#fff" }}>
+                <div className="fsdeck-phase-n">{v.n}</div>
+                <div className="fsdeck-phase-t">{v.t}</div>
+                <div className="fsdeck-phase-d">{v.d}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    case 3:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Trusted by 7,000+ SMEs</div><h2 className="fsdeck-h2">Services That Grow With You</h2><div className="fsdeck-sub">Everything we offer to help you navigate accounting, tax and compliance.</div></div></div>
+          <div className="fsdeck-grid2" style={{ gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+            {DECK_SERVICES.map((s) => (
+              <div key={s.t} className="fsdeck-card" style={{ padding: 14 }}>
+                <div className="fsdeck-card-label" style={{ fontSize: 13, fontWeight: 700 }}>{s.t}</div>
+                <div className="fsdeck-card-val" style={{ fontSize: 11.5, marginTop: 6, lineHeight: 1.4, color: "var(--fsd-ink-2, #51606E)" }}>{s.d}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    case 4:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Roadmap</div><h2 className="fsdeck-h2">Your Onboarding Roadmap</h2></div></div>
@@ -1988,7 +2874,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           ))}</div>
         </div>
       );
-    case 2:
+    case 5:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 1 · Discovery</div><h2 className="fsdeck-h2">What We Understood</h2><div className="fsdeck-sub">Please confirm this is right.</div></div></div>
@@ -2000,7 +2886,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 3:
+    case 6:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 2</div><h2 className="fsdeck-h2">Ensuring Compliance</h2></div></div>
@@ -2011,7 +2897,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 4:
+    case 7:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 3</div><h2 className="fsdeck-h2">Accounting Software</h2></div></div>
@@ -2025,7 +2911,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 5:
+    case 8:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 4</div><h2 className="fsdeck-h2">Secure Data Management</h2></div></div>
@@ -2035,7 +2921,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
           {(d.receivedDocs ?? []).length > 0 && (
             <div style={{ marginTop: 14, background: "rgba(34,197,94,0.08)", border: "1px solid #BBE7C6", borderRadius: 10, padding: "10px 14px" }}>
-              <div className="fsdeck-softcol-h" style={{ color: "#15803D" }}>Already received{" "}<span style={{ fontWeight: 400, color: "var(--fsd-ink-2, #51606E)" }}>— no need to resend</span></div>
+              <div className="fsdeck-softcol-h" style={{ color: "#15803D" }}>Documents attached by our Sales team as of now{" "}<span style={{ fontWeight: 400, color: "var(--fsd-ink-2, #51606E)" }}>— already received, no need to resend</span></div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
                 {(d.receivedDocs ?? []).map((x, i) => <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12.5, background: "#fff", border: "1px solid #BBE7C6", borderRadius: 999, padding: "4px 10px", color: "#15803D" }}><Icon name="check" size={12} /> {x}</span>)}
               </div>
@@ -2043,7 +2929,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           )}
         </div>
       );
-    case 6:
+    case 9:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Phase 5</div><h2 className="fsdeck-h2">How We Stay Connected</h2></div></div>
@@ -2054,7 +2940,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 7:
+    case 10:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Engagement</div><h2 className="fsdeck-h2">Scope of Work</h2></div></div>
@@ -2065,7 +2951,16 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
               <div>
                 <div className="fsdeck-softcol-h" style={{ color: "#15803D" }}>Included in scope</div>
                 {(d.contract.highlights ?? []).length > 0
-                  ? <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>{(d.contract.highlights ?? []).map((h, i) => <li key={i} style={{ fontSize: 14, color: "var(--fsd-ink)", lineHeight: 1.7 }}>{h}</li>)}</ul>
+                  ? <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>{(d.contract.highlights ?? []).map((h, i) => (
+                      <li key={i} style={{ fontSize: 14, color: "var(--fsd-ink)", lineHeight: 1.7 }}>
+                        {h}
+                        {d.contract.inclusionsShared?.[i] && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 700, color: "#15803D", background: "rgba(34,197,94,0.12)", border: "1px solid #BBE7C6", borderRadius: 999, padding: "1px 8px", verticalAlign: "middle" }}>
+                            <Icon name="check" size={11} /> Shared by sales
+                          </span>
+                        )}
+                      </li>
+                    ))}</ul>
                   : <p style={{ fontSize: 14, color: "var(--fsd-ink-2, #51606E)", marginTop: 8 }}>As described in the engagement.</p>}
               </div>
               <div>
@@ -2078,7 +2973,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 8:
+    case 11:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Engagement</div><h2 className="fsdeck-h2">Engagement Terms</h2></div></div>
@@ -2090,7 +2985,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
               </div>
               <div className="fsdeck-softcard" style={{ background: "var(--fsd-navy, #082032)", color: "#fff", borderRadius: 12, padding: 18 }}>
                 <div className="fsdeck-softcol-h" style={{ color: "var(--fsd-orange, #F97316)" }}>Engagement period</div>
-                <p style={{ fontSize: 15, lineHeight: 1.55, marginTop: 8 }}>{d.contract.duration || "Not specified"}</p>
+                <p style={{ fontSize: 15, lineHeight: 1.55, marginTop: 8 }}>{deckDurationText(d.contract.duration)}</p>
               </div>
             </div>
             <div style={{ border: "1px solid var(--fsd-line, #ECE3D2)", borderRadius: 12, padding: 18, marginTop: 16 }}>
@@ -2100,13 +2995,31 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
           </div>
         </div>
       );
-    case 9:
+    case 12:
       return (
         <div className="fsdeck-slide fsdeck-content">
           <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Next</div><h2 className="fsdeck-h2">Immediate Next Steps</h2></div></div>
           <div className="fsdeck-steps">{(d.nextSteps ?? []).map((s, i) => (
             <div key={i} className="fsdeck-step"><div className="fsdeck-step-n">{i + 1}</div><div className="fsdeck-step-ic">{s.icon}</div><div><div className="fsdeck-step-t">{s.title}</div><div className="fsdeck-step-d">{s.desc}</div></div></div>
           ))}</div>
+        </div>
+      );
+    case 13:
+      return (
+        <div className="fsdeck-slide fsdeck-content">
+          <div className="fsdeck-slidehead"><div><div className="fsdeck-phasepill">Trusted by 7,000+ SMEs</div><h2 className="fsdeck-h2">Why Founders Choose Us</h2><div className="fsdeck-sub">A diverse range of clients, built on trust and tailored, top-tier service.</div></div></div>
+          <div className="fsdeck-grid2" style={{ gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+            {DECK_TESTIMONIALS.map((t, i) => (
+              <div key={i} style={{ background: "#fff", border: "1px solid var(--fsd-line, #ECE3D2)", borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 22, lineHeight: 0.9, color: "var(--fsd-orange, #F97316)" }}>“</div>
+                <div style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--fsd-ink, #1B2733)", fontStyle: "italic", flex: 1 }}>{t.q}</div>
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--fsd-navy, #082032)" }}>{t.n}</div>
+                  <div style={{ fontSize: 11, color: "var(--fsd-ink-2, #51606E)" }}>{t.r}</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       );
     default:
@@ -2124,7 +3037,7 @@ function deckSlide(d: DeckData, idx: number): React.ReactNode {
   }
 }
 
-const DECK_TITLES = ["Welcome", "Roadmap", "What We Understood", "Compliance", "Software", "Data", "Communication", "Scope", "Terms", "Next Steps", "Thank You"];
+const DECK_TITLES = ["Welcome", "Our Story", "Mission & Values", "Services", "Roadmap", "What We Understood", "Compliance", "Software", "Data", "Communication", "Scope", "Terms", "Next Steps", "Why Founders Choose Us", "Thank You"];
 
 // Load pptxgenjs from CDN (no npm dep) to export the deck as a real .pptx.
 let pptxPromise: Promise<unknown> | null = null;
@@ -2145,8 +3058,319 @@ function loadPptxgen(): Promise<unknown> {
 
 const PPTX = { navy: "082032", orange: "F97316", cream: "FFF7E9", white: "FFFFFF", ink: "1B2733", ink2: "51606E", line: "ECE3D2" };
 
+// Engagement duration shown on the deck. If the contract gives no period, default to
+// "From <current month year> onwards" (e.g. recurring monthly/quarterly/annual service has
+// no end date — it runs from the start month onward).
+function deckDurationText(duration?: string): string {
+  const d = (duration ?? "").trim();
+  if (d) return d;
+  const monthYear = new Date().toLocaleString("en-GB", { month: "long", year: "numeric" });
+  return `From ${monthYear} onwards`;
+}
+
+// =========================================================================
+// PDF TEMPLATE PREVIEW — the on-screen deck IS the WELCOME PDF (the same
+// design as the downloadable PPTX template). Loaded via pdf.js, rendered to
+// a canvas per page, with absolute-positioned HTML overlays that swap in the
+// client-specific fields (client name on the cover + slide 6) so the user
+// sees a personalised preview, not Novamed's sample data.
+// =========================================================================
 /* eslint-disable @typescript-eslint/no-explicit-any */
+type PdfDoc = { numPages: number; getPage: (n: number) => Promise<{ getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: any) => { promise: Promise<void> } }> };
+let pdfDocPromise: Promise<PdfDoc> | null = null;
+function loadDeckPdf(): Promise<PdfDoc> {
+  if (pdfDocPromise) return pdfDocPromise;
+  pdfDocPromise = (async () => {
+    const lib: any = await loadPdfjs();
+    const buf = await (await fetch("/onboarding-deck-template.pdf", { cache: "force-cache" })).arrayBuffer();
+    return (await lib.getDocument({ data: buf }).promise) as PdfDoc;
+  })();
+  return pdfDocPromise;
+}
+
+function PdfTemplateSlide({ pageIdx, deck }: { pageIdx: number; deck: DeckData }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [rendered, setRendered] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setRendered(false);
+      try {
+        const pdf = await loadDeckPdf();
+        if (cancelled) return;
+        const page = await pdf.getPage(pageIdx + 1);
+        if (cancelled) return;
+        // Render at 2× for crispness — CSS scales the 1200×675 stage down to fit.
+        const viewport = page.getViewport({ scale: 1200 / 1440 * 2 });
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.style.width = "1200px";
+        canvas.style.height = "675px";
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        if (!cancelled) setRendered(true);
+      } catch { /* ignore — overlay still shows */ }
+    })();
+    return () => { cancelled = true; };
+  }, [pageIdx]);
+
+  const clientName = (deck.clientName || "").trim();
+  // Cover (page 1) — paint over the Novamed title + the welcome subtitle so the
+  // preview shows the client's name instead of the template's sample data.
+  const isCover = pageIdx === 0;
+  // Slide 6 confirmation line "Please confirm the details of Novamed Rescue Medical."
+  const isConfirm = pageIdx === 5;
+  // Slide 9 (PHASE 4 — Secure Data Management) — bottom line listing the sales-shared docs.
+  const isDataMgmt = pageIdx === 8;
+  const cleanReceived = cleanDocLabels((deck.receivedDocs ?? []).filter(Boolean));
+  const receivedLine = cleanReceived.length
+    ? `Documents attached by our Sales team as of now (already received, no need to resend): ${cleanReceived.join(", ")}`
+    : "Documents attached by our Sales team as of now: none yet — please upload via the onboarding portal.";
+
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "#fff" }}>
+      <canvas ref={canvasRef} style={{ display: "block", width: "1200px", height: "675px" }} />
+      {!rendered && (
+        <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", color: "#51606E", fontSize: 14 }}>Loading slide…</div>
+      )}
+      {rendered && isCover && clientName && (
+        <>
+          {/* Navy client name on the WHITE cover background — matches the PDF template.
+              Covers the full 2-line Novamed title area so the underlying text is hidden. */}
+          <div style={{ position: "absolute", left: "5.2%", top: "33%", width: "80%", height: "22%", background: "#FFFFFF", color: "#082032", fontFamily: "'Trebuchet MS', Arial, sans-serif", fontWeight: 700, fontSize: 54, lineHeight: 1.05, letterSpacing: 0.5, display: "flex", alignItems: "flex-start", paddingTop: 4 }}>{clientName}</div>
+          {/* Welcome subtitle — covers the original "Welcome to Finanshels, Novamed…" paragraph. */}
+          <div style={{ position: "absolute", left: "5.2%", top: "62%", width: "85%", height: "16%", background: "#FFFFFF", color: "#082032", fontFamily: "'Trebuchet MS', Arial, sans-serif", fontSize: 20, lineHeight: 1.5, padding: "4px 0" }}>
+            Welcome to Finanshels, {clientName}! We&apos;re excited to streamline your accounting and tax processes, ensuring compliance and efficiency.
+          </div>
+        </>
+      )}
+      {rendered && isConfirm && clientName && (
+        <div style={{ position: "absolute", left: "5.2%", bottom: "10%", width: "85%", background: "#082032", color: "#FFFFFF", fontFamily: "'Trebuchet MS', Arial, sans-serif", fontSize: 15, lineHeight: 1.45, padding: "10px 14px", borderRadius: 6 }}>
+          The information available is limited due to the generic email domain. Please confirm the details of {clientName}.
+        </div>
+      )}
+      {rendered && isDataMgmt && (
+        <div style={{ position: "absolute", left: "5.2%", bottom: "10%", width: "85%", background: "#FFFFFF", color: "#F1660F", fontFamily: "'Trebuchet MS', Arial, sans-serif", fontSize: 15, lineHeight: 1.45, padding: "8px 0", fontStyle: "italic" }}>
+          {receivedLine}
+        </div>
+      )}
+    </div>
+  );
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+// Load JSZip from CDN — used to open the WELCOME PDF→PPTX template, substitute
+// client-specific text in the slide XML, and re-zip into a downloadable .pptx.
+/* eslint-disable @typescript-eslint/no-explicit-any */
+let jszipPromise: Promise<any> | null = null;
+function loadJszip(): Promise<any> {
+  const w = window as unknown as { JSZip?: any };
+  if (w.JSZip) return Promise.resolve(w.JSZip);
+  if (!jszipPromise) {
+    jszipPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+      s.onload = () => resolve((window as unknown as { JSZip: any }).JSZip);
+      s.onerror = () => reject(new Error("Could not load the PPTX writer (JSZip)."));
+      document.head.appendChild(s);
+    });
+  }
+  return jszipPromise;
+}
+
+const escapeXmlText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** PowerPoint splits text into many <a:t> "runs" by font/style — replacing a sentence
+ *  like "Novamed Rescue Medical Treatment Facilitation Services" requires finding the
+ *  consecutive runs whose non-whitespace words match the target words, then replacing
+ *  the FIRST matched run's text with the new value and clearing the others (keeping
+ *  their styling tags so the slide doesn't break). Trailing punctuation on the last
+ *  word (Services / Services! / Services. / Medical.) is preserved in-place. */
+function replaceConsecutiveRuns(xml: string, targetWords: string[], replacement: string): string {
+  const re = /<a:t[^>]*>([^<]*)<\/a:t>/g;
+  type Run = { full: string; inner: string; start: number; end: number };
+  const runs: Run[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    runs.push({ full: m[0], inner: m[1], start: m.index, end: m.index + m[0].length });
+  }
+  // Strip ASCII trailing punctuation (.!,?;:) so "Services!" matches target "Services".
+  const stripPunct = (s: string) => s.replace(/[.!,?;:]+$/, "");
+  for (let i = 0; i < runs.length; i++) {
+    const matchIdx: number[] = [];
+    let lastTrailing = "";
+    let ti = 0;
+    let j = i;
+    while (j < runs.length && ti < targetWords.length) {
+      const raw = runs[j].inner;
+      const trimmed = raw.trim();
+      const stripped = stripPunct(trimmed);
+      if (stripped === targetWords[ti]) {
+        matchIdx.push(j);
+        if (ti === targetWords.length - 1) {
+          // Preserve EVERYTHING after the matched word in the original (untrimmed)
+          // run text — punctuation AND any trailing whitespace. Without this we
+          // collapse "Services! We're" → "Gulf City!We're" (no space before next word).
+          const pos = raw.indexOf(stripped);
+          lastTrailing = pos >= 0 ? raw.slice(pos + stripped.length) : "";
+        }
+        ti++;
+      } else if (trimmed === "") {
+        // ignore whitespace runs between target words
+      } else {
+        break;
+      }
+      j++;
+    }
+    if (ti === targetWords.length && matchIdx.length > 0) {
+      const firstIdx = matchIdx[0];
+      const lastIdx = matchIdx[matchIdx.length - 1];
+      let out = xml.substring(0, runs[firstIdx].start);
+      // Empty EVERY run in [firstIdx, lastIdx] — matched words AND the whitespace
+      // runs between them — so we don't leave "Gulf City     !" trailing spaces.
+      // Only firstIdx keeps text (the replacement); lastIdx keeps any trailing
+      // punctuation that was on the final target word ("Services!"/"Medical.").
+      for (let k = firstIdx; k <= lastIdx; k++) {
+        const r = runs[k];
+        if (k === firstIdx) {
+          out += r.full.replace(/(<a:t[^>]*>)[^<]*(<\/a:t>)/, `$1${escapeXmlText(replacement)}$2`);
+        } else if (k === lastIdx && lastTrailing) {
+          // lastTrailing came from the already-encoded XML body — don't double-escape.
+          out += r.full.replace(/(<a:t[^>]*>)[^<]*(<\/a:t>)/, `$1${lastTrailing}$2`);
+        } else {
+          out += r.full.replace(/(<a:t[^>]*>)[^<]*(<\/a:t>)/, `$1$2`);
+        }
+        if (k < lastIdx) out += xml.substring(r.end, runs[k + 1].start);
+      }
+      out += xml.substring(runs[lastIdx].end);
+      // Recurse to handle multiple occurrences within the same XML (e.g. cover title + body)
+      return replaceConsecutiveRuns(out, targetWords, replacement);
+    }
+  }
+  return xml;
+}
+
+/** Tokenise a phrase into words for the run-based replacer. */
+function phraseToWords(phrase: string): string[] {
+  return phrase.trim().split(/\s+/).filter(Boolean);
+}
+
+/** Replace a whole PARAGRAPH (single `<a:p>`) whose concatenated plain text contains
+ *  the anchor phrase: first `<a:t>` run gets the new text, the rest are emptied. Keeps
+ *  the rest of the paragraph (style, indentation, layout) untouched. */
+function replaceParagraphByAnchor(xml: string, anchor: string, newText: string): string {
+  return xml.replace(/<a:p\b[\s\S]*?<\/a:p>/g, (para) => {
+    const runs = [...para.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)].map((r) => r[1]);
+    const plain = runs.join("").replace(/\s+/g, " ").trim();
+    if (!plain.includes(anchor)) return para;
+    let first = true;
+    return para.replace(/(<a:t[^>]*>)[^<]*(<\/a:t>)/g, (_, open, close) => {
+      if (first) { first = false; return `${open}${escapeXmlText(newText)}${close}`; }
+      return `${open}${close}`;
+    });
+  });
+}
+
+/** Replace a whole SHAPE (single `<p:sp>`) whose concatenated plain text contains
+ *  the anchor phrase. Use when the field spans multiple paragraphs inside one shape
+ *  (e.g. the payment block: "One-Time Total… Recurring Total… VAT (5%)… Estimated…"). */
+function replaceShapeByAnchor(xml: string, anchor: string, newText: string): string {
+  return xml.replace(/<p:sp\b[\s\S]*?<\/p:sp>/g, (shape) => {
+    const runs = [...shape.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)].map((r) => r[1]);
+    const plain = runs.join("").replace(/\s+/g, " ").trim();
+    if (!plain.includes(anchor)) return shape;
+    let first = true;
+    return shape.replace(/(<a:t[^>]*>)[^<]*(<\/a:t>)/g, (_, open, close) => {
+      if (first) { first = false; return `${open}${escapeXmlText(newText)}${close}`; }
+      return `${open}${close}`;
+    });
+  });
+}
+
+/** Download the polished PPTX by substituting client-specific text into the WELCOME
+ *  TO FINANSHELS template stored at /onboarding-deck-template.pptx. Visual design,
+ *  fonts, colours and shapes are preserved exactly — only text values change. */
 async function downloadDeckPptx(deck: DeckData) {
+  const JSZip = await loadJszip();
+  const res = await fetch("/onboarding-deck-template.pptx", { cache: "no-store" });
+  if (!res.ok) throw new Error(`Couldn't load the deck template (${res.status}).`);
+  const buf = await res.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+
+  // The template carries Novamed-Rescue-Medical sample data. We swap the client name
+  // on every slide where it appears. Scope / payment / duration paragraphs stay as
+  // the template defaults — the team edits those in PowerPoint after download if
+  // they need per-client tweaks (a single Find & Replace inside PowerPoint).
+  // Order matters — longer phrases first so the slide-6 "Novamed Rescue Medical." line
+  // doesn't grab "Novamed Rescue Medical" out of the cover sentence before the full
+  // phrase is matched. Trailing punctuation (!/. /etc.) is preserved by the replacer.
+  const TEMPLATE_CLIENT_PHRASES = [
+    ["Novamed", "Rescue", "Medical", "Treatment", "Facilitation", "Services"],
+    ["Novamed", "Rescue", "Medical"],
+  ];
+
+  const scope = deck.contract?.scope?.trim() || "";
+  const payment = deck.contract?.payment?.trim() || "";
+  const duration = (deck.contract?.duration?.trim() || deckDurationText()).trim();
+  // Slide 9 — replace the "Documents attached by our Sales team…" line with the
+  // client's actual received docs (status=uploaded), cleaned to TYPE names
+  // ("VAT Certificate" / "Trade Licence") rather than raw filenames.
+  const receivedDocs = cleanDocLabels((deck.receivedDocs ?? []).filter(Boolean));
+  const receivedDocsLine = receivedDocs.length
+    ? `Documents attached by our Sales team as of now (already received, no need to resend): ${receivedDocs.join(", ")}`
+    : "Documents attached by our Sales team as of now: none yet — please upload via the onboarding portal.";
+
+  const slides = Object.keys(zip.files).filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p));
+  for (const path of slides) {
+    let xml = await zip.file(path).async("string");
+    if (deck.clientName?.trim()) {
+      for (const phrase of TEMPLATE_CLIENT_PHRASES) {
+        xml = replaceConsecutiveRuns(xml, phrase, deck.clientName.trim());
+      }
+    }
+    // Slide 11 — replace the SCOPE sentence paragraph (anchor "This contract" only
+    // appears in that paragraph in the template). Paragraph-level, not shape-level,
+    // because the shape also carries the "Scope of Work" title and "WHAT WE'LL DO"
+    // label paragraphs that must stay intact.
+    if (/slide11\.xml$/.test(path) && scope) {
+      xml = replaceParagraphByAnchor(xml, "This contract", scope);
+    }
+    // Slide 12 — payment block spans 4 paragraphs inside ONE shape (One-Time Total,
+    // Recurring Total, VAT, Estimated Initial Total, "All payments are…"). Anchor
+    // on "AED" (the price block is the only place AED appears in the template),
+    // shape-level so all 4 paragraphs collapse into the new payment text.
+    if (/slide12\.xml$/.test(path)) {
+      if (payment) xml = replaceShapeByAnchor(xml, "AED", payment);
+      // Duration paragraph "Jun 2026 onwards" — unique anchor "onwards".
+      if (duration) xml = replaceParagraphByAnchor(xml, "onwards", duration);
+    }
+    // Slide 9 received-docs line — anchor "Documents attached" only appears there.
+    // Applied across all slides; no-op where the anchor isn't found.
+    xml = replaceParagraphByAnchor(xml, "Documents attached", receivedDocsLine);
+    zip.file(path, xml);
+  }
+
+  const out: Blob = await zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
+  const url = URL.createObjectURL(out);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${(deck.clientName || "client").replace(/[^a-z0-9]+/gi, "-")}-onboarding-deck.pptx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+// Legacy primitive-based PPTX export — kept ONLY for reference / quick fallback. The
+// image-based export above is the canonical path because it preserves the WELCOME PDF
+// design exactly (this primitive path was the source of the "PPTX looks wrong" report).
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
+async function downloadDeckPptxLegacy(deck: DeckData) {
   const Pptx = (await loadPptxgen()) as any;
   const p = new Pptx();
   p.defineLayout({ name: "FS", width: 13.333, height: 7.5 });
@@ -2160,12 +3384,50 @@ async function downloadDeckPptx(deck: DeckData) {
 
   // 1. Cover
   let s = p.addSlide(); s.background = { color: PPTX.navy };
-  s.addText("WELCOME TO FINANSHELS", { x: 0.7, y: 1.4, w: 12, h: 0.4, fontSize: 14, color: PPTX.orange, bold: true, charSpacing: 3, valign: "middle" });
+  s.addText("TRUSTED BY 7,000+ SMEs · WELCOME TO FINANSHELS", { x: 0.7, y: 1.4, w: 12, h: 0.4, fontSize: 14, color: PPTX.orange, bold: true, charSpacing: 3, valign: "middle" });
   s.addText([{ text: "Welcome, ", options: { color: PPTX.white } }, { text: deck.clientName, options: { color: PPTX.orange } }], { x: 0.7, y: 2.0, w: 12, h: 1.6, fontSize: 44, bold: true, valign: "middle" });
-  s.addText(deck.mission || "", { x: 0.7, y: 3.9, w: 11.5, h: 2.4, fontSize: 18, color: "D6DEE6", valign: "top", lineSpacingMultiple: 1.1 });
+  s.addText(`Welcome to Finanshels, ${deck.clientName}! We're excited to streamline your accounting and tax processes, ensuring compliance and efficiency.`, { x: 0.7, y: 3.9, w: 11.5, h: 2.4, fontSize: 16, color: "D6DEE6", valign: "top", lineSpacingMultiple: 1.1 });
   brand(s, true);
 
-  // 2. Roadmap (Agenda slide intentionally omitted — Roadmap covers the journey)
+  // 2. Our Story
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Trusted by 7,000+ SMEs", "Our Story");
+  s.addShape("roundRect", { x: 0.7, y: 2.2, w: 7.8, h: 4.4, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+  s.addText("“", { x: 0.9, y: 2.3, w: 0.6, h: 0.6, fontSize: 50, color: PPTX.orange, valign: "top" });
+  s.addText(DECK_FOUNDER_QUOTE.replace(/^"|"$/g, ""), { x: 0.95, y: 2.85, w: 7.3, h: 3.0, fontSize: 13, italic: true, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.25 });
+  s.addText(`— ${DECK_FOUNDER_NAME}`, { x: 0.95, y: 6.0, w: 7.3, h: 0.4, fontSize: 12, bold: true, color: PPTX.navy, valign: "middle" });
+  DECK_STATS.forEach((st, i) => {
+    const y = 2.2 + i * 1.1;
+    s.addShape("roundRect", { x: 8.8, y, w: 3.85, h: 1.0, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.08 });
+    s.addText(st.l.toUpperCase(), { x: 9.0, y: y + 0.15, w: 2.6, h: 0.3, fontSize: 10, color: PPTX.ink2, bold: true, charSpacing: 1, valign: "middle" });
+    s.addText(st.v, { x: 11.6, y: y + 0.2, w: 1.0, h: 0.65, fontSize: 22, bold: true, color: PPTX.orange, align: "right", valign: "middle" });
+  });
+  brand(s);
+
+  // 3. Mission & Values
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Trusted by 7,000+ SMEs", "Our Mission & Values");
+  s.addText("We're on a mission to simplify financial life for SMEs through a technology-first approach — giving founders the tools they need to manage finance seamlessly.", { x: 0.7, y: 2.0, w: 12, h: 0.9, fontSize: 13, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.2 });
+  DECK_VALUES.forEach((v, i) => {
+    const x = 0.7 + i * 4.15;
+    s.addShape("roundRect", { x, y: 3.2, w: 3.95, h: 3.5, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+    s.addText(v.n, { x: x + 0.25, y: 3.4, w: 3.55, h: 0.6, fontSize: 24, bold: true, color: PPTX.orange, valign: "top" });
+    s.addText(v.t, { x: x + 0.25, y: 4.1, w: 3.55, h: 0.55, fontSize: 14, bold: true, color: PPTX.navy, valign: "top" });
+    s.addText(v.d, { x: x + 0.25, y: 4.7, w: 3.55, h: 1.85, fontSize: 11, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.15 });
+  });
+  brand(s);
+
+  // 4. Services
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Trusted by 7,000+ SMEs", "Services That Grow With You");
+  DECK_SERVICES.forEach((sv, i) => {
+    const col = i % 4, row = Math.floor(i / 4);
+    const x = 0.7 + col * 3.05;
+    const y = 2.2 + row * 2.35;
+    s.addShape("roundRect", { x, y, w: 2.85, h: 2.15, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.08 });
+    s.addText(sv.t, { x: x + 0.18, y: y + 0.18, w: 2.5, h: 0.6, fontSize: 12.5, bold: true, color: PPTX.navy, valign: "top", lineSpacingMultiple: 1.1 });
+    s.addText(sv.d, { x: x + 0.18, y: y + 0.85, w: 2.5, h: 1.2, fontSize: 10, color: PPTX.ink2, valign: "top", lineSpacingMultiple: 1.15 });
+  });
+  brand(s);
+
+  // 5. Roadmap (Agenda slide intentionally omitted — Roadmap covers the journey)
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Roadmap", "Your Onboarding Roadmap");
   DECK_PHASES.forEach((ph, i) => {
     const x = 0.7 + i * 2.45;
@@ -2220,7 +3482,7 @@ async function downloadDeckPptx(deck: DeckData) {
   s.addText("DOCUMENTS WE'LL NEED", { x: 7.1, y: 2.45, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
   s.addText(DECK_DOCS.map((d) => ({ text: d, options: { bullet: { code: "2713" }, color: PPTX.ink, fontSize: 12.5, breakLine: true, paraSpaceAfter: 5 } })), { x: 7.1, y: 2.95, w: 5.35, h: 3.5, valign: "top", lineSpacingMultiple: 1.05 });
   if ((deck.receivedDocs ?? []).length > 0) {
-    s.addText(`Already received (no need to resend): ${(deck.receivedDocs ?? []).join(", ")}`, { x: 0.7, y: 6.8, w: 12, h: 0.5, fontSize: 11.5, bold: true, color: "15803D", valign: "top", lineSpacingMultiple: 1.0 });
+    s.addText(`Documents attached by our Sales team as of now (already received, no need to resend): ${(deck.receivedDocs ?? []).join(", ")}`, { x: 0.7, y: 6.8, w: 12, h: 0.5, fontSize: 11.5, bold: true, color: "15803D", valign: "top", lineSpacingMultiple: 1.0 });
   }
 
   // 8. Communication
@@ -2233,28 +3495,29 @@ async function downloadDeckPptx(deck: DeckData) {
   });
 
   // 9. Contract — Scope, with Included / Out-of-scope columns.
+  // fit:"shrink" stops long Included / Out-of-scope lists from being clipped in the exported deck.
   const cExcl = (deck.contract?.exclusions || []).filter(Boolean);
   const cIncl = (deck.contract?.highlights || []).filter(Boolean);
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Engagement", "Scope of Work");
-  s.addText("WHAT WE'LL DO", { x: 0.7, y: 1.95, w: 12, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
-  s.addText(deck.contract?.scope || "Not specified", { x: 0.7, y: 2.3, w: 12, h: 1.0, fontSize: 13, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.1 });
+  s.addText("WHAT WE'LL DO", { x: 0.7, y: 1.9, w: 12, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
+  s.addText(deck.contract?.scope || "Not specified", { x: 0.7, y: 2.22, w: 12, h: 1.0, fontSize: 13, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.1, fit: "shrink" } as Record<string, unknown>);
   // Included card (white)
-  s.addShape("roundRect", { x: 0.7, y: 3.5, w: 5.9, h: 3.2, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
-  s.addText("INCLUDED IN SCOPE", { x: 0.95, y: 3.72, w: 5.4, h: 0.3, fontSize: 11, bold: true, color: PPTX.navy, charSpacing: 1, valign: "middle" });
-  s.addText(cIncl.length ? cIncl.map((h) => ({ text: h, options: { bullet: { code: "2713" }, fontSize: 12, color: PPTX.ink, breakLine: true, paraSpaceAfter: 5 } })) : "As described in the engagement.", { x: 0.95, y: 4.15, w: 5.4, h: 2.4, fontSize: 12, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.05 });
+  s.addShape("roundRect", { x: 0.7, y: 3.35, w: 5.9, h: 3.5, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+  s.addText("INCLUDED IN SCOPE", { x: 0.95, y: 3.55, w: 5.4, h: 0.3, fontSize: 11, bold: true, color: PPTX.navy, charSpacing: 1, valign: "middle" });
+  s.addText(cIncl.length ? cIncl.map((h) => ({ text: h, options: { bullet: { code: "2713" }, fontSize: 12, color: PPTX.ink, breakLine: true, paraSpaceAfter: 5 } })) : "As described in the engagement.", { x: 0.95, y: 3.95, w: 5.4, h: 2.75, fontSize: 12, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.05, fit: "shrink" } as Record<string, unknown>);
   // Out-of-scope card (light, orange accent)
-  s.addShape("roundRect", { x: 6.85, y: 3.5, w: 5.85, h: 3.2, fill: { color: "FFF1E6" }, line: { color: "F4D7BE", width: 1 }, rectRadius: 0.1 });
-  s.addText("OUT OF SCOPE", { x: 7.1, y: 3.72, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: "C2410C", charSpacing: 1, valign: "middle" });
-  s.addText(cExcl.length ? cExcl.map((x) => ({ text: x, options: { bullet: { code: "2022" }, fontSize: 12, color: "6B5440", breakLine: true, paraSpaceAfter: 5 } })) : "Nothing excluded — full scope as described.", { x: 7.1, y: 4.15, w: 5.35, h: 2.4, fontSize: 12, color: "6B5440", valign: "top", lineSpacingMultiple: 1.05 });
+  s.addShape("roundRect", { x: 6.85, y: 3.35, w: 5.85, h: 3.5, fill: { color: "FFF1E6" }, line: { color: "F4D7BE", width: 1 }, rectRadius: 0.1 });
+  s.addText("OUT OF SCOPE", { x: 7.1, y: 3.55, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: "C2410C", charSpacing: 1, valign: "middle" });
+  s.addText(cExcl.length ? cExcl.map((x) => ({ text: x, options: { bullet: { code: "2022" }, fontSize: 12, color: "6B5440", breakLine: true, paraSpaceAfter: 5 } })) : "Nothing excluded — full scope as described.", { x: 7.1, y: 3.95, w: 5.35, h: 2.75, fontSize: 12, color: "6B5440", valign: "top", lineSpacingMultiple: 1.05, fit: "shrink" } as Record<string, unknown>);
 
   // 9b. Engagement terms — payment, duration, client responsibilities.
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Engagement", "Engagement Terms");
   s.addShape("roundRect", { x: 0.7, y: 2.1, w: 5.9, h: 1.85, fill: { color: PPTX.navy }, rectRadius: 0.1 });
   s.addText("PAYMENT", { x: 0.95, y: 2.35, w: 5.4, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
-  s.addText(deck.contract?.payment || "Not specified", { x: 0.95, y: 2.78, w: 5.4, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
+  s.addText(deck.contract?.payment || "Not specified", { x: 0.95, y: 2.78, w: 5.4, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05, fit: "shrink" } as Record<string, unknown>);
   s.addShape("roundRect", { x: 6.85, y: 2.1, w: 5.85, h: 1.85, fill: { color: PPTX.navy }, rectRadius: 0.1 });
   s.addText("DURATION", { x: 7.1, y: 2.35, w: 5.35, h: 0.3, fontSize: 11, bold: true, color: PPTX.orange, charSpacing: 1, valign: "middle" });
-  s.addText(deck.contract?.duration || "Not specified", { x: 7.1, y: 2.78, w: 5.35, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05 });
+  s.addText(deckDurationText(deck.contract?.duration), { x: 7.1, y: 2.78, w: 5.35, h: 1.0, fontSize: 13, color: PPTX.white, valign: "top", lineSpacingMultiple: 1.05, fit: "shrink" } as Record<string, unknown>);
   s.addShape("roundRect", { x: 0.7, y: 4.15, w: 12, h: 2.5, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
   s.addText("WHAT WE NEED FROM YOU", { x: 0.95, y: 4.4, w: 11.5, h: 0.3, fontSize: 11, bold: true, color: PPTX.navy, charSpacing: 1, valign: "middle" });
   s.addText(deck.contract?.responsibilities || "Not specified", { x: 0.95, y: 4.85, w: 11.5, h: 1.6, fontSize: 13, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.15 });
@@ -2263,15 +3526,181 @@ async function downloadDeckPptx(deck: DeckData) {
   s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Next", "Immediate Next Steps");
   s.addText((deck.nextSteps || []).flatMap((n) => ([{ text: n.title, options: { bold: true, color: PPTX.navy, fontSize: 15, breakLine: true, paraSpaceBefore: 6 } }, { text: n.desc, options: { color: PPTX.ink2, fontSize: 12, breakLine: true, paraSpaceAfter: 8, indentLevel: 1 } }])), { x: 0.7, y: 2.0, w: 12, h: 5.0, valign: "top", lineSpacingMultiple: 1.05 });
 
-  // 11. Thank you
+  // 11. Why founders choose us — testimonials
+  s = p.addSlide(); s.background = { color: PPTX.cream }; head(s, "Trusted by 7,000+ SMEs", "Why Founders Choose Us");
+  DECK_TESTIMONIALS.forEach((t, i) => {
+    const col = i % 2, row = Math.floor(i / 2);
+    const x = 0.7 + col * 6.15, y = 2.0 + row * 2.5;
+    s.addShape("roundRect", { x, y, w: 5.95, h: 2.3, fill: { color: PPTX.white }, line: { color: PPTX.line, width: 1 }, rectRadius: 0.1 });
+    s.addText("“", { x: x + 0.2, y: y + 0.1, w: 0.5, h: 0.5, fontSize: 30, color: PPTX.orange, valign: "top" });
+    s.addText(t.q, { x: x + 0.25, y: y + 0.55, w: 5.45, h: 1.15, fontSize: 11, italic: true, color: PPTX.ink, valign: "top", lineSpacingMultiple: 1.2 });
+    s.addText(t.n, { x: x + 0.25, y: y + 1.75, w: 5.45, h: 0.3, fontSize: 12, bold: true, color: PPTX.navy, valign: "middle" });
+    s.addText(t.r, { x: x + 0.25, y: y + 2.0, w: 5.45, h: 0.25, fontSize: 10, color: PPTX.ink2, valign: "middle" });
+  });
+  brand(s);
+
+  // 12. Thank you
   s = p.addSlide(); s.background = { color: PPTX.navy };
   s.addText("Thank you!", { x: 0.7, y: 2.6, w: 12, h: 1.0, fontSize: 48, bold: true, color: PPTX.orange, valign: "middle" });
-  s.addText("Ready to grow together. Let's begin your journey with Finanshels.", { x: 0.7, y: 4.0, w: 11, h: 1.0, fontSize: 18, color: "D6DEE6", valign: "top" });
+  s.addText(`Ready to grow together. Let's begin your journey with Finanshels, ${deck.clientName}.`, { x: 0.7, y: 4.0, w: 11, h: 1.0, fontSize: 18, color: "D6DEE6", valign: "top" });
   brand(s, true);
 
   await p.writeFile({ fileName: `${(deck.clientName || "client").replace(/[^a-z0-9]+/gi, "-")}-onboarding-deck.pptx` });
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
+
+type OnePagerSection = { heading: string; items: string[] };
+type OnePagerData = { generated?: string; sections?: OnePagerSection[]; generatedAt?: string; notes?: string };
+
+function OnePagerModal({ runId, stepId, onClose, onDone }: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
+  const supabase = createClient();
+  const [data, setData] = useState<OnePagerData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [working, startWork] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [notes, setNotes] = useState("");
+  const [clientName, setClientName] = useState("Client");
+  const [generatedText, setGeneratedText] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "onepager").maybeSingle(),
+      supabase.from("onboarding_runs").select("clients(name)").eq("id", runId).maybeSingle(),
+    ]).then(([{ data: row }, { data: r }]) => {
+      if (!alive) return;
+      const d = (row?.data as OnePagerData | undefined) ?? null;
+      if (d) {
+        setData(d);
+        setNotes(d.notes ?? "");
+        setGeneratedText(d.generated ?? "");
+      }
+      const cl = (r as { clients?: { name?: string } | { name?: string }[] } | null)?.clients;
+      const name = Array.isArray(cl) ? cl[0]?.name : cl?.name;
+      if (name) setClientName(name);
+      setLoading(false);
+    });
+    return () => { alive = false; };
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const runGenerate = () => {
+    setError(null);
+    startWork(async () => {
+      const r = data ? await regenerateOnePager(runId) : await generateOnePager(runId);
+      if (r.error || !r.data) { setError(r.error ?? "Failed to generate."); return; }
+      setData({ ...r.data, notes });
+      setGeneratedText(r.data.generated);
+    });
+  };
+
+  const saveNotesOnBlur = () => {
+    if (!data) return;
+    startWork(async () => {
+      const r = await saveOnePagerNotes(runId, notes);
+      if (r.error) setError(r.error);
+    });
+  };
+
+  const downloadPdf = () => {
+    const orig = document.title;
+    document.title = `Onboarding One-Pager — ${clientName}`;
+    window.print();
+    setTimeout(() => { document.title = orig; }, 1000);
+  };
+
+  const saveAndConfirm = () => {
+    if (!data) return;
+    startWork(async () => {
+      if (notes !== (data.notes ?? "")) {
+        await saveOnePagerNotes(runId, notes);
+      }
+      await completeStep(runId, stepId);
+      onDone();
+    });
+  };
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 760, maxWidth: "calc(100vw - 32px)", maxHeight: "92vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd">
+          <h3>Onboarding one-pager</h3>
+          <div className="sub">Polished summary of the compliance calendar, first delivery, team contacts and UAE compliance details — share with the client before recurring delivery starts.</div>
+        </div>
+        <div className="bd" style={{ overflowY: "auto" }}>
+          {loading && <div style={{ fontSize: 13, color: "var(--ink-3)" }}>Loading…</div>}
+
+          {!loading && !data && (
+            <div style={{ textAlign: "center", padding: "20px 0" }}>
+              <div style={{ fontSize: 13, color: "var(--ink-3)", marginBottom: 14 }}>
+                No one-pager generated yet. Click below to build it from the compliance calendar, contract and team.
+              </div>
+              <button className="btn-primary" disabled={working} onClick={runGenerate}>
+                {working ? "Generating…" : "Generate one-pager"}
+              </button>
+            </div>
+          )}
+
+          {!loading && data && (
+            <>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {(data.sections ?? []).map((s, i) => (
+                  <div key={i} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "#fff" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 6 }}>{s.heading}</div>
+                    {s.items.length ? (
+                      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "var(--ink-1)", display: "flex", flexDirection: "column", gap: 4 }}>
+                        {s.items.map((it, j) => <li key={j}>{it}</li>)}
+                      </ul>
+                    ) : (
+                      <div style={{ fontSize: 13, color: "var(--ink-3)" }}>—</div>
+                    )}
+                  </div>
+                ))}
+
+                <div className="field">
+                  <label>Generated body (edit if needed)</label>
+                  <textarea
+                    value={generatedText}
+                    onChange={(e) => setGeneratedText(e.target.value)}
+                    rows={8}
+                    style={{ width: "100%", fontSize: 13, fontFamily: "inherit" }}
+                  />
+                </div>
+
+                <div className="field">
+                  <label>Notes (your additions — saved with the one-pager)</label>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    onBlur={saveNotesOnBlur}
+                    rows={3}
+                    placeholder="Anything to add — internal or client-facing"
+                    style={{ width: "100%", fontSize: 13, fontFamily: "inherit" }}
+                  />
+                </div>
+              </div>
+              {data.generatedAt && (
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8 }}>
+                  Last generated {new Date(data.generatedAt).toLocaleString()}
+                </div>
+              )}
+            </>
+          )}
+
+          {error && <div style={{ fontSize: 12, color: "var(--red)", marginTop: 10 }}>{error}</div>}
+        </div>
+        <div className="ft" style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+          <button className="btn-ghost" onClick={onClose} disabled={working}>Close</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            {data && <button className="btn-ghost" disabled={working} onClick={runGenerate}>{working ? "Working…" : "Regenerate"}</button>}
+            {data && <button className="btn-ghost" onClick={downloadPdf}><Icon name="download" size={13} /> Download PDF</button>}
+            {data && <button className="btn-primary" disabled={working} onClick={saveAndConfirm}>{working ? "Saving…" : "Save & confirm step"}</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => void; onDone: () => void }) {
   const [deck, setDeck] = useState<DeckData | null>(null);
@@ -2343,7 +3772,9 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
       {phase === "ready" && deck && mode === "present" && (
         <div className="fsdeck-present">
           <div className="fsdeck-present-stage" ref={stageRef}>
-            <div className="fsdeck-stage" style={{ transform: `scale(${scale})`, transformOrigin: "center" }}>{deckSlide(deck, idx)}</div>
+            <div className="fsdeck-stage" style={{ transform: `scale(${scale})`, transformOrigin: "center", background: "#fff" }}>
+              <PdfTemplateSlide pageIdx={idx} deck={deck} />
+            </div>
           </div>
           <div className="fsdeck-nav">
             <button className="fsdeck-nav-btn" disabled={idx === 0} onClick={() => setIdx((i) => Math.max(0, i - 1))}>‹</button>
@@ -2356,40 +3787,47 @@ function DeckModal({ runId, onClose, onDone }: { runId: string; onClose: () => v
 
       {phase === "ready" && deck && mode === "edit" && (
         <div className="fsdeck-editscroll">
-          <div className="fsdeck-legend"><span className="fsdeck-legend-h">Sources:</span><span className="fsdeck-conf crm"><span className="dot" />From client</span><span className="fsdeck-conf ai"><span className="dot" />AI-drafted</span><span className="fsdeck-conf client"><span className="dot" />From intake / contract</span></div>
+          <div className="fsdeck-legend"><span className="fsdeck-legend-h">Editable fields:</span><span className="fsdeck-conf crm"><span className="dot" />Client</span><span className="fsdeck-conf client"><span className="dot" />Contract</span></div>
 
-          <DeckEdit n="1" label="Welcome mission" pill="ai"><textarea className="fsdeck-edit" value={deck.mission} onChange={(e) => set((d) => ({ ...d, mission: e.target.value }))} rows={2} /></DeckEdit>
+          <DeckEdit n="1" label="Client name (shown on the cover)" pill="crm">
+            <input className="fsdeck-edit" value={deck.clientName} onChange={(e) => set((d) => ({ ...d, clientName: e.target.value }))} />
+          </DeckEdit>
 
-          <DeckEdit n="2" label="What we understood (summary)" pill="ai"><textarea className="fsdeck-edit" value={deck.whatWeUnderstood.summary} onChange={(e) => set((d) => ({ ...d, whatWeUnderstood: { ...d.whatWeUnderstood, summary: e.target.value } }))} rows={2} /></DeckEdit>
-          {deck.whatWeUnderstood.points?.map((p, i) => (
-            <DeckEdit key={i} n={`2.${i + 1}`} label={`Point — ${p.title || "title"}`} pill="ai">
-              <input className="fsdeck-edit" value={p.title} onChange={(e) => set((d) => ({ ...d, whatWeUnderstood: { ...d.whatWeUnderstood, points: d.whatWeUnderstood.points.map((x, j) => j === i ? { ...x, title: e.target.value } : x) } }))} />
-              <textarea className="fsdeck-edit" value={p.desc} onChange={(e) => set((d) => ({ ...d, whatWeUnderstood: { ...d.whatWeUnderstood, points: d.whatWeUnderstood.points.map((x, j) => j === i ? { ...x, desc: e.target.value } : x) } }))} rows={2} />
-            </DeckEdit>
-          ))}
+          <DeckEdit n="2" label="Contract · scope (1–2 sentences shown on the Scope slide)" pill="client">
+            <textarea className="fsdeck-edit" value={deck.contract.scope} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, scope: e.target.value } }))} rows={2} />
+          </DeckEdit>
 
-          <DeckEdit n="3" label="Compliance · Corporate Tax" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.ct} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, ct: e.target.value } }))} rows={2} /></DeckEdit>
-          <DeckEdit n="3.2" label="Compliance · VAT" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.vat} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, vat: e.target.value } }))} rows={2} /></DeckEdit>
-          <DeckEdit n="3.3" label="Compliance · WPS" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.wps} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, wps: e.target.value } }))} rows={2} /></DeckEdit>
-          <DeckEdit n="3.4" label="Compliance · Trade Licence (renewal)" pill="ai"><textarea className="fsdeck-edit" value={deck.compliance.tradeLicence ?? ""} onChange={(e) => set((d) => ({ ...d, compliance: { ...d.compliance, tradeLicence: e.target.value } }))} rows={2} placeholder="e.g. We track your trade licence renewal date and remind you ahead of expiry." /></DeckEdit>
+          <DeckEdit n="3" label="Contract · included in scope — tick the items the sales team has already committed to" pill="client">
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {(deck.contract.highlights ?? []).map((h, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="checkbox" checked={!!deck.contract.inclusionsShared?.[i]} onChange={(e) => set((d) => {
+                    const next = [...(d.contract.inclusionsShared ?? [])];
+                    while (next.length < d.contract.highlights.length) next.push(false);
+                    next[i] = e.target.checked;
+                    return { ...d, contract: { ...d.contract, inclusionsShared: next } };
+                  })} title="Shared by sales — shows a Shared badge on the Scope slide" />
+                  <input className="fsdeck-edit" style={{ flex: 1 }} value={h} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, highlights: d.contract.highlights.map((x, j) => j === i ? e.target.value : x) } }))} />
+                  <button type="button" onClick={() => set((d) => ({ ...d, contract: { ...d.contract, highlights: d.contract.highlights.filter((_, j) => j !== i), inclusionsShared: (d.contract.inclusionsShared ?? []).filter((_, j) => j !== i) } }))} style={{ background: "transparent", border: "1px solid var(--fsd-line, #ECE3D2)", borderRadius: 6, padding: "3px 7px", fontSize: 11, color: "var(--fsd-ink-2, #51606E)", cursor: "pointer" }}>Remove</button>
+                </div>
+              ))}
+              <button type="button" onClick={() => set((d) => ({ ...d, contract: { ...d.contract, highlights: [...d.contract.highlights, ""], inclusionsShared: [...(d.contract.inclusionsShared ?? []), false] } }))} style={{ alignSelf: "flex-start", background: "transparent", border: "1px dashed var(--fsd-line, #ECE3D2)", borderRadius: 6, padding: "5px 10px", fontSize: 12, color: "var(--fsd-ink-2, #51606E)", cursor: "pointer" }}>+ Add included item</button>
+            </div>
+          </DeckEdit>
 
-          <DeckEdit n="4" label="Software recommendation" pill="ai"><textarea className="fsdeck-edit" value={deck.software.recommendation} onChange={(e) => set((d) => ({ ...d, software: { ...d.software, recommendation: e.target.value } }))} rows={2} /></DeckEdit>
-          <DeckEdit n="4.1" label="Zoho subscription plan" pill="ai"><input className="fsdeck-edit" value={deck.software.plan ?? ""} onChange={(e) => set((d) => ({ ...d, software: { ...d.software, plan: e.target.value } }))} placeholder="e.g. Professional — multi-currency & purchase orders" /></DeckEdit>
+          <DeckEdit n="4" label="Contract · out of scope (one per line)" pill="client">
+            <textarea className="fsdeck-edit" value={(deck.contract.exclusions ?? []).join("\n")} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, exclusions: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) } }))} rows={3} />
+          </DeckEdit>
 
-          <DeckEdit n="5" label="Contract · scope" pill="client"><textarea className="fsdeck-edit" value={deck.contract.scope} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, scope: e.target.value } }))} rows={2} /></DeckEdit>
-          <DeckEdit n="5.2" label="Contract · payment" pill="client"><input className="fsdeck-edit" value={deck.contract.payment} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, payment: e.target.value } }))} /></DeckEdit>
-          <DeckEdit n="5.3" label="Contract · duration" pill="client"><input className="fsdeck-edit" value={deck.contract.duration} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, duration: e.target.value } }))} /></DeckEdit>
-          <DeckEdit n="5.4" label="Contract · out of scope (one per line)" pill="client"><textarea className="fsdeck-edit" value={(deck.contract.exclusions ?? []).join("\n")} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, exclusions: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) } }))} rows={3} /></DeckEdit>
-          <DeckEdit n="5.5" label="Contract · your responsibilities" pill="client"><textarea className="fsdeck-edit" value={deck.contract.responsibilities} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, responsibilities: e.target.value } }))} rows={2} /></DeckEdit>
+          <DeckEdit n="5" label="Contract · payment terms" pill="client">
+            <input className="fsdeck-edit" value={deck.contract.payment} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, payment: e.target.value } }))} />
+          </DeckEdit>
 
-          {deck.nextSteps?.map((s, i) => (
-            <DeckEdit key={i} n={`6.${i + 1}`} label={`Next step — ${s.title || "title"}`} pill="ai">
-              <input className="fsdeck-edit" value={s.title} onChange={(e) => set((d) => ({ ...d, nextSteps: d.nextSteps.map((x, j) => j === i ? { ...x, title: e.target.value } : x) }))} />
-              <textarea className="fsdeck-edit" value={s.desc} onChange={(e) => set((d) => ({ ...d, nextSteps: d.nextSteps.map((x, j) => j === i ? { ...x, desc: e.target.value } : x) }))} rows={2} />
-            </DeckEdit>
-          ))}
+          <DeckEdit n="6" label="Contract · engagement duration" pill="client">
+            <input className="fsdeck-edit" value={deck.contract.duration} placeholder={deckDurationText()} onChange={(e) => set((d) => ({ ...d, contract: { ...d.contract, duration: e.target.value } }))} />
+          </DeckEdit>
 
-          <div className="fsdeck-editfoot"><Icon name="info" size={14} /> Auto-filled from this client&apos;s data, intake form and contract. Edit anything, then Present or Save &amp; confirm.</div>
+          <div className="fsdeck-editfoot"><Icon name="info" size={14} /> Only client name + contract terms are editable — every other slide is the standard Finanshels template. Tick a scope item to flag it as already shared by sales.</div>
         </div>
       )}
     </div>
@@ -2484,7 +3922,18 @@ function AiTextModal({
         </div>
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
-          {["mom", "ai", "welcome_email", "agenda", "deck"].includes(actType) && (
+          {/* Agenda step → WhatsApp ONLY (no email). Confirmation required: team copies the drafted message + opens WhatsApp, then marks the step Save & confirm. */}
+          {actType === "agenda" && (
+            <>
+              <button className="btn-soft" disabled={!text.trim()} onClick={() => { navigator.clipboard?.writeText(text); setWaCopied(true); setTimeout(() => setWaCopied(false), 1800); }}>
+                <Icon name={waCopied ? "check" : "copy"} size={13} /> {waCopied ? "Copied — paste into WhatsApp" : "Copy message"}
+              </button>
+              <a className="btn-ai" href={`https://wa.me/?text=${encodeURIComponent(text)}`} target="_blank" rel="noreferrer" aria-disabled={!text.trim()} style={!text.trim() ? { pointerEvents: "none", opacity: 0.5 } : undefined}>
+                <Icon name="message-circle" size={13} /> Open in WhatsApp
+              </a>
+            </>
+          )}
+          {["mom", "ai", "welcome_email", "deck", "datareq", "report"].includes(actType) && (
             <button className="btn-ai" disabled={saving || phase !== "ready" || !text.trim()} onClick={() => startSave(async () => {
               const s = await sendClientEmail(runId, actType === "mom" ? WELCOME_EMAIL_SUBJECT : title, text);
               if (s.error) { setError(s.error); setPhase("ready"); return; }
@@ -2666,30 +4115,45 @@ function ContractBuilderModal({
 
   const onFile = async (file: File) => {
     setUploadingFile(true);
+    setError(null);
     const fd = new FormData(); fd.append("file", file);
     const r = await uploadContractFile(runId, fd);
     if (r.link) setContractFile({ link: r.link, name: r.name ?? file.name });
     setAnalyzing(true);
     try {
       let result: ContractAnalysis | undefined;
+      let textPathError: string | null = null;
+      let extractedTextLen = 0;
       // PDFs: read the text in the browser and use the proven text analyzer
       // (the same content ChatGPT handles well) — most reliable.
       if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
         try {
           const text = await extractPdfText(file);
+          extractedTextLen = text?.length ?? 0;
           if (text && text.length > 80) {
             const a = await analyzeContract(runId, text);
             if (a.result) result = a.result;
+            else if (a.error) textPathError = a.error;
+          } else {
+            textPathError = "The PDF had no readable text (likely scanned). Trying file-based reading…";
           }
-        } catch { /* fall through to the file API */ }
+        } catch (e) {
+          textPathError = e instanceof Error ? `PDF reader failed: ${e.message}` : "PDF reader failed.";
+        }
       }
       // Fallback: OpenAI native file understanding (scanned PDFs, images, docx).
       if (!result) {
         const fd2 = new FormData(); fd2.append("file", file);
         const a = await analyzeContractFile(runId, fd2);
-        if (a.result) result = a.result; else if (a.error) setError(a.error);
+        if (a.result) result = a.result;
+        else {
+          const msg = a.error ?? "Couldn't extract contract terms from the file.";
+          setError(textPathError && extractedTextLen > 80 ? `${textPathError} • File API: ${msg}` : msg);
+        }
       }
       if (result) { setCa(result); setError(null); }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong reading the contract.");
     } finally {
       setAnalyzing(false);
       setUploadingFile(false);
@@ -2697,9 +4161,11 @@ function ContractBuilderModal({
   };
   const analyze = async () => {
     setAnalyzing(true);
+    setError(null);
     const r = await analyzeContract(runId, contractText);
     setAnalyzing(false);
-    if (r.result) setCa(r.result);
+    if (r.result) { setCa(r.result); setError(null); }
+    else if (r.error) setError(r.error);
   };
   const upd = (patch: Partial<ContractAnalysis>) => setCa((c) => ({ ...(c ?? {}), ...patch }));
 
@@ -2725,13 +4191,20 @@ function ContractBuilderModal({
             <>
               <div className="field" style={{ margin: 0 }}><label>Scope (client sees this)</label><textarea className="notes" value={ca.scope ?? ""} onChange={(e) => upd({ scope: e.target.value })} style={{ minHeight: 50 }} /></div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 8 }}>
+                <div className="field" style={{ margin: 0 }}><label>Engagement starts</label><input type="month" value={ca.periodStart ?? ""} onChange={(e) => upd({ periodStart: e.target.value })} /></div>
+                <div className="field" style={{ margin: 0 }}><label>Engagement ends <span style={{ fontWeight: 400, color: "var(--ink-3)" }}>— leave blank if ongoing</span></label><input type="month" value={ca.periodEnd ?? ""} onChange={(e) => upd({ periodEnd: e.target.value || undefined })} /></div>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                <Icon name="calendar" size={13} /> Duration: <strong>{formatEngagementPeriod(ca.periodStart, ca.periodEnd) || "Not specified"}</strong>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 8 }}>
                 <div className="field" style={{ margin: 0 }}><label>Included (one per line)</label><textarea className="notes" value={(ca.inclusions ?? []).join("\n")} onChange={(e) => upd({ inclusions: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) })} style={{ minHeight: 60 }} /></div>
                 <div className="field" style={{ margin: 0 }}><label>Excluded (one per line)</label><textarea className="notes" value={(ca.exclusions ?? []).join("\n")} onChange={(e) => upd({ exclusions: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) })} style={{ minHeight: 60 }} /></div>
               </div>
               <div className="field" style={{ marginTop: 8 }}><label>Payment terms</label><input value={ca.paymentTerms ?? ""} onChange={(e) => upd({ paymentTerms: e.target.value })} /></div>
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>What we deliver &amp; when</div>
-                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 6 }}>Standard deadlines pre-filled — edit per the client&apos;s request. Shown in the client portal.</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 6 }}>Standard deadlines pre-filled — edit per the client&apos;s request. Shown in the onboarding portal.</div>
                 {(ca.deliverables ?? []).map((dv, i) => (
                   <div key={i} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
                     <input value={dv.item} placeholder="Deliverable" onChange={(e) => upd({ deliverables: (ca.deliverables ?? []).map((x, j) => (j === i ? { ...x, item: e.target.value } : x)) })} style={{ flex: 3, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }} />
@@ -2758,7 +4231,230 @@ function ContractBuilderModal({
   );
 }
 
-interface AccessEntry { on: boolean; label: string; systemName: string; method: string; sop: string; emails: string[] }
+const ACCOUNTING_SOFTWARE = ["Zoho Books", "QuickBooks Online", "Xero", "Odoo", "Tally", "Wafeq", "Other"];
+
+function AccountingSoftwareModal({
+  runId, stepId, onClose, onDone,
+}: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
+  const supabase = createClient();
+  const [choice, setChoice] = useState("");
+  const [other, setOther] = useState("");
+  const [saved, setSaved] = useState(false);            // becomes true after first successful save
+  const [saving, startSave] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [clientName, setClientName] = useState("the client");
+
+  useEffect(() => {
+    Promise.all([
+      supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "accounting_software").maybeSingle(),
+      supabase.from("onboarding_runs").select("clients(name)").eq("id", runId).maybeSingle(),
+    ]).then(([{ data }, { data: r }]) => {
+      const sw = (data?.data as { software?: string } | undefined)?.software;
+      if (sw) {
+        if (ACCOUNTING_SOFTWARE.includes(sw)) setChoice(sw);
+        else { setChoice("Other"); setOther(sw); }
+        setSaved(true);
+      }
+      const cl = (r as { clients?: { name?: string } | { name?: string }[] } | null)?.clients;
+      const name = Array.isArray(cl) ? cl[0]?.name : cl?.name;
+      if (name) setClientName(name);
+    });
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const value = choice === "Other" ? other.trim() : choice;
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 560, maxWidth: "calc(100vw - 32px)", maxHeight: "92vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>Accounting software & team handoff</h3><div className="sub">Pick the platform, then post a Slack message to the setup team with the trade licence + VAT certificate attached.</div></div>
+        <div className="bd" style={{ overflowY: "auto" }}>
+          <div className="field"><label>1. Accounting software</label>
+            <select value={choice} onChange={(e) => { setChoice(e.target.value); setError(null); }} style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13.5 }}>
+              <option value="">Select…</option>
+              {ACCOUNTING_SOFTWARE.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          {choice === "Other" && (
+            <div className="field" style={{ marginTop: 8 }}><label>Name the software</label><input value={other} onChange={(e) => setOther(e.target.value)} placeholder="e.g. Sage, Zoho Books UAE…" autoFocus /></div>
+          )}
+          {error && <div style={{ fontSize: 12, color: "var(--red)", marginTop: 6 }}>{error}</div>}
+
+          {!saved && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+              <button className="btn-primary" disabled={saving || !value} onClick={() => startSave(async () => {
+                const r = await saveAccountingSoftware(runId, stepId, value);
+                if (r.error) setError(r.error); else setSaved(true);
+              })}>{saving ? "Saving…" : "Save & continue"}</button>
+            </div>
+          )}
+
+          {saved && (
+            <SlackHandoffComposer
+              runId={runId}
+              stepId={stepId}
+              clientName={clientName}
+              software={value}
+              onClose={onClose}
+              onSent={onDone}
+            />
+          )}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saving}>Close</button>
+          {saved && (
+            <button className="btn-ghost" onClick={onDone}>Skip Slack & finish</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type ComposerOpts = Awaited<ReturnType<typeof loadSlackComposerOptions>>;
+type AttachableDoc = Awaited<ReturnType<typeof listRunAttachableDocs>>[number];
+
+function SlackHandoffComposer({
+  runId, stepId, clientName, software, onClose, onSent,
+}: { runId: string; stepId: string; clientName: string; software: string; onClose: () => void; onSent: () => void }) {
+  const [opts, setOpts] = useState<ComposerOpts | null>(null);
+  const [docs, setDocs] = useState<AttachableDoc[]>([]);
+  const [channel, setChannel] = useState("");
+  const [mentionIds, setMentionIds] = useState<string[]>([]);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [picked, setPicked] = useState<Record<string, true>>({});
+  const [message, setMessage] = useState("");
+  const [sending, startSend] = useTransition();
+  const [sendErr, setSendErr] = useState<string | null>(null);
+  const [sentNote, setSentNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([loadSlackComposerOptions(runId), listRunAttachableDocs(runId)]).then(([o, d]) => {
+      setOpts(o); setDocs(d);
+      const pre: Record<string, true> = {};
+      d.forEach((doc) => { if (doc.isPreferred) pre[doc.id] = true; });
+      setPicked(pre);
+    });
+  }, [runId]);
+
+  useEffect(() => {
+    const mentionTokens = mentionIds.map((id) => `@${opts?.users.find((u) => u.id === id)?.name ?? "team"}`).join(", ");
+    const greet = mentionTokens || "team";
+    setMessage(
+      `Hi ${greet},\n\nPlease create a ${software || "[software]"} account for ${clientName}. The client's trade licence + VAT certificate are attached.\n\nLet me know once the account is live and shared.\n\nThanks.`,
+    );
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [mentionIds, software, clientName, opts?.users]);
+
+  const usersFiltered = (opts?.users ?? []).filter((u) => {
+    const q = mentionQuery.trim().toLowerCase();
+    if (!q) return true;
+    return u.name.toLowerCase().includes(q) || u.real_name.toLowerCase().includes(q) || (u.email ?? "").toLowerCase().includes(q);
+  }).slice(0, 12);
+
+  if (!opts) {
+    return <div style={{ marginTop: 16, padding: 12, background: "var(--bg-soft)", borderRadius: 8, fontSize: 12.5, color: "var(--ink-3)" }}>Loading Slack workspace…</div>;
+  }
+  if (!opts.connected) {
+    return (
+      <div style={{ marginTop: 16, padding: 14, background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 8, fontSize: 13 }}>
+        <strong>Slack isn&apos;t connected yet.</strong>{" "}
+        <Link href="/settings#slack" style={{ color: "var(--orange)" }}>Connect Slack in Settings →</Link>
+        <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>Once connected, this card lets you send a templated setup request to the accounting-software team with the client&apos;s docs attached.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>2. Send setup request to team via Slack</div>
+
+      <div className="field"><label>Channel</label>
+        <select value={channel} onChange={(e) => setChannel(e.target.value)} style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13.5 }}>
+          <option value="">Select a channel…</option>
+          {opts.channels.map((c) => <option key={c.id} value={c.id}>{c.isPrivate ? "🔒 " : "#"}{c.name}</option>)}
+        </select>
+      </div>
+
+      <div className="field" style={{ marginTop: 10 }}><label>Mention (@) — pick people to ping</label>
+        <input value={mentionQuery} onChange={(e) => setMentionQuery(e.target.value)} placeholder="Type to filter (name, handle, email)…" style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13.5 }} />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+          {mentionIds.map((id) => {
+            const u = opts.users.find((x) => x.id === id);
+            return (
+              <span key={id} style={{ background: "var(--orange-soft)", color: "var(--orange)", padding: "3px 8px", borderRadius: 999, fontSize: 11.5, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                @{u?.name ?? "user"}
+                <button onClick={() => setMentionIds((arr) => arr.filter((x) => x !== id))} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", padding: 0, fontSize: 13 }}>×</button>
+              </span>
+            );
+          })}
+        </div>
+        {mentionQuery && (
+          <div style={{ marginTop: 6, border: "1px solid var(--border)", borderRadius: 8, maxHeight: 180, overflowY: "auto" }}>
+            {usersFiltered.map((u) => (
+              <button
+                key={u.id}
+                type="button"
+                onClick={() => { if (!mentionIds.includes(u.id)) setMentionIds([...mentionIds, u.id]); setMentionQuery(""); }}
+                style={{ display: "block", width: "100%", textAlign: "left", padding: "6px 10px", border: "none", background: "transparent", cursor: "pointer", fontSize: 12.5 }}
+              >
+                <strong>@{u.name}</strong> <span style={{ color: "var(--ink-3)" }}>· {u.real_name}{u.email ? ` · ${u.email}` : ""}</span>
+              </button>
+            ))}
+            {!usersFiltered.length && <div style={{ padding: 8, fontSize: 12, color: "var(--ink-3)" }}>No matches.</div>}
+          </div>
+        )}
+      </div>
+
+      <div className="field" style={{ marginTop: 10 }}><label>Attach documents</label>
+        {docs.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--ink-3)" }}>No uploaded documents on this run yet.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 4 }}>
+            {docs.map((d) => (
+              <label key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "4px 6px", borderRadius: 6, background: picked[d.id] ? "var(--orange-soft)" : "transparent", cursor: "pointer" }}>
+                <input type="checkbox" checked={!!picked[d.id]} onChange={(e) => setPicked((p) => { const n = { ...p }; if (e.target.checked) n[d.id] = true; else delete n[d.id]; return n; })} />
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.typeName} · <span style={{ color: "var(--ink-3)" }}>{d.label}</span></span>
+                {d.isPreferred && <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 999, background: "var(--orange)", color: "#fff" }}>RECOMMENDED</span>}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="field" style={{ marginTop: 10 }}><label>Message</label>
+        <textarea
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          rows={7}
+          style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13.5, fontFamily: "inherit", resize: "vertical" }}
+        />
+        <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Mentioned people are added at the top of the message in Slack format automatically — you can keep this body free of @-tokens.</div>
+      </div>
+
+      {sendErr && <div style={{ fontSize: 12, color: "var(--red)", marginTop: 6 }}>{sendErr}</div>}
+      {sentNote && <div style={{ fontSize: 12.5, color: "var(--ink-2)", marginTop: 6, background: "#ecfdf5", border: "1px solid #34d399", padding: "6px 10px", borderRadius: 6 }}>{sentNote}</div>}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+        <button className="btn-ghost" onClick={onClose} disabled={sending}>Skip & close</button>
+        <button
+          className="btn-primary"
+          disabled={sending || !channel || !message.trim()}
+          onClick={() => startSend(async () => {
+            setSendErr(null); setSentNote(null);
+            const docIds = Object.keys(picked);
+            const r = await sendSlackSetupRequest(runId, stepId, { channel, mentionIds, message, docIds });
+            if (!r.ok) { setSendErr(r.error ?? "Failed to send"); return; }
+            if (r.error) setSentNote(r.error); else setSentNote("Sent to Slack.");
+            // Auto-close after a brief beat so the user sees the confirmation.
+            setTimeout(onSent, 900);
+          })}
+        >{sending ? "Sending…" : "Send to Slack"}</button>
+      </div>
+    </div>
+  );
+}
+
+interface AccessEntry { on: boolean; label: string; systemName: string; method: string; sop: string; emails: string[]; accessMode: AccessMode; isCustom?: boolean; category?: string }
 
 function AccessBuilderModal({
   runId, stepId, onClose, onDone,
@@ -2771,7 +4467,7 @@ function AccessBuilderModal({
   const [mailbox, setMailbox] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [people, setPeople] = useState<{ label: string; email: string }[]>([]);
   const [entries, setEntries] = useState<Record<string, AccessEntry>>(() =>
-    Object.fromEntries(ACCESS_TYPES.map((t) => [t.id, { on: false, label: t.label, systemName: "", method: t.methods[0], sop: t.sop.join("\n"), emails: [] }])),
+    Object.fromEntries(ACCESS_TYPES.map((t) => [t.id, { on: false, label: t.label, systemName: "", method: t.methods[0], sop: t.sop.join("\n"), emails: [], accessMode: "viewer" as AccessMode }])),
   );
 
   useEffect(() => {
@@ -2782,12 +4478,14 @@ function AccessBuilderModal({
     ]).then(async ([{ data }, { data: runRow }, { data: teamRows }]) => {
       const cl = (runRow as { clients?: { name?: string } | { name?: string }[] } | null)?.clients;
       const name = Array.isArray(cl) ? cl[0]?.name : cl?.name;
-      const slug = (name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24) || "client";
-      const secure = `secure+${slug}@finanshels.com`;
+      const secure = `secure+${clientEmailSlug(name ?? "")}@finanshels.com`;
       setSecureDefault(secure);
 
-      // Build the email option list: secure default + master admin + assigned people.
-      const opts: { label: string; email: string }[] = [{ label: "Secure mailbox (default)", email: secure }];
+      // Build the email option list: shared secure inbox, the per-client alias, master admin + assigned people.
+      const opts: { label: string; email: string }[] = [
+        { label: "Shared secure inbox", email: "secure@finanshels.com" },
+        { label: "Per-client secure alias (default)", email: secure },
+      ];
       const orgId = (runRow as { org_id?: string } | null)?.org_id;
       if (orgId) {
         const { data: admins } = await supabase.from("team_members").select("full_name,email").eq("org_id", orgId).eq("role", "admin").eq("active", true);
@@ -2806,7 +4504,8 @@ function AccessBuilderModal({
         setEntries((prev) => {
           const next = { ...prev };
           rows.forEach((it) => {
-            next[it.id] = { on: true, label: it.label, systemName: it.systemName ?? "", method: it.method, sop: (it.sop ?? []).join("\n"), emails: (it.email ?? "").split(",").map((s) => s.trim()).filter(Boolean) };
+            const isCustom = !ACCESS_TYPES.some((t) => t.id === it.id);
+            next[it.id] = { on: true, label: it.label, systemName: it.systemName ?? "", method: it.method, sop: (it.sop ?? []).join("\n"), emails: (it.email ?? "").split(",").map((s) => s.trim()).filter(Boolean), accessMode: it.accessMode ?? "viewer", isCustom, category: isCustom ? "Other" : undefined };
           });
           return next;
         });
@@ -2821,11 +4520,34 @@ function AccessBuilderModal({
   const enabledCount = Object.values(entries).filter((e) => e.on).length;
   const sendMailboxRequest = () => { setMailbox("sending"); requestSecureMailbox(runId, (email.split(",")[0] || secureDefault).trim()).then((r) => setMailbox(r.ok ? "sent" : "error")); };
 
+  const addCustom = () => {
+    const id = `custom_${Date.now().toString(36)}`;
+    setEntries((prev) => ({
+      ...prev,
+      [id]: {
+        on: true, label: "Custom system", systemName: "", method: "Add us as a user (recommended)",
+        sop: ["Log in to the system.", "Add {email} with read / reporting access.", "Confirm here once done."].join("\n"),
+        emails: [secureDefault], accessMode: "viewer", isCustom: true, category: "Other",
+      },
+    }));
+  };
+
   const save = () => start(async () => {
-    const items: AccessItem[] = ACCESS_TYPES.filter((t) => entries[t.id].on).map((t) => {
-      const e = entries[t.id];
-      return { id: t.id, label: e.label.trim() || t.label, method: e.method, email: (e.emails.length ? e.emails.join(", ") : secureDefault) || AUTHORISED_USER_EMAIL, sop: e.sop.split("\n").map((s) => s.trim()).filter(Boolean), systemName: e.systemName.trim() || undefined, status: "requested" };
-    });
+    const items: AccessItem[] = Object.entries(entries)
+      .filter(([, e]) => e.on)
+      .map(([id, e]) => {
+        const predefined = ACCESS_TYPES.find((t) => t.id === id);
+        return {
+          id,
+          label: e.label.trim() || predefined?.label || "Custom access",
+          method: e.accessMode === "credentials" ? "Share login credentials" : e.method,
+          email: e.accessMode === "credentials" ? "" : ((e.emails.length ? e.emails.join(", ") : secureDefault) || AUTHORISED_USER_EMAIL),
+          sop: e.sop.split("\n").map((s) => s.trim()).filter(Boolean),
+          systemName: e.systemName.trim() || undefined,
+          status: "requested",
+          accessMode: e.accessMode,
+        };
+      });
     const r = await saveAccess(runId, stepId, items);
     if (!r.error) onDone();
   });
@@ -2845,24 +4567,52 @@ function AccessBuilderModal({
               </button>
             </div>
           </div>
-          {!loaded ? <div style={{ color: "var(--ink-3)", fontSize: 13 }}>Loading…</div> : ACCESS_TYPES.map((t) => {
-            const e = entries[t.id];
+          {!loaded ? <div style={{ color: "var(--ink-3)", fontSize: 13 }}>Loading…</div> : (
+            <>
+            {Object.entries(entries).map(([id, e]) => {
+              const t = ACCESS_TYPES.find((x) => x.id === id);
+              const category = t?.category ?? e.category ?? "Other";
+              const isCustom = !t || e.isCustom;
+              const fallbackMethods = t?.methods ?? ["Add us as a user (recommended)", "Share login credentials"];
+              const fallbackSop = t?.sop ?? ["Log in to the system.", "Add {email} with read access.", "Confirm here once done."];
             return (
-              <div key={t.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, marginBottom: 8, background: e.on ? "#fff" : "var(--bg-soft)" }}>
+              <div key={id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, marginBottom: 8, background: e.on ? "#fff" : "var(--bg-soft)" }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13.5, fontWeight: 600 }}>
-                  <input type="checkbox" checked={e.on} onChange={(ev) => set(t.id, { on: ev.target.checked, emails: ev.target.checked && !e.emails.length ? [secureDefault] : e.emails })} style={{ accentColor: "var(--orange)" }} />
-                  {t.label}
-                  <span className="pill gray" style={{ fontSize: 10, marginLeft: "auto" }}>{t.category}</span>
+                  <input type="checkbox" checked={e.on} onChange={(ev) => set(id, { on: ev.target.checked, emails: ev.target.checked && !e.emails.length ? [secureDefault] : e.emails })} style={{ accentColor: "var(--orange)" }} />
+                  {isCustom ? (
+                    <input value={e.label} onChange={(ev) => set(id, { label: ev.target.value })} onClick={(ev) => ev.preventDefault()} style={{ flex: 1, border: "1px dashed var(--border-strong)", borderRadius: 6, padding: "3px 7px", fontSize: 13.5, fontWeight: 600, background: "#fff" }} placeholder="Custom system name" />
+                  ) : (t?.label ?? e.label)}
+                  <span className="pill gray" style={{ fontSize: 10, marginLeft: "auto" }}>{isCustom ? "Custom" : category}</span>
+                  {isCustom && (
+                    <button type="button" className="icon-btn" onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); setEntries((prev) => { const n = { ...prev }; delete n[id]; return n; }); }} style={{ color: "var(--red)" }} aria-label="Remove custom access"><Icon name="trash-2" size={13} /></button>
+                  )}
                 </label>
                 {e.on && (
                   <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                      <div className="field" style={{ margin: 0 }}><label>Display label</label><input value={e.label} onChange={(ev) => set(t.id, { label: ev.target.value })} /></div>
-                      <div className="field" style={{ margin: 0 }}><label>Specific system name (optional)</label><input value={e.systemName} onChange={(ev) => set(t.id, { systemName: ev.target.value })} placeholder="e.g. Emirates NBD, Telr" /></div>
+                      <div className="field" style={{ margin: 0 }}><label>Display label</label><input value={e.label} onChange={(ev) => set(id, { label: ev.target.value })} /></div>
+                      <div className="field" style={{ margin: 0 }}><label>Specific system name (optional)</label><input value={e.systemName} onChange={(ev) => set(id, { systemName: ev.target.value })} placeholder="e.g. Emirates NBD, Telr" /></div>
                     </div>
-                    <div className="field" style={{ margin: 0 }}><label>How access is given</label>
-                      <select value={e.method} onChange={(ev) => set(t.id, { method: ev.target.value })}>{accessTypeById(t.id)!.methods.map((m) => <option key={m} value={m}>{m}</option>)}</select>
+                    {/* How the client shares this access */}
+                    <div className="field" style={{ margin: 0 }}>
+                      <label>How does the client share this access?</label>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button type="button" className={"tab-pill" + (e.accessMode !== "credentials" ? " active" : "")}
+                          onClick={() => set(id, { accessMode: "viewer", method: fallbackMethods[0], sop: fallbackSop.join("\n") })}>
+                          {e.accessMode !== "credentials" ? "✓ " : ""}Share viewer / user access
+                        </button>
+                        <button type="button" className={"tab-pill" + (e.accessMode === "credentials" ? " active" : "")}
+                          onClick={() => set(id, { accessMode: "credentials", method: "Share login credentials", sop: CREDENTIALS_SOP.join("\n") })}>
+                          {e.accessMode === "credentials" ? "✓ " : ""}Share login credentials
+                        </button>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 6 }}>
+                        {e.accessMode === "credentials"
+                          ? "The client pastes their username & password in the portal. We store the password encrypted; you can reveal it in the Onboarding Portal tab."
+                          : "The client adds us as a read-only / authorised user, following the SOP."}
+                      </div>
                     </div>
+                    {e.accessMode !== "credentials" && (
                     <div className="field" style={{ margin: 0 }}>
                       <label>Grant access to which email(s)? — used in this system&apos;s SOP</label>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
@@ -2870,7 +4620,7 @@ function AccessBuilderModal({
                           const on = e.emails.includes(p.email);
                           return (
                             <button key={p.email} type="button" className={"tab-pill" + (on ? " active" : "")} title={p.email}
-                              onClick={() => set(t.id, { emails: on ? e.emails.filter((x) => x !== p.email) : [...e.emails, p.email] })}>
+                              onClick={() => set(id, { emails: on ? e.emails.filter((x) => x !== p.email) : [...e.emails, p.email] })}>
                               {on ? "✓ " : ""}{p.label}
                             </button>
                           );
@@ -2879,7 +4629,7 @@ function AccessBuilderModal({
                       {/* any custom emails already added that aren't in the option list */}
                       {e.emails.filter((em) => !people.some((p) => p.email === em)).map((em) => (
                         <span key={em} className="tab-pill active" style={{ marginRight: 6 }}>✓ {em}
-                          <button type="button" onClick={() => set(t.id, { emails: e.emails.filter((x) => x !== em) })} style={{ marginLeft: 6, background: "none", border: "none", cursor: "pointer", color: "inherit" }}>×</button>
+                          <button type="button" onClick={() => set(id, { emails: e.emails.filter((x) => x !== em) })} style={{ marginLeft: 6, background: "none", border: "none", cursor: "pointer", color: "inherit" }}>×</button>
                         </span>
                       ))}
                       <input placeholder="+ add another email & press Enter"
@@ -2887,20 +4637,26 @@ function AccessBuilderModal({
                           if (ev.key === "Enter") {
                             ev.preventDefault();
                             const v = (ev.target as HTMLInputElement).value.trim();
-                            if (v && /\S+@\S+\.\S+/.test(v) && !e.emails.includes(v)) { set(t.id, { emails: [...e.emails, v] }); (ev.target as HTMLInputElement).value = ""; }
+                            if (v && /\S+@\S+\.\S+/.test(v) && !e.emails.includes(v)) { set(id, { emails: [...e.emails, v] }); (ev.target as HTMLInputElement).value = ""; }
                           }
                         }}
                         style={{ width: "100%", marginTop: 6, border: "1px dashed var(--border-strong)", borderRadius: 8, padding: "7px 10px", fontSize: 12.5 }} />
                       {e.emails.length === 0 && <div style={{ fontSize: 11.5, color: "var(--red)", marginTop: 4 }}>Pick at least one email — without it the access request isn&apos;t effective.</div>}
                     </div>
+                    )}
                     <div className="field" style={{ margin: 0 }}><label>SOP — one step per line ({"{email}"} is auto-filled with the selected email)</label>
-                      <textarea className="notes" value={e.sop} onChange={(ev) => set(t.id, { sop: ev.target.value })} style={{ minHeight: 100, fontFamily: "inherit" }} />
+                      <textarea className="notes" value={e.sop} onChange={(ev) => set(id, { sop: ev.target.value })} style={{ minHeight: 100, fontFamily: "inherit" }} />
                     </div>
                   </div>
                 )}
               </div>
             );
           })}
+          <button type="button" className="btn-ghost" onClick={addCustom} style={{ width: "100%", justifyContent: "center", marginTop: 4, border: "1px dashed var(--border-strong)" }}>
+            <Icon name="plus" size={13} /> Add custom access type
+          </button>
+          </>
+          )}
         </div>
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
@@ -3088,5 +4844,448 @@ function DriveBuilderModal({
         </div>
       </div>
     </div>
+  );
+}
+
+function ZohoPushModal({
+  runId, stepId, onClose, onDone,
+}: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
+  const supabase = createClient();
+  const [coaCount, setCoaCount] = useState<number | null>(null);
+  const [pushing, startPush] = useTransition();
+  const [result, setResult] = useState<{ created: number; skipped: number; failed: number; errors: Array<{ code: string; account: string; reason: string }> } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.from("coa_instances").select("accounts").eq("run_id", runId).maybeSingle().then(({ data }) => {
+      const lines = (data?.accounts ?? []) as Array<{ include?: boolean; account?: string }>;
+      setCoaCount(lines.filter((l) => l.include !== false && l.account?.trim()).length);
+    });
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const push = () => {
+    setError(null);
+    startPush(async () => {
+      const r = await pushCoaToZoho(runId, stepId);
+      if (r.error) setError(r.error);
+      else setResult({ created: r.created ?? 0, skipped: r.skipped ?? 0, failed: r.failed ?? 0, errors: r.errors ?? [] });
+    });
+  };
+
+  const close = () => {
+    if (result && result.failed === 0) onDone();
+    else onClose();
+  };
+
+  return (
+    <div className="modal-wrap" onClick={close}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <div className="modal-head">
+          <h3>Import COA into Zoho Books</h3>
+          <button className="icon-btn" onClick={close}><Icon name="x" size={16} /></button>
+        </div>
+        <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ fontSize: 13.5, color: "var(--ink-3)", lineHeight: 1.55 }}>
+            Pushes every account in the saved COA into the Zoho Books org connected by any team member.
+            Duplicate codes already in Zoho are skipped.
+          </div>
+          <div style={{ background: "var(--bg-soft)", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", fontSize: 13 }}>
+            <Icon name="layers" size={13} /> {coaCount === null ? "Loading COA…" : `${coaCount} account${coaCount === 1 ? "" : "s"} ready to push`}
+          </div>
+
+          {result && (
+            <div style={{ background: result.failed === 0 ? "#ecfdf5" : "#fef3c7", border: `1px solid ${result.failed === 0 ? "#a7f3d0" : "#fde68a"}`, color: result.failed === 0 ? "#065f46" : "#92400e", borderRadius: 8, padding: "10px 12px", fontSize: 13 }}>
+              <div style={{ fontWeight: 600 }}>{result.failed === 0 ? "Pushed successfully" : "Pushed with some failures"}</div>
+              <div style={{ marginTop: 4 }}>{result.created} created · {result.skipped} already in Zoho · {result.failed} failed</div>
+              {result.errors.length > 0 && (
+                <details style={{ marginTop: 6 }}>
+                  <summary style={{ cursor: "pointer", fontSize: 12 }}>Show failed accounts ({result.errors.length})</summary>
+                  <ul style={{ margin: "6px 0 0 18px", padding: 0, fontSize: 12 }}>
+                    {result.errors.slice(0, 20).map((e, i) => <li key={i}>{e.code} · {e.account}: {e.reason}</li>)}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", borderRadius: 8, padding: "10px 12px", fontSize: 13 }}>
+              {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn-ghost" onClick={close}>{result ? "Close" : "Cancel"}</button>
+          {!result && (
+            <button className="btn-primary" onClick={push} disabled={pushing || coaCount === 0}>
+              {pushing ? "Pushing…" : `Push ${coaCount ?? 0} accounts to Zoho`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Optional Operations stage — two small yes/no config modals.
+
+   Both reuse the existing escalateCatchup / escalateUrgentCompliance actions
+   to spin up a parallel run when needed. "No" just completes the step.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+function CatchupConfigModal({
+  runId, stepId, onClose, onDone,
+}: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
+  const [needed, setNeeded] = useState<"yes" | "no" | null>(null);
+  const [service, setService] = useState("Catch-up bookkeeping");
+  const [gautham, setGautham] = useState<{ id: string; name: string } | null>(null);
+  const [resolving, setResolving] = useState(true);
+  const [saving, start] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCatchupGautham().then((r) => {
+      if (cancelled) return;
+      setGautham(r);
+      setResolving(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = () => {
+    setErr(null);
+    if (needed === "yes") {
+      if (!gautham) { setErr("Couldn't resolve the Tax Head (Gautham) — check the org chart."); return; }
+      if (!service.trim()) { setErr("Add a service / scope."); return; }
+    }
+    start(async () => {
+      if (needed === "yes" && gautham) {
+        const r = await escalateCatchup(runId, stepId, gautham.id, gautham.name, [{ service: service.trim(), title: service.trim() }]);
+        if (r.error) { setErr(r.error); return; }
+        onDone();
+      } else {
+        const r = (await completeStep(runId, stepId)) as { error?: string };
+        if (r.error) { setErr(r.error); return; }
+        onDone();
+      }
+    });
+  };
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 540, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd">
+          <h3>Catch-up account configuration</h3>
+          <div className="sub">Decide if the client needs catch-up bookkeeping. If yes, we&apos;ll spin up a parallel catch-up run assigned to Gautham.</div>
+        </div>
+        <div className="bd" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setNeeded("yes")}
+              style={{ flex: 1, padding: "10px 14px", border: needed === "yes" ? "1px solid var(--orange)" : "1px solid var(--border)", background: needed === "yes" ? "var(--orange-soft)" : "transparent", fontWeight: 600, borderRadius: 8, cursor: "pointer" }}
+            >Yes — catch-up needed</button>
+            <button
+              type="button"
+              onClick={() => setNeeded("no")}
+              style={{ flex: 1, padding: "10px 14px", border: needed === "no" ? "1px solid var(--ink-2)" : "1px solid var(--border)", background: needed === "no" ? "var(--bg-soft)" : "transparent", fontWeight: 600, borderRadius: 8, cursor: "pointer" }}
+            >No — not needed</button>
+          </div>
+          {needed === "yes" && (
+            <>
+              <div className="field"><label>Service / scope</label>
+                <input value={service} onChange={(e) => setService(e.target.value)} placeholder="Catch-up bookkeeping" />
+              </div>
+              <div className="field"><label>Account Manager</label>
+                <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "var(--bg-soft)", color: "var(--ink-1)" }}>
+                  {resolving ? "Resolving Gautham…" : gautham?.name ?? "Gautham (not found in org chart)"}
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 4 }}>Locked to Gautham — the only AM allowed to own catch-up accounting.</div>
+              </div>
+            </>
+          )}
+          {needed === "no" && (
+            <div style={{ fontSize: 12.5, color: "var(--ink-3)", padding: "6px 4px" }}>This step will be marked complete with a &ldquo;Not needed&rdquo; note. You can re-open it later from the run timeline.</div>
+          )}
+          {err && <div style={{ fontSize: 12.5, color: "var(--red)" }}>{err}</div>}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn-primary" disabled={saving || needed === null || (needed === "yes" && resolving)} onClick={save}>
+            {saving ? "Saving…" : needed === "yes" ? "Configure & spin up catch-up run" : "Mark not needed"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UrgentConfigModal({
+  runId, stepId, onClose, onDone,
+}: { runId: string; stepId: string; people: { id: string; name: string }[]; onClose: () => void; onDone: () => void }) {
+  const [needed, setNeeded] = useState<"yes" | "no" | null>(null);
+  const SERVICES: { id: string; label: string; note?: string }[] = [
+    { id: "ct-registration", label: "Corporate Tax Registration" },
+    { id: "vat-registration", label: "VAT Registration" },
+    { id: "ct-filing", label: "Corporate Tax Filing" },
+    { id: "vat-filing", label: "VAT Filing" },
+    { id: "audit", label: "Statutory Audit", note: "Uses the CT Filing template" },
+  ];
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [saving, start] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
+
+  const toggle = (id: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const save = () => {
+    setErr(null);
+    if (needed === "yes" && picked.size === 0) {
+      setErr("Pick at least one service to escalate, or choose No urgent compliance.");
+      return;
+    }
+    start(async () => {
+      const r = await escalateUrgentComplianceServices(runId, stepId, needed === "yes", Array.from(picked));
+      if (r.error) { setErr(r.error); return; }
+      onDone();
+    });
+  };
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 600, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd">
+          <h3>Urgent compliance configuration</h3>
+          <div className="sub">Is there any urgent compliance to handle for this client? If yes, pick the services — each spins up a parallel run on the Tax team (auto-assigned by capacity, default head: Gautham).</div>
+        </div>
+        <div className="bd" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setNeeded("yes")}
+              style={{ flex: 1, padding: "10px 14px", border: needed === "yes" ? "1px solid var(--red)" : "1px solid var(--border)", background: needed === "yes" ? "var(--red-soft, #fdecec)" : "transparent", fontWeight: 600, borderRadius: 8, cursor: "pointer" }}
+            >Yes — there is urgent compliance</button>
+            <button
+              type="button"
+              onClick={() => { setNeeded("no"); setPicked(new Set()); }}
+              style={{ flex: 1, padding: "10px 14px", border: needed === "no" ? "1px solid var(--ink-2)" : "1px solid var(--border)", background: needed === "no" ? "var(--bg-soft)" : "transparent", fontWeight: 600, borderRadius: 8, cursor: "pointer" }}
+            >No urgent compliance</button>
+          </div>
+          {needed === "yes" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-1)" }}>Which services?</div>
+              {SERVICES.map((s) => {
+                const on = picked.has(s.id);
+                return (
+                  <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", border: on ? "1px solid var(--orange)" : "1px solid var(--border)", borderRadius: 8, cursor: "pointer", background: on ? "var(--orange-soft)" : "transparent" }}>
+                    <input type="checkbox" checked={on} onChange={() => toggle(s.id)} style={{ width: 16, height: 16 }} />
+                    <span style={{ fontWeight: 600, fontSize: 13.5 }}>{s.label}</span>
+                    {s.note && <span style={{ fontSize: 11.5, color: "var(--ink-3)", marginLeft: "auto" }}>{s.note}</span>}
+                  </label>
+                );
+              })}
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>One parallel run will be created per ticked service, auto-assigned to the least-loaded tax-team member.</div>
+            </div>
+          )}
+          {needed === "no" && (
+            <div style={{ fontSize: 12.5, color: "var(--ink-3)", padding: "6px 4px" }}>The step will be marked complete with a &ldquo;No urgent compliance&rdquo; note. You can re-open it later if anything surfaces.</div>
+          )}
+          {err && <div style={{ fontSize: 12.5, color: "var(--red)" }}>{err}</div>}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn-primary" disabled={saving || needed === null} onClick={save}>
+            {saving ? "Saving…" : needed === "yes" ? `Spin up ${picked.size || ""} run${picked.size === 1 ? "" : "s"} for Tax team` : "Mark — no urgent compliance"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sticky pill shown when this run is part of a client group.
+ * Lets the team flip between sibling entities (each entity = its own run)
+ * without losing the group context.
+ */
+function GroupSwitcherPill({
+  group, currentRunId,
+}: {
+  group: NonNullable<RunDetail["group"]>;
+  currentRunId: string;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, background: "var(--orange-soft)", color: "var(--orange)", fontSize: 12, fontWeight: 700, border: "1px solid var(--orange)" }}>
+        <Icon name="users" size={12} /> Group: {group.name}
+      </span>
+      {group.primaryContactName && (
+        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+          {group.primaryContactName}{group.primaryContactEmail ? ` · ${group.primaryContactEmail}` : ""}
+        </span>
+      )}
+      <div style={{ position: "relative" }}>
+        <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setOpen((v) => !v)}>
+          Switch entity ({group.siblings.length}) <Icon name="chevron-down" size={11} />
+        </button>
+        {open && (
+          <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 50, minWidth: 280, background: "#fff", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 24px rgba(15,23,42,0.12)", padding: 4 }} onMouseLeave={() => setOpen(false)}>
+            {group.siblings.map((s) => {
+              const current = s.runId === currentRunId;
+              return (
+                <button
+                  key={s.runId}
+                  className="btn-ghost"
+                  onClick={() => { if (!current) router.push(`/onboarding/${s.runId}`); setOpen(false); }}
+                  style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, background: current ? "var(--bg-soft)" : "transparent" }}
+                >
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-1)" }}>{s.clientName}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{current ? "Currently viewing" : `${s.progress}% · ${s.status}`}</div>
+                  </div>
+                  {!current && <Icon name="arrow-right" size={13} />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Mark a run "blocked" (or unblock it) — pauses the SLA + compliance crons
+ * for this run. AM-level and above only (server-side enforced).
+ *
+ * `compact` (true) renders just the Unblock affordance inline with the red
+ * banner; (false) renders the "Mark blocked" picker for the header row.
+ */
+function BlockControls({
+  runId, currentReason, compact, onChange,
+}: {
+  runId: string;
+  currentReason: string | null;
+  compact: boolean;
+  onChange: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState<string>("");
+  const [custom, setCustom] = useState("");
+  const [busy, start] = useTransition();
+  const PRESETS = [
+    "Catch-up bookkeeping incomplete",
+    "Waiting on client documents",
+    "Waiting on FTA / authority response",
+    "Pending client sign-off / decision",
+  ];
+
+  const submit = (reason: string | null) => start(async () => {
+    const res = await setRunBlocked(runId, reason);
+    if (res.error) { alert(res.error); return; }
+    setOpen(false); setPicked(""); setCustom("");
+    onChange();
+  });
+
+  if (compact) {
+    return (
+      <button
+        type="button"
+        className="btn-ghost"
+        disabled={busy}
+        onClick={() => submit(null)}
+        style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12, color: "var(--red)" }}
+      >
+        {busy ? "Unblocking…" : "Unblock"}
+      </button>
+    );
+  }
+
+  if (currentReason) {
+    return (
+      <button type="button" className="btn-ghost" disabled={busy} onClick={() => submit(null)} title="Resume SLA + compliance alerts">
+        <Icon name="play-circle" size={13} /> {busy ? "Unblocking…" : "Unblock"}
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button type="button" className="btn-ghost" onClick={() => setOpen((v) => !v)} title="Pause SLA + compliance alerts (the team is waiting on upstream)">
+        <Icon name="pause-circle" size={13} /> Mark blocked
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 60, minWidth: 320, background: "#fff", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 24px rgba(15,23,42,0.12)", padding: 12 }} onMouseLeave={() => setOpen(false)}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-1)", marginBottom: 8 }}>Why is this blocked?</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {PRESETS.map((p) => (
+              <label key={p} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer", background: picked === p ? "var(--bg-soft)" : "transparent", fontSize: 12.5 }}>
+                <input type="radio" name="block-reason" checked={picked === p} onChange={() => setPicked(p)} /> {p}
+              </label>
+            ))}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer", background: picked === "_custom" ? "var(--bg-soft)" : "transparent", fontSize: 12.5 }}>
+              <input type="radio" name="block-reason" checked={picked === "_custom"} onChange={() => setPicked("_custom")} /> Other…
+            </label>
+            {picked === "_custom" && (
+              <input
+                autoFocus value={custom} onChange={(e) => setCustom(e.target.value)}
+                placeholder="Short reason"
+                style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, marginTop: 4 }}
+              />
+            )}
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 10 }}>
+            <button type="button" className="btn-ghost" onClick={() => setOpen(false)} disabled={busy} style={{ padding: "4px 10px", fontSize: 12 }}>Cancel</button>
+            <button
+              type="button" className="btn-primary"
+              disabled={busy || (picked === "_custom" ? !custom.trim() : !picked)}
+              onClick={() => submit(picked === "_custom" ? custom.trim() : picked)}
+              style={{ padding: "4px 12px", fontSize: 12 }}
+            >
+              {busy ? "Blocking…" : "Block run"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeleteRunButton({ runId }: { runId: string }) {
+  const router = useRouter();
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const { effectiveRole } = useIdentity();
+  if (!["admin", "ops_head", "am"].includes(effectiveRole)) return null;
+  async function doDelete() {
+    setBusy(true);
+    const res = await archiveUrgentRun(runId);
+    setBusy(false);
+    if (res.error) { alert(res.error); return; }
+    router.push("/onboarding");
+  }
+  if (confirm) {
+    return (
+      <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+        <span style={{ fontSize: 12, color: "var(--red)" }}>Archive this run?</span>
+        <button className="btn-ghost" style={{ fontSize: 12, color: "var(--red)", padding: "2px 8px" }} onClick={doDelete} disabled={busy}>{busy ? "…" : "Confirm"}</button>
+        <button className="btn-ghost" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setConfirm(false)}>Cancel</button>
+      </span>
+    );
+  }
+  return (
+    <button className="btn-ghost" style={{ color: "var(--red)" }} onClick={() => setConfirm(true)}>
+      <Icon name="trash-2" size={13} /> Delete run
+    </button>
   );
 }

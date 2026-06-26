@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/auth";
 import { canOpenSettings } from "@/lib/roles";
-import { saveTemplate } from "@/lib/templates-store";
+import { getTemplate, saveTemplate } from "@/lib/templates-store";
 import { runAi } from "@/lib/ai";
 import type { OnbTemplate, StepKind, WhoToken } from "@/lib/onboarding-templates";
 
@@ -81,6 +81,35 @@ export async function createTemplateFromText(text: string): Promise<{ error?: st
   }
   revalidatePath("/onboarding");
   return { id };
+}
+
+/** Duplicate an existing template into a new editable copy. Returns the new id. */
+export async function forkTemplate(sourceId: string): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  if (!canOpenSettings(session.profile.role)) return { error: "Only the Master Admin or Ops Head can fork templates." };
+  if (!sourceId) return { error: "No template to fork." };
+
+  const src = await getTemplate(sourceId);
+  if (!src) return { error: "Source template not found." };
+
+  const baseSlug = (src.name ?? sourceId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 24) || "template";
+  const newId = `${baseSlug}-${crypto.randomBytes(2).toString("hex")}`;
+  const copy: OnbTemplate = {
+    ...structuredClone(src),
+    id: newId,
+    name: `${src.name} (copy)`,
+    usedBy: 0,
+    live: src.live ?? true,
+  };
+
+  try {
+    await saveTemplate(copy);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Save failed" };
+  }
+  revalidatePath("/onboarding");
+  return { id: newId };
 }
 
 export async function saveTemplateAction(t: OnbTemplate): Promise<{ error?: string }> {

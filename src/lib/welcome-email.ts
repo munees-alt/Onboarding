@@ -6,10 +6,10 @@
 // Placeholders:
 //   {contactName}  — the person we met (client owner / primary contact)
 //   {companyName}  — the client company name
-//   {portalUrl}    — the dispatched client-portal magic link (absolute URL)
+//   {portalUrl}    — the dispatched onboarding-portal magic link (absolute URL)
 //   {momBody}      — the AI-drafted minutes of the meeting (from real notes)
 
-export const WELCOME_EMAIL_SUBJECT = "Welcome to Finanshels — your client portal & meeting notes";
+export const WELCOME_EMAIL_SUBJECT = "Welcome to Finanshels — your onboarding portal & meeting notes";
 
 export const WELCOME_EMAIL_TEMPLATE = `Dear {contactName},
 
@@ -17,8 +17,8 @@ Greetings from Finanshels.com!
 
 We are on a mission to simplify financial life for founders, and we are thrilled to have {companyName} onboard. We look forward to serving you for the years to come. Thank you for taking the time to meet with us today.
 
-YOUR CLIENT PORTAL
-Please find your secure client portal link below:
+YOUR ONBOARDING PORTAL
+Please find your secure onboarding portal link below:
 {portalUrl}
 
 To log in, enter your email — we will send you a login code. Copy the code from your email, paste it in, and you are in.
@@ -80,8 +80,11 @@ export function cleanMinutes(raw: string): string {
     break;
   }
 
-  // Drop a trailing sign-off (the template provides "Best Regards, Team Finanshels").
-  const SIGNOFF = /^(best regards|warm regards|kind regards|regards|sincerely|thanks|thank you|cheers|team finanshels|finanshels)\b[,.]?$/i;
+  // Drop a trailing sign-off block (the template provides "Best Regards, Team Finanshels").
+  // Only strip CONTIGUOUS trailing closer/blank lines — stop the moment we hit a
+  // bullet, "Next steps", "Action items", etc., so structured sections at the end
+  // are never eaten.
+  const SIGNOFF = /^(best regards|warm regards|kind regards|regards|sincerely|cheers|team finanshels|finanshels|signed off|with regards)\b[,.]?$/i;
   while (lines.length) {
     const last = lines[lines.length - 1].trim();
     if (last === "" || SIGNOFF.test(last)) { lines.pop(); continue; }
@@ -91,6 +94,50 @@ export function cleanMinutes(raw: string): string {
   // Collapse 3+ blank lines to a single blank line.
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
+
+// =========================================================================
+// INTAKE-FORM TEMPLATES — sent right after the client is marked signed, BEFORE
+// the kickoff call. Lighter than the full welcome email — its only job is to
+// get the client into the portal to fill the intake form.
+// =========================================================================
+
+export const INTAKE_EMAIL_SUBJECT = "Welcome to Finanshels — please complete your onboarding form";
+
+export const INTAKE_EMAIL_TEMPLATE = `Dear {contactName},
+
+Welcome to Finanshels! We're excited to start working with {companyName}.
+
+To begin, please complete your onboarding form using your secure onboarding portal:
+{portalUrl}
+
+Inside the portal you can fill in your business details, see which documents we'll need, and grant the access we require. The form takes about 10–15 minutes and you can save and come back to it any time. To log in, enter your email — we'll send you a login code.
+
+If anything is unclear, just reply to this email and we'll help.
+
+Best Regards,
+Team Finanshels`;
+
+export const INTAKE_WHATSAPP_TEMPLATE = `Hi {contactName} — welcome to Finanshels!
+
+Please complete your onboarding form here: {portalUrl}
+
+Takes about 10 mins. To log in, enter your email and we'll send a code. Reply here if you have any questions.
+
+— Team Finanshels`;
+
+export interface IntakeTemplateFields {
+  contactName?: string;
+  companyName?: string;
+  portalUrl: string;
+}
+
+const fill = (tpl: string, f: IntakeTemplateFields) => tpl
+  .replace(/\{contactName\}/g, f.contactName?.trim() || "there")
+  .replace(/\{companyName\}/g, f.companyName?.trim() || "your company")
+  .replace(/\{portalUrl\}/g, f.portalUrl);
+
+export function renderIntakeEmail(f: IntakeTemplateFields): string { return fill(INTAKE_EMAIL_TEMPLATE, f); }
+export function renderIntakeWhatsapp(f: IntakeTemplateFields): string { return fill(INTAKE_WHATSAPP_TEMPLATE, f); }
 
 /** Fills the saved template with the run's real details. */
 export function renderWelcomeEmail(f: WelcomeEmailFields): string {

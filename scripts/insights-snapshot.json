@@ -1,0 +1,138 @@
+[
+  {
+    "id": "0b50b66c-5b7b-4375-99c2-8b406e11d814",
+    "name": "FRESH DAILY BAKERY PRODUCTS MANUFACTURING L.L.C",
+    "call_insights": {
+      "sections": [
+        {
+          "body": "Bakery manufacturing. Primary customer Bloomingbox (monthly invoicing, paid in 4 weekly instalments). About 7-10 weekly suppliers, ~95% credit, small cash via Al Ansari card. External operator (Conventures) runs scaling; Bloomingbox finance supports transitional accounting.",
+          "heading": "Business model"
+        },
+        {
+          "body": "ERPNext is the core ERP (procurement, sales, inventory, SKU, COGS, month-end) and accounting MUST be done inside ERPNext. Jan-Feb historically on Tally + Excel (needs review/reclassification). ERP still being customised.",
+          "heading": "Systems & software"
+        },
+        {
+          "body": "Single AED account (ADCB); USD capability unused. No loans, credit cards or payment gateways. Minimal cash via Al Ansari card.",
+          "heading": "Banking"
+        },
+        {
+          "body": "Quarterly VAT with an URGENT Mar-May catch-up filing. Corporate Tax annual filing. 2025 to be finalised then audited.",
+          "heading": "Compliance"
+        },
+        {
+          "body": "Monthly P&L, Balance Sheet, Cash Flow + inventory/manufacturing accounting (raw materials, WIP, finished goods, wastage). Weekly cash-flow visibility; 6-week rolling forecast (future).",
+          "heading": "Reporting & close cadence"
+        },
+        {
+          "body": "Catch-up accounting from Jan; monthly bookkeeping going forward; urgent VAT compliance; ERP-based (ERPNext) accounting; accurate COGS; inventory-linked reporting; budgeting + cash-flow forecasting; later sales / wastage / margin analysis.",
+          "heading": "Client expectations"
+        },
+        {
+          "body": "ERPNext training access for the accounting team; final VAT document collection; Jan-Feb Tally/Excel validation; chart-of-accounts structure (manufacturing); weekly cash-flow forecast format.",
+          "heading": "Open items"
+        }
+      ]
+    },
+    "business_description": "Fresh Daily Bakery Products Manufacturing L.L.C is a UAE bakery manufacturer (about 4 years old) supplying baked goods, historically almost entirely to Bloomingbox (same shareholder group), now expanding its revenue streams.",
+    "pain_points": [
+      "ERPNext still being customised",
+      "No structured accounting since March",
+      "Jan-Feb outsourced books need rework",
+      "No clean 2026 opening balances",
+      "Urgent VAT backlog (Mar-May)",
+      "Supplier reconciliation pending",
+      "Weekly cash-flow visibility needed"
+    ],
+    "call_summary": "Bakery manufacturer needs Jan-onward catch-up plus monthly bookkeeping inside ERPNext, with an urgent VAT (Mar-May) backlog and 2025 finalisation + audit."
+  },
+  {
+    "id": "4087c8cd-775d-4e6c-bbc5-c1e00b02c8c0",
+    "name": "ALTARYON GLOBAL ENERGY COMMODITY TRADING FZCO",
+    "call_insights": {
+      "sections": [
+        {
+          "body": "Import/export transit trading (buy in one country, sell to another, e.g. Uzbekistan to Turkey, China to Africa) plus possible UAE domestic trading. Owner: Mr. Alper; MD: Zeynep Gurkas; 2 business-development staff.",
+          "heading": "Business model"
+        },
+        {
+          "body": "No accounting software yet; Zoho Books (or Xero) to be onboarded. No ERP. Needs payroll/WPS support and an expense-reimbursement tool.",
+          "heading": "Systems & software"
+        },
+        {
+          "body": "FAB (primary) opened; ADCB planned. Only capital injections + salary payments so far. No loans / credit cards / gateways. WPS enabled (manual/online hybrid now; wants structured WPS file upload).",
+          "heading": "Banking"
+        },
+        {
+          "body": "Corporate Tax NOT registered: register immediately (9%). VAT not registered (mandatory AED 375k / voluntary AED 187.5k); no sales yet, monitor threshold. Trade licence (1 year) renews next May.",
+          "heading": "Compliance"
+        },
+        {
+          "body": "Structured bookkeeping from inception (capital, payroll, initial expenses). Monthly expense-reimbursement cycle (claim form + receipts).",
+          "heading": "Reporting & close cadence"
+        },
+        {
+          "body": "Full compliance setup (VAT + CT + bookkeeping); UAE regulatory guidance; easy WPS payroll; structured expense/reimbursement; onboarding into accounting software; future multi-country trade support.",
+          "heading": "Client expectations"
+        },
+        {
+          "body": "Initiate CT registration; final accounting-software decision; payroll/WPS finalisation; expense-reimbursement template; view-only bank access; trade-licence renewal tracking.",
+          "heading": "Open items"
+        }
+      ]
+    },
+    "business_description": "Altaryon Global Energy is a newly incorporated (May) UAE commodities/energy trading entity (oil & gas, petrochemicals), part of a broader group (a Turkey oil & gas company + another MCC entity). Pre-operational, expanding later into metals, ores and agri/grains.",
+    "pain_points": [
+      "New to UAE compliance",
+      "WPS process confusion",
+      "No structured expense tracking",
+      "No accounting software / bookkeeping yet",
+      "Corporate Tax registration pending",
+      "VAT strategy unclear (early stage)",
+      "Trade-licence renewal tracking needed"
+    ],
+    "call_summary": "Brand-new UAE trading entity, pre-revenue, needs full compliance + bookkeeping set up from scratch: immediate Corporate Tax registration, WPS payroll, and an expense-reimbursement system."
+  },
+  {
+    "id": "430e751b-1c9a-4ec6-9fd1-7e7837852ae2",
+    "name": "TRINOVATE TECHNOLOGIES - FZCO",
+    "call_insights": {
+      "sections": [
+        {
+          "body": "Tech startup focusing on a device integrated solution\nRevenue streams: device sales, SaaS subscription, online services\nCurrently in MVP POC buildup stage",
+          "heading": "Business model"
+        },
+        {
+          "body": "No specific systems mentioned",
+          "heading": "Systems & software"
+        },
+        {
+          "body": "Bank account with WIO in AED\nOption to open multi-currency accounts in the future",
+          "heading": "Banking"
+        },
+        {
+          "body": "Need to register for corporate tax within 90 days from incorporation",
+          "heading": "Compliance"
+        },
+        {
+          "body": "Register for corporate tax\nSend welcome email with summary points and document requests",
+          "heading": "Open items"
+        }
+      ]
+    },
+    "business_description": "Trinovate Technologies is a tech startup building a solution integrated with a device. They generate revenue through multiple streams including selling the device and offering a SaaS subscription. The company is currently in the MVP POC buildup stage.",
+    "pain_points": [
+      "Need to register for corporate tax within 90 days from incorporation",
+      "Managing upcoming invoices and administrative expenses"
+    ],
+    "call_summary": "The call introduced the accounting team and discussed Trinovate Technologies' business model and current stage. The client is in the pre-revenue stage, focusing on developing their product and handling administrative expenses. They need assistance with corporate tax registration."
+  },
+  {
+    "id": "8f077785-ace1-4b47-8814-7e0ccbfb1bee",
+    "name": "Finanshels",
+    "call_insights": {},
+    "business_description": "Its a fintch company who provides Acocunting and taxation servce",
+    "pain_points": [],
+    "call_summary": null
+  }
+]

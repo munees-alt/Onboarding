@@ -26,7 +26,7 @@
 .obv3-progress-fill { height: 100%; border-radius: 999px; background: var(--orange); transition: width 0.6s cubic-bezier(.2,.8,.2,1); }
 .obv3-progress-num { font-family: "DM Mono", monospace; font-size: 12px; font-weight: 600; color: var(--orange-600); }
 
-/* View toggle (Team / Client Portal) */
+/* View toggle (Team / Onboarding Portal) */
 .obv3-viewtoggle { display: inline-flex; padding: 3px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 999px; gap: 2px; }
 .obv3-viewtoggle button {
   height: 28px; padding: 0 14px; border-radius: 999px; border: none; background: transparent;
@@ -1320,7 +1320,7 @@
 .ca-dash { color: var(--ink-4); }
 .ca-pms-note { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--ink-2); padding: 11px 15px; background: var(--bg-soft, #f7f5f0); border: 1px solid var(--border); border-radius: 11px; margin-top: 6px; }
 
-/* Client portal — sign-off + review */
+/* Onboarding portal — sign-off + review */
 .cp-signoff-card { border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; background: linear-gradient(120deg, #fff7ef, #fffdf9); margin-top: 4px; }
 .cp-signoff-card.done { background: linear-gradient(120deg, #e9f8ef, #f5fbf7); border-color: #b6e3c8; }
 .cp-signoff-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 16px; }

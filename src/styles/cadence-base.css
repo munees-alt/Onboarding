@@ -208,7 +208,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .role-switcher .chev { position: absolute; right: 10px; pointer-events: none; color: var(--ink-3); }
 
 .scroll { flex: 1; overflow: auto; }
-.page { padding: 28px 32px 48px; max-width: 1480px; margin: 0 auto; width: 100%; }
+.page { padding: 14px 18px 24px; max-width: none; margin: 0; width: 100%; }
 
 /* ---------------- Hero banner ---------------- */
 .hero {
@@ -343,7 +343,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .stat .badge-ic.neutral { background: var(--bg); color: var(--ink-2); }
 
 /* ---------------- Section heading ---------------- */
-.section-head { margin: 28px 0 14px; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.section-head { margin: 4px 0 12px; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
 .section-head h2 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
 .section-head .sub { font-size: 13px; color: var(--ink-3); margin-top: 2px; }
 .section-head .right-pill {

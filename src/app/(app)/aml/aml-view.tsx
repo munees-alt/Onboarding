@@ -1,0 +1,194 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { Icon } from "@/components/icon";
+import { saveAmlRecord } from "../clients/actions";
+
+type AmlClient = {
+  clientId: string; clientName: string; status: string; notes: string | null;
+  signingLink: string | null; signingCompletedLink: string | null;
+  completedAt: string | null; driveLink: string | null; runId: string | null;
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  pending: "Pending", in_review: "In Review", link_sent: "Link Sent", signed: "Signed", completed: "Completed",
+};
+const STATUS_COLOR: Record<string, string> = {
+  pending: "#94a3b8", in_review: "var(--orange)", link_sent: "#3b82f6", signed: "#8b5cf6", completed: "#16a34a",
+};
+const ALL_STATUSES = ["pending", "in_review", "link_sent", "signed", "completed"] as const;
+
+export function AmlView({ clients, canEdit }: { clients: AmlClient[]; canEdit: boolean }) {
+  const [filter, setFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState<string | null>(null);
+  const [forms, setForms] = useState<Record<string, Partial<AmlClient>>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [localClients, setLocalClients] = useState(clients);
+
+  const visible = localClients.filter((c) => {
+    if (filter !== "all" && c.status !== filter) return false;
+    if (search && !c.clientName.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  function startEdit(c: AmlClient) {
+    setEditing(c.clientId);
+    setForms((f) => ({ ...f, [c.clientId]: { status: c.status, notes: c.notes ?? "", signingLink: c.signingLink ?? "", signingCompletedLink: c.signingCompletedLink ?? "" } }));
+  }
+
+  async function doSave(clientId: string) {
+    const form = forms[clientId] ?? {};
+    setSaving(clientId);
+    const res = await saveAmlRecord({
+      clientId,
+      status: form.status ?? "pending",
+      notes: form.notes ?? null,
+      signingLink: form.signingLink ?? null,
+      signingCompletedLink: form.signingCompletedLink ?? null,
+    });
+    setSaving(null);
+    if (res.error) { alert(res.error); return; }
+    setLocalClients((prev) =>
+      prev.map((c) => c.clientId === clientId
+        ? { ...c, status: form.status ?? c.status, notes: (form.notes as string | null) ?? c.notes, signingLink: (form.signingLink as string | null) ?? c.signingLink, signingCompletedLink: (form.signingCompletedLink as string | null) ?? c.signingCompletedLink }
+        : c,
+      ),
+    );
+    setEditing(null);
+  }
+
+  const counts = localClients.reduce((acc, c) => { acc[c.status] = (acc[c.status] ?? 0) + 1; return acc; }, {} as Record<string, number>);
+
+  return (
+    <>
+      {/* Status filter pills */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          placeholder="Search clients…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 13, width: 220 }}
+        />
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button onClick={() => setFilter("all")} style={{ padding: "4px 12px", borderRadius: 20, border: "1px solid var(--border)", fontSize: 12, background: filter === "all" ? "var(--orange)" : "transparent", color: filter === "all" ? "#fff" : "var(--ink-2)", cursor: "pointer" }}>
+            All ({localClients.length})
+          </button>
+          {ALL_STATUSES.map((s) => (
+            <button key={s} onClick={() => setFilter(s)} style={{ padding: "4px 12px", borderRadius: 20, border: "1px solid var(--border)", fontSize: 12, background: filter === s ? STATUS_COLOR[s] : "transparent", color: filter === s ? "#fff" : "var(--ink-2)", cursor: "pointer" }}>
+              {STATUS_LABEL[s]} {counts[s] ? `(${counts[s]})` : ""}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Client cards */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {visible.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>No clients match this filter.</div>}
+        {visible.map((c) => (
+          <div key={c.clientId} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "14px 18px" }}>
+            {editing === c.clientId ? (
+              <AmlEditForm
+                clientId={c.clientId}
+                clientName={c.clientName}
+                form={forms[c.clientId] ?? {}}
+                onChange={(patch) => setForms((f) => ({ ...f, [c.clientId]: { ...f[c.clientId], ...patch } }))}
+                onSave={() => doSave(c.clientId)}
+                onCancel={() => setEditing(null)}
+                saving={saving === c.clientId}
+                driveLink={c.driveLink}
+                runId={c.runId}
+              />
+            ) : (
+              <AmlClientRow c={c} onEdit={() => startEdit(c)} canEdit={canEdit} />
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function AmlClientRow({ c, onEdit, canEdit }: { c: AmlClient; onEdit: () => void; canEdit: boolean }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+      <div style={{ flex: 1, minWidth: 200 }}>
+        <Link href={`/clients/${c.clientId}`} style={{ fontWeight: 700, fontSize: 14, color: "var(--ink-1)", textDecoration: "none" }}>{c.clientName}</Link>
+        {c.notes && <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>{c.notes}</div>}
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: STATUS_COLOR[c.status] ?? "var(--ink-3)", background: `${STATUS_COLOR[c.status]}18`, padding: "3px 10px", borderRadius: 20 }}>
+          {STATUS_LABEL[c.status] ?? c.status}
+        </span>
+        {c.status === "completed" && c.completedAt && (
+          <span style={{ fontSize: 11, color: "var(--ink-3)" }}>✓ {new Date(c.completedAt).toLocaleDateString()}</span>
+        )}
+        {c.signingLink && (
+          <a href={c.signingLink} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "#3b82f6", display: "flex", alignItems: "center", gap: 4 }}>
+            <Icon name="external-link" size={11} /> Signing link
+          </a>
+        )}
+        {c.signingCompletedLink && (
+          <a href={c.signingCompletedLink} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "#16a34a", display: "flex", alignItems: "center", gap: 4 }}>
+            <Icon name="check-circle" size={11} /> Completed doc
+          </a>
+        )}
+        {c.driveLink && (
+          <a href={c.driveLink} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 4 }}>
+            <Icon name="folder-open" size={11} /> Drive
+          </a>
+        )}
+        {c.runId && (
+          <Link href={`/onboarding/${c.runId}`} style={{ fontSize: 12, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 4 }}>
+            <Icon name="file-text" size={11} /> Playbook
+          </Link>
+        )}
+        {canEdit && (
+          <button className="btn-ghost" style={{ fontSize: 12, padding: "3px 10px" }} onClick={onEdit}>Update</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AmlEditForm({ clientId, clientName, form, onChange, onSave, onCancel, saving, driveLink, runId }: {
+  clientId: string; clientName: string;
+  form: Partial<AmlClient>;
+  onChange: (patch: Partial<AmlClient>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  driveLink: string | null;
+  runId: string | null;
+}) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <span style={{ fontWeight: 700, fontSize: 14 }}>{clientName}</span>
+        {driveLink && <a href={driveLink} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--ink-2)" }}><Icon name="folder-open" size={12} /> Drive</a>}
+        {runId && <Link href={`/onboarding/${runId}`} style={{ fontSize: 12, color: "var(--ink-2)" }}><Icon name="file-text" size={12} /> Playbook</Link>}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <label style={{ fontSize: 12 }}>Status
+          <select value={form.status ?? "pending"} onChange={(e) => onChange({ status: e.target.value })} style={{ display: "block", width: "100%", marginTop: 4 }}>
+            {ALL_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 12 }}>Notes
+          <input value={form.notes ?? ""} onChange={(e) => onChange({ notes: e.target.value })} style={{ display: "block", width: "100%", marginTop: 4 }} />
+        </label>
+        <label style={{ fontSize: 12 }}>Signing link (send to client)
+          <input value={form.signingLink ?? ""} onChange={(e) => onChange({ signingLink: e.target.value })} placeholder="https://…" style={{ display: "block", width: "100%", marginTop: 4 }} />
+        </label>
+        <label style={{ fontSize: 12 }}>Signing completed link
+          <input value={form.signingCompletedLink ?? ""} onChange={(e) => onChange({ signingCompletedLink: e.target.value })} placeholder="https://…" style={{ display: "block", width: "100%", marginTop: 4 }} />
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn-primary" onClick={onSave} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+        <button className="btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}

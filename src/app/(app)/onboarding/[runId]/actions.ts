@@ -5,9 +5,12 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSession } from "@/lib/auth";
+import { decryptSecret } from "@/lib/crypto";
+import { canManageCoa, canRevealAccessCredentials } from "@/lib/roles";
 import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, getDriveCapableMemberId, shareDriveFolder, type DriveFolderNode } from "@/lib/google";
-import { getTemplate } from "@/lib/templates-store";
+import { getTemplate, getAllTemplates } from "@/lib/templates-store";
 import { createRunFromTemplate } from "@/lib/runs";
+import { findTaxHead, suggestNextAm, findAlcHead, suggestNextAlc, suggestNextByRole } from "@/lib/capacity";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const KIND_TO_TYPE: Record<string, string> = { ai: "ai", link: "link", doc: "form", check: "manual", person: "manual" };
@@ -24,16 +27,22 @@ const WHO_TO_ROLE: Record<string, string> = {
   "team lead": "team_lead", "team_lead": "team_lead", teamlead: "team_lead",
   intern: "intern",
 };
-type StepLike = { who?: string[]; approval?: { by: string } };
+type StepLike = { who?: string[]; approval?: { by: string }; act?: { type?: string } };
 function requiredRoleForStep(step: StepLike): string | null {
-  // An explicit approval gate is the strict one (e.g. AM sign-off).
-  if (step.approval?.by) { const r = WHO_TO_ROLE[step.approval.by.trim().toLowerCase()]; if (r) return r; }
-  // Otherwise the step's owning person role. System / AI / Client steps aren't gated by team rank.
-  for (const w of step.who ?? []) { const r = WHO_TO_ROLE[w.trim().toLowerCase()]; if (r) return r; }
+  // 2026-06-22 rule: ONLY the confirm/sign-off action (act.type "approve") is gated — to the
+  // AM, which Senior / Team Lead can't override. Everything else (incl. Senior prep work like
+  // building the COA, even when an AM later reviews it) is open to all team roles.
+  if (step.act?.type === "approve") { const r = step.approval?.by ? WHO_TO_ROLE[step.approval.by.trim().toLowerCase()] : null; return r ?? "am"; }
   return null;
 }
+// 2026-06-23: gating OFF (user request) — every stage/step is actionable by ANY team role on
+// EVERY template. Who does what is now decided when configuring/assigning the template, not
+// enforced per-step in code. Flip back to true to restore the approval-only AM gate above.
+const ENFORCE_STEP_ROLES = false;
+
 /** Returns an error string if the signed-in member's role is below the step's required role. */
 async function guardStepRole(step: StepLike): Promise<string | null> {
+  if (!ENFORCE_STEP_ROLES) return null;
   const required = requiredRoleForStep(step);
   if (!required) return null;
   const session = await getSession();
@@ -42,6 +51,65 @@ async function guardStepRole(step: StepLike): Promise<string | null> {
   if ((ROLE_RANK[myRole] ?? 0) >= (ROLE_RANK[required] ?? 99)) return null;
   const nice = (r: string) => r.replace(/_/g, " ");
   return `This step is reserved for ${nice(required)} or above. Your role (${nice(myRole)}) can't sign it off.`;
+}
+
+// ── Group mirror ─────────────────────────────────────────────────────────
+// A client_group represents ONE proposal across N entities. Contract, call,
+// MoM, agenda and welcome-email are deal-level artefacts (same across every
+// entity), so when the team saves any of them on one sibling run we copy the
+// data + step completion to every other sibling. Per-entity stages (intake,
+// COA, docs, access, sign-off) are NOT mirrored — they stay isolated.
+const GROUP_SHARED_ACT_TYPES = new Set(["contract", "call", "mom", "agenda", "welcome_email"]);
+
+async function siblingRunIds(supabase: SupabaseClient, runId: string): Promise<string[]> {
+  const { data: run } = await supabase.from("onboarding_runs").select("group_id").eq("id", runId).maybeSingle();
+  if (!run?.group_id) return [];
+  const { data: sibs } = await supabase
+    .from("onboarding_runs").select("id")
+    .eq("group_id", run.group_id).neq("id", runId);
+  return (sibs ?? []).map((s) => s.id);
+}
+
+/** Returns the id of the step in `runId`'s template whose act.type matches — or null. */
+async function findStepIdByActType(supabase: SupabaseClient, runId: string, actType: string): Promise<string | null> {
+  const { data: r } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
+  if (!r) return null;
+  const tpl = await getTemplate(r.template_key);
+  if (!tpl) return null;
+  for (const stage of tpl.stages) {
+    for (const st of stage.steps) {
+      if (st.act?.type === actType) return st.id;
+    }
+  }
+  return null;
+}
+
+/**
+ * Mirrors a save+complete to every group sibling. `actType` is used to locate
+ * the equivalent step in each sibling's template (templates can differ across
+ * entities in a group, so we don't assume step ids match).
+ */
+async function mirrorToGroupSiblings(
+  supabase: SupabaseClient,
+  sourceRunId: string,
+  actType: string,
+  apply: (sib: { runId: string; clientId: string; stepId: string; templateKey: string }) => Promise<void>,
+): Promise<void> {
+  if (!GROUP_SHARED_ACT_TYPES.has(actType)) return;
+  const sibs = await siblingRunIds(supabase, sourceRunId);
+  if (!sibs.length) return;
+  for (const sibRunId of sibs) {
+    const { data: sib } = await supabase
+      .from("onboarding_runs").select("client_id,template_key").eq("id", sibRunId).maybeSingle();
+    if (!sib) continue;
+    const sibStepId = await findStepIdByActType(supabase, sibRunId, actType);
+    if (!sibStepId) continue;
+    try {
+      await apply({ runId: sibRunId, clientId: sib.client_id as string, stepId: sibStepId, templateKey: sib.template_key as string });
+    } catch (e) {
+      console.error("[group mirror]", actType, "→", sibRunId, e instanceof Error ? e.message : e);
+    }
+  }
 }
 
 async function locate(templateId: string, stepId: string) {
@@ -204,13 +272,48 @@ export async function assignStep(runId: string, stepId: string, memberId: string
 }
 
 /** Assign one or more people to a step (optional/multi-select). Empty list = skip an optional step. */
+/**
+ * Re-share the client Drive folder with every current run_team member's email.
+ * Idempotent — Drive treats already-shared emails as no-ops. Called whenever the
+ * team composition changes (assign step, task assignment).
+ */
+async function shareDriveWithRunTeam(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  runId: string,
+  orgId: string,
+  clientId: string,
+): Promise<void> {
+  const { data: df } = await supabase
+    .from("drive_folders")
+    .select("tree")
+    .eq("client_id", clientId)
+    .maybeSingle();
+  const folderId = (df?.tree as { id?: string } | null)?.id;
+  if (!folderId) return;
+  const { data: rt } = await supabase
+    .from("run_team")
+    .select("team_members(email)")
+    .eq("run_id", runId);
+  type Row = { team_members: { email: string | null } | { email: string | null }[] | null };
+  const emails = (rt ?? [])
+    .map((r: Row) => {
+      const tm = Array.isArray(r.team_members) ? r.team_members[0] : r.team_members;
+      return tm?.email ?? null;
+    })
+    .filter((e): e is string => !!e && e.includes("@"));
+  if (!emails.length) return;
+  const driveMember = await getDriveCapableMemberId(orgId, runId);
+  if (!driveMember) return;
+  await shareDriveFolder(driveMember, folderId, emails, "writer");
+}
+
 export async function assignStepMembers(
   runId: string,
   stepId: string,
   members: { id: string; name: string; role?: string }[],
 ): Promise<{ error?: string }> {
   const supabase = await createClient();
-  const { data: run } = await supabase.from("onboarding_runs").select("template_key,am_id").eq("id", runId).maybeSingle();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key,am_id,org_id,client_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
   const loc = await locate(run.template_key, stepId);
   if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
@@ -233,11 +336,72 @@ export async function assignStepMembers(
       { onConflict: "run_id,team_member_id" },
     );
   }
+  // Notify every just-assigned person so they see the run in their Action
+  // Centre + can act on it immediately. Especially important for handover —
+  // the receiving Team Lead needs to know a client is coming their way.
+  const stepTitle = loc?.step.title ?? "an onboarding step";
+  const actRole = (loc?.step.act?.role ?? "").toLowerCase();
+  const isHandover = actRole.includes("handover");
+  if (members.length) {
+    await supabase.from("notifications").insert(
+      members.map((m) => ({
+        org_id: run.org_id,
+        run_id: runId,
+        recipient_id: m.id,
+        kind: isHandover ? "escalation" : "task_assigned",
+        title: isHandover ? "Client handover assigned to you" : "You were added to a run",
+        body: isHandover ? `You're the destination for the handover: "${stepTitle}". Open the run to see what's next.` : stepTitle,
+      })),
+    );
+  }
+
+  // Handover routing: when the AM picks the destination, pre-assign that
+  // person to the RECEIVER sign-off step in the same Handover stage so it
+  // lands in their My Work and is gated to them. Also persist a handover_dest
+  // run_item so the UI can show "Handing over to: <name>" on every other
+  // handover step.
+  if (isHandover && loc && members.length) {
+    const dest = members[0];
+    const stage = loc.tpl.stages[loc.stageNo - 1];
+    // Find the LAST approve step in the handover stage — that's the receiver
+    // sign-off (the onboarding AM sign-off comes earlier).
+    const approveSteps = stage.steps.filter((s) => s.act?.type === "approve");
+    const receiverStep = approveSteps[approveSteps.length - 1];
+    if (receiverStep && receiverStep.id !== stepId) {
+      await upsertStep(supabase, runId, run.template_key, receiverStep.id, {
+        assignee_id: dest.id,
+        payload: { handoverReceiver: { id: dest.id, name: dest.name } },
+      });
+      await supabase.from("notifications").insert({
+        org_id: run.org_id,
+        run_id: runId,
+        recipient_id: dest.id,
+        kind: "escalation",
+        title: "Your handover sign-off is pending",
+        body: `Once the onboarding AM signs off, your confirmation step "${receiverStep.title}" will be ready.`,
+      });
+    }
+    await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "handover_dest");
+    await supabase.from("run_items").insert(
+      { run_id: runId, client_id: run.client_id, kind: "handover_dest", data: { id: dest.id, name: dest.name, role: dest.role ?? null }, status: "set", sort: 0 },
+    );
+  }
+
   if (run.am_id) {
     await supabase.from("run_team").upsert(
       { run_id: runId, team_member_id: run.am_id, role_in_run: "am" },
       { onConflict: "run_id,team_member_id" },
     );
+  }
+
+  // Auto-grant Drive access to the WHOLE run team (AM + TL + Senior + Junior + anyone
+  // upserted via task assignment). Re-running this on each assign is idempotent on
+  // the Drive side (already-shared emails are a no-op). Best-effort: assignment
+  // succeeds even if the share call fails, but errors are logged.
+  try {
+    await shareDriveWithRunTeam(supabase, runId, run.org_id, run.client_id);
+  } catch (e) {
+    console.error("[Drive share] failed for run", runId, e);
   }
 
   await recompute(supabase, runId, run.template_key);
@@ -329,13 +493,13 @@ export async function saveDrive(
   if (!driveTree) return { error: "Could not create Drive folders. Reconnect Google and make sure you have access to the master Drive folder." };
   await supabase.from("drive_folders").upsert({ client_id: run.client_id, tree: driveTree }, { onConflict: "client_id" });
 
-  // Share the client folder (as editor) with the client and the assigned AM / Team Lead / Senior.
+  // Share the client folder (as editor) with the client and EVERY configured team member on the
+  // run — AM, Team Lead, Senior, Junior, onboarding partner, etc. (2026-06-23: was AM/TL/Senior only).
   if (driveTree.id) {
     const { data: teamRows } = await supabase
       .from("run_team")
       .select("role_in_run, team_members(email)")
-      .eq("run_id", runId)
-      .in("role_in_run", ["am", "team_lead", "senior"]);
+      .eq("run_id", runId);
     const teamEmails = (teamRows ?? [])
       .map((t: { team_members: { email?: string } | { email?: string }[] | null }) => {
         const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members;
@@ -350,6 +514,15 @@ export async function saveDrive(
     await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "contract", data: opts.contract });
   }
   await completeStep(runId, stepId);
+  // Group mirror: copy contract data (and complete the sibling's contract step
+  // if it has a standalone one). Drive folders stay per-entity.
+  if (opts.contract) {
+    await mirrorToGroupSiblings(supabase, runId, "contract", async (sib) => {
+      await supabase.from("run_items").delete().eq("run_id", sib.runId).eq("kind", "contract");
+      await supabase.from("run_items").insert({ run_id: sib.runId, client_id: sib.clientId, kind: "contract", data: opts.contract });
+      await completeStep(sib.runId, sib.stepId);
+    });
+  }
   return { link: driveTree.link ?? `/drive/${runId.slice(0, 8)}` };
 }
 
@@ -432,7 +605,7 @@ export async function requestSecureMailbox(runId: string, secureEmail: string): 
 }
 
 /** Saves the engagement-contract analysis (scope / inclusions / exclusions / payment / deliverables)
-    as run_items kind 'contract' — shown in the client portal Live tab — then completes the step. */
+    as run_items kind 'contract' — shown in the onboarding portal Live tab — then completes the step. */
 export async function saveContractAnalysis(runId: string, stepId: string, contract: Record<string, unknown> | null): Promise<{ error?: string }> {
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
@@ -440,17 +613,61 @@ export async function saveContractAnalysis(runId: string, stepId: string, contra
   await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "contract");
   if (contract) await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "contract", data: contract });
   await completeStep(runId, stepId);
+  // Group mirror: contract = one proposal across the group. Copy to siblings.
+  await mirrorToGroupSiblings(supabase, runId, "contract", async (sib) => {
+    await supabase.from("run_items").delete().eq("run_id", sib.runId).eq("kind", "contract");
+    if (contract) await supabase.from("run_items").insert({ run_id: sib.runId, client_id: sib.clientId, kind: "contract", data: contract });
+    await completeStep(sib.runId, sib.stepId);
+  });
+  return {};
+}
+
+/** Records which accounting software we'll run this client on (set after the kickoff call).
+    Saves onto the client so it surfaces in the playbook → Tools & Access, plus a run_items
+    row for the run timeline, then completes the step. */
+export async function saveAccountingSoftware(runId: string, stepId: string, software: string): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const value = software.trim();
+  if (!value) return { error: "Pick the accounting software first." };
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const { error } = await supabase.from("clients").update({ accounting_software: value }).eq("id", run.client_id);
+  if (error) return { error: error.message };
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "accounting_software");
+  await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "accounting_software", data: { software: value } });
+  await completeStep(runId, stepId);
   return {};
 }
 
 /** Saves the access-grant configuration (FTA / bank / gateway / software …) as run_items
     (kind 'access'), one row per access, then completes the step. */
 export async function saveAccess(runId: string, stepId: string, items: import("@/lib/access-sops").AccessItem[]): Promise<{ error?: string }> {
+  type AccessItem = import("@/lib/access-sops").AccessItem;
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
+  // Re-saving the config rebuilds the rows — but must NOT wipe what the client already
+  // entered (granted confirmations, and especially encrypted credentials). Carry those
+  // forward by matching on the access-type id.
+  const { data: existingRows } = await supabase.from("run_items").select("data,status").eq("run_id", runId).eq("kind", "access");
+  const prevById = new Map<string, { data: AccessItem; status: string }>();
+  (existingRows ?? []).forEach((r) => { const d = r.data as AccessItem; if (d?.id) prevById.set(d.id, { data: d, status: r.status }); });
+
   await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "access");
-  const clean = items.filter((it) => it.label?.trim());
+  const clean = items.filter((it) => it.label?.trim()).map((it) => {
+    const prev = prevById.get(it.id);
+    if (!prev) return it;
+    const carry: Partial<AccessItem> = {};
+    // Keep the client's grant confirmation.
+    if (prev.data.status === "granted" || prev.status === "granted") { carry.status = "granted"; if (prev.data.note) carry.note = prev.data.note; }
+    // Keep stored credentials when this item is still in credentials mode.
+    if (it.accessMode === "credentials" && prev.data.credPasswordEnc) {
+      carry.credUsername = prev.data.credUsername;
+      carry.credPasswordEnc = prev.data.credPasswordEnc;
+      carry.credSavedAt = prev.data.credSavedAt;
+    }
+    return { ...it, ...carry };
+  });
   if (clean.length) {
     const { error } = await supabase.from("run_items").insert(
       clean.map((it, i) => ({ run_id: runId, client_id: run.client_id, kind: "access", data: it, status: it.status ?? "requested", sort: i })),
@@ -461,6 +678,37 @@ export async function saveAccess(runId: string, stepId: string, items: import("@
   return {};
 }
 
+/** Reveal the decrypted login the client stored for a credentials-mode access item.
+    Team-only (the action runs server-side and requires a signed-in session). */
+export async function revealAccessCredentials(runId: string, rowId: string): Promise<{ error?: string; username?: string; password?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  // Role gate: Senior, Team Lead, AM, Ops Head, and Master Admin can read a
+  // client's stored login — they're the people who actually use it to do the
+  // bookkeeping. Junior / intern stay blocked. Every reveal is audit-logged.
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!canRevealAccessCredentials(role)) return { error: "Only Senior, Team Lead, AM or admin can reveal stored logins." };
+  const supabase = await createClient();
+  const { data: row } = await supabase.from("run_items").select("data").eq("id", rowId).eq("run_id", runId).eq("kind", "access").maybeSingle();
+  if (!row) return { error: "Access item not found." };
+  const d = row.data as import("@/lib/access-sops").AccessItem;
+  if (!d.credPasswordEnc && !d.credUsername) return { error: "No credentials saved yet." };
+  let password = "";
+  try { password = d.credPasswordEnc ? decryptSecret(d.credPasswordEnc) : ""; }
+  catch { return { error: "Could not decrypt — encryption key mismatch." }; }
+  // Audit every reveal — who looked at which system's login, and when.
+  await supabase.from("audit_events").insert({
+    org_id: session.profile.org_id,
+    actor: session.teamMember?.full_name ?? session.email,
+    actor_role: role,
+    action: "access_credentials_revealed",
+    module: "onboarding",
+    resource_ref: `Revealed login for "${d.label ?? "Access"}"${d.systemName ? ` (${d.systemName})` : ""}`,
+    resource_id: rowId,
+  });
+  return { username: d.credUsername ?? "", password };
+}
+
 /** Saves a call step's recording link + notes into the step payload, then completes it.
     These are what the MoM generator reads — without them the MoM can't be generated. */
 export async function saveCallNotes(runId: string, stepId: string, recording: string, notes: string): Promise<{ error?: string }> {
@@ -469,13 +717,24 @@ export async function saveCallNotes(runId: string, stepId: string, recording: st
   if (!run) return { error: "Run not found." };
   const loc = await locate(run.template_key, stepId);
   if (loc) { const denied = await guardStepRole(loc.step); if (denied) return { error: denied }; }
+  const payload = { recording: recording.trim(), notes: notes.trim() };
   const r = await upsertStep(supabase, runId, run.template_key, stepId, {
     status: "complete",
-    payload: { recording: recording.trim(), notes: notes.trim() },
+    payload,
     completed_at: new Date().toISOString(),
   });
   if (r.error) return r;
   await recompute(supabase, runId, run.template_key);
+  // Group mirror: discovery call = one conversation for the whole group.
+  await mirrorToGroupSiblings(supabase, runId, "call", async (sib) => {
+    await upsertStep(supabase, sib.runId, sib.templateKey, sib.stepId, {
+      status: "complete",
+      payload,
+      completed_at: new Date().toISOString(),
+    });
+    await recompute(supabase, sib.runId, sib.templateKey);
+    revalidatePath(`/onboarding/${sib.runId}`);
+  });
   revalidatePath(`/onboarding/${runId}`);
   return {};
 }
@@ -660,6 +919,21 @@ export async function assignTriage(runId: string, stepId: string, items: { item:
   return {};
 }
 
+/** Returns the Tax Head + the suggested least-loaded tax-team member for an
+ *  auto-assign action in the urgent-compliance triage modal. Tax-flagged
+ *  rows default to the Tax Head; the team head clicks "Auto-assign" to push
+ *  the row to the lowest-load AM in his subtree. */
+export async function suggestTaxAssignee(): Promise<{ head?: { id: string; name: string } | null; suggested?: { id: string; name: string } | null; error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const head = await findTaxHead(session.profile.org_id);
+  const suggested = await suggestNextAm(session.profile.org_id);
+  return {
+    head: head ? { id: head.id, name: head.name } : null,
+    suggested: suggested ? { id: suggested.id, name: suggested.name } : null,
+  };
+}
+
 /**
  * Urgent compliance → routed to an AM. For each item we CREATE A NEW RUN (urgent-compliance
  * template) owned by that AM, so they configure the steps and assign the owner. The run is
@@ -692,6 +966,124 @@ export async function escalateUrgentCompliance(
   await completeStep(runId, stepId);
   revalidatePath(`/onboarding/${runId}`);
   return { created };
+}
+
+/**
+ * A tracked compliance item is due → create a lightweight RENEWAL run (compliance-renewal
+ * template: one pre-built task, no configuration) for the client's AM. It lands in their
+ * My Work. Used both manually (button on a compliance row) and automatically (the cron).
+ */
+export async function createComplianceRenewalRun(
+  runId: string, item: { label?: string; type?: string; date?: string },
+): Promise<{ error?: string; runId?: string }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id,am_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const label = (item.label || item.type || "Compliance item").trim();
+  const newRunId = await createRunFromTemplate(supabase, {
+    orgId: run.org_id, clientId: run.client_id, amId: run.am_id ?? null,
+    templateId: "compliance-renewal", targetCompletion: item.date ?? null,
+  });
+  // Record what this renewal is for, so the run shows the specific document.
+  await supabase.from("run_items").insert({ run_id: newRunId, client_id: run.client_id, kind: "renewal_for", data: { label, type: item.type ?? null, date: item.date ?? null } });
+  if (run.am_id) {
+    await supabase.from("notifications").insert({
+      org_id: run.org_id, run_id: newRunId, recipient_id: run.am_id, kind: "escalation",
+      title: `Renewal due: ${label}`,
+      body: `${label}${item.date ? ` is due ${item.date}` : ""}. A renewal task was created in your My Work — renew it and update the file in Drive.`,
+    });
+  }
+  revalidatePath(`/onboarding/${runId}`);
+  revalidatePath("/my-work");
+  return { runId: newRunId };
+}
+
+/** Suggest the default ALC catch-up owner — Anju by default, else the least-loaded ALC team member. */
+export async function suggestCatchupAssignee(): Promise<{ head?: { id: string; name: string } | null; suggested?: { id: string; name: string } | null; error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const head = await findAlcHead(session.profile.org_id);
+  const suggested = await suggestNextAlc(session.profile.org_id);
+  return {
+    head: head ? { id: head.id, name: head.name } : null,
+    suggested: suggested ? { id: suggested.id, name: suggested.name } : null,
+  };
+}
+
+/**
+ * Resolve the catch-up routing target — locked to the Tax Head (Gautham).
+ * Used by the new yes/no catch-up config modal where the AM cannot be changed.
+ */
+export async function getCatchupGautham(): Promise<{ id: string; name: string } | null> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return null;
+  const head = await findTaxHead(session.profile.org_id);
+  return head ? { id: head.id, name: head.name } : null;
+}
+
+/** Suggest a role default for the Assign Roles step (used to pre-select Senior/Junior/Team Lead). */
+export async function suggestAssignee(role: string, excludeIds: string[] = []): Promise<{ id: string; name: string; currentLoad: number } | null> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return null;
+  return await suggestNextByRole(session.profile.org_id, role, excludeIds);
+}
+
+/**
+ * Urgent compliance v2 — yes/no + multi-service picker.
+ * For each selected service (ct-registration, vat-registration, ct-filing, vat-filing) we
+ * spin up a parallel run from that service's template, assigned to the least-loaded tax-team
+ * member (capacity-based, defaults to a Gautham-team member). If "no urgent items", marks the
+ * step complete with no runs created.
+ */
+export async function escalateUrgentComplianceServices(
+  runId: string,
+  stepId: string,
+  hasUrgent: boolean,
+  services: string[],
+): Promise<{ error?: string; created?: number; runIds?: string[] }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+
+  if (!hasUrgent) {
+    // record the decision so we can show "no urgent compliance" on the step
+    await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "urgent_decision");
+    await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "urgent_decision", data: { hasUrgent: false, services: [] }, status: "skipped" });
+    await completeStep(runId, stepId);
+    revalidatePath(`/onboarding/${runId}`);
+    return { created: 0, runIds: [] };
+  }
+
+  const allowed = new Set(["ct-registration", "vat-registration", "ct-filing", "vat-filing", "audit"]);
+  const picked = services.filter((s) => allowed.has(s));
+  if (!picked.length) return { error: "Pick at least one service to escalate, or choose No urgent compliance." };
+
+  const head = await findTaxHead(run.org_id);
+  const newIds: string[] = [];
+  for (const service of picked) {
+    // Audit reuses the CT filing template under the hood (per product decision).
+    const tplId = service === "audit" ? "ct-filing" : service;
+    const owner = await suggestNextAm(run.org_id);
+    const ownerId = owner?.id ?? head?.id ?? null;
+    const newRunId = await createRunFromTemplate(supabase, {
+      orgId: run.org_id, clientId: run.client_id, amId: ownerId, templateId: tplId,
+    });
+    newIds.push(newRunId);
+    if (ownerId) {
+      const label = service === "audit" ? "Statutory audit" : service.replace("-", " ");
+      await supabase.from("notifications").insert({
+        org_id: run.org_id, run_id: newRunId, recipient_id: ownerId, kind: "escalation",
+        title: `Urgent compliance run created (${label})`,
+        body: `Auto-assigned by capacity. Open the run and start collecting the documents — Assign Roles is your first step.`,
+      });
+    }
+  }
+
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "urgent_decision");
+  await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "urgent_decision", data: { hasUrgent: true, services: picked, runIds: newIds }, status: "escalated" });
+  await completeStep(runId, stepId);
+  revalidatePath(`/onboarding/${runId}`);
+  return { created: newIds.length, runIds: newIds };
 }
 
 /**
@@ -764,7 +1156,8 @@ export interface TaskInput {
   ownerKind?: string; // "team" | "client"
   type?: string;      // internal | client_action | milestone
   status?: string;
-  due?: string;       // free text (stored in `service`, e.g. "Day 4")
+  due?: string;       // ISO date "YYYY-MM-DD" stored in tasks.due_date
+  notes?: string;     // free-text notes shown on the simplified board
   clientVisible?: boolean;
   boardColumn?: string | null;
 }
@@ -878,6 +1271,183 @@ export async function uploadDocForClient(runId: string, docId: string, formData:
   return {};
 }
 
+/** Close any open docs_overdue / access_overdue admin task for this run when all
+ *  pending items of that kind are accounted for. Also stamp a history note on
+ *  any still-open admin task so the audit trail records the manual receipt. */
+async function patchOverdueAdminTask(
+  admin: ReturnType<typeof createAdminClient>,
+  runId: string,
+  kind: "docs_overdue" | "access_overdue",
+  historyNote: string,
+  pendingRemaining: number,
+) {
+  const { data: openRows } = await admin
+    .from("admin_tasks")
+    .select("id,history")
+    .eq("run_id", runId)
+    .eq("kind", kind)
+    .eq("status", "open");
+  for (const t of openRows ?? []) {
+    const history = Array.isArray(t.history) ? (t.history as unknown[]) : [];
+    const next = [...history, { at: new Date().toISOString(), action: "item_received_outside_portal", notes: historyNote }];
+    if (pendingRemaining === 0) {
+      await admin.from("admin_tasks").update({ status: "closed", closed_at: new Date().toISOString(), history: next, notes: historyNote }).eq("id", t.id);
+    } else {
+      await admin.from("admin_tasks").update({ history: next }).eq("id", t.id);
+    }
+  }
+}
+
+/** Team marks a doc as received outside the portal (email / WhatsApp / etc).
+ *  Sets status='uploaded' + audit fields, posts a system run message, and
+ *  patches any open docs_overdue admin task — closing it if no docs are pending. */
+export async function markDocReceivedOutside(runId: string, docId: string, note: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const trimmed = (note ?? "").trim();
+  if (!trimmed) return { error: "Add a short note (where you received it and from whom)." };
+  const supabase = await createClient();
+  const { data: doc } = await supabase.from("documents").select("label").eq("id", docId).maybeSingle();
+  if (!doc) return { error: "Document not found." };
+  const nowIso = new Date().toISOString();
+  const { error } = await supabase.from("documents").update({
+    status: "uploaded",
+    received_outside_portal: true,
+    received_note: trimmed,
+    received_at: nowIso,
+    received_by: session.teamMember?.id ?? null,
+    uploaded_at: nowIso,
+  }).eq("id", docId).eq("run_id", runId);
+  if (error) return { error: error.message };
+  await supabase.from("run_messages").insert({
+    run_id: runId,
+    author_id: session.teamMember?.id ?? null,
+    author_name: session.teamMember?.full_name ?? session.email,
+    author_role: session.profile.role,
+    body: `📥 "${doc.label}" marked received outside the portal — note: ${trimmed}`,
+    task_ref: doc.label,
+  });
+  // Patch any open docs_overdue task; close if no pending docs remain.
+  const admin = createAdminClient();
+  const { data: pending } = await admin.from("documents").select("id").eq("run_id", runId).eq("status", "pending").eq("required", true);
+  await patchOverdueAdminTask(admin, runId, "docs_overdue", `${doc.label} — ${trimmed}`, pending?.length ?? 0);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Team marks an access item as received outside the portal. */
+export async function markAccessReceivedOutside(runId: string, rowId: string, note: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const trimmed = (note ?? "").trim();
+  if (!trimmed) return { error: "Add a short note." };
+  const supabase = await createClient();
+  const { data: row } = await supabase.from("run_items").select("data,id").eq("id", rowId).eq("run_id", runId).eq("kind", "access").maybeSingle();
+  if (!row) return { error: "Access row not found." };
+  const data = (row.data ?? {}) as { items?: Array<Record<string, unknown>>; label?: string; systemName?: string };
+  const items = Array.isArray(data.items) ? data.items : [];
+  // The "items" array uses item.id as the per-row id; the run_items row itself is rowId.
+  // Mark every still-pending item on this row as received (the panel surfaces one row per access type).
+  const labelOf = (it: Record<string, unknown>) => String(it.label ?? "");
+  let touched = "";
+  const nextItems = items.map((it) => {
+    if (it.confirmed) return it;
+    touched = touched || labelOf(it) || String(data.label ?? "Access");
+    return {
+      ...it,
+      confirmed: true,
+      receivedOutsidePortal: true,
+      receivedNote: trimmed,
+      receivedAt: new Date().toISOString(),
+    };
+  });
+  // If the row stores no item array (older shape), update the row's top-level status directly.
+  const patch: Record<string, unknown> = nextItems.length
+    ? { data: { ...data, items: nextItems, status: "granted" }, status: "granted" }
+    : { data: { ...data, status: "granted", confirmed: true, receivedOutsidePortal: true, receivedNote: trimmed, receivedAt: new Date().toISOString() }, status: "granted" };
+  const labelForMsg = touched || String(data.label ?? data.systemName ?? "Access");
+  const { error } = await supabase.from("run_items").update(patch).eq("id", rowId);
+  if (error) return { error: error.message };
+  await supabase.from("run_messages").insert({
+    run_id: runId,
+    author_id: session.teamMember?.id ?? null,
+    author_name: session.teamMember?.full_name ?? session.email,
+    author_role: session.profile.role,
+    body: `📥 ${labelForMsg} access marked received outside the portal — note: ${trimmed}`,
+    task_ref: labelForMsg,
+  });
+  // Count any access row that still has at least one unconfirmed item.
+  const admin = createAdminClient();
+  const { data: allAccess } = await admin.from("run_items").select("data").eq("run_id", runId).eq("kind", "access");
+  let pendingCount = 0;
+  for (const r of allAccess ?? []) {
+    const d = (r.data ?? {}) as { items?: Array<{ confirmed?: boolean; enabled?: boolean }>; status?: string; confirmed?: boolean };
+    if (Array.isArray(d.items) && d.items.length) {
+      if (d.items.some((it) => it.enabled !== false && !it.confirmed)) pendingCount++;
+    } else if (d.status !== "granted" && !d.confirmed) {
+      pendingCount++;
+    }
+  }
+  await patchOverdueAdminTask(admin, runId, "access_overdue", `${labelForMsg} — ${trimmed}`, pendingCount);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Adds a free-text follow-up note to a doc. Does NOT change status — purely
+ *  extends the next auto-task window via documents.followup_note_at. */
+export async function addDocFollowupNote(runId: string, docId: string, note: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const trimmed = (note ?? "").trim();
+  if (!trimmed) return { error: "Add a short note." };
+  const supabase = await createClient();
+  const { error } = await supabase.from("documents").update({
+    followup_note: trimmed,
+    followup_note_at: new Date().toISOString(),
+  }).eq("id", docId).eq("run_id", runId);
+  if (error) return { error: error.message };
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Adds a follow-up note to a specific access item inside a run_items row. */
+export async function addAccessFollowupNote(runId: string, rowId: string, note: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const trimmed = (note ?? "").trim();
+  if (!trimmed) return { error: "Add a short note." };
+  const supabase = await createClient();
+  const { data: row } = await supabase.from("run_items").select("data").eq("id", rowId).eq("run_id", runId).eq("kind", "access").maybeSingle();
+  if (!row) return { error: "Access row not found." };
+  const data = (row.data ?? {}) as { items?: Array<Record<string, unknown>> };
+  const items = Array.isArray(data.items) ? data.items : [];
+  const nowIso = new Date().toISOString();
+  const patched = items.length
+    ? { ...data, items: items.map((it) => it.confirmed ? it : { ...it, followupNote: trimmed, followupNoteAt: nowIso }) }
+    : { ...data, followupNote: trimmed, followupNoteAt: nowIso };
+  const { error } = await supabase.from("run_items").update({ data: patched }).eq("id", rowId);
+  if (error) return { error: error.message };
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
+/** Adds a follow-up note to a task. Does NOT change status — purely extends
+ *  the next auto-task window via tasks.followup_note_at. */
+export async function addTaskFollowupNote(runId: string, taskId: string, note: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const trimmed = (note ?? "").trim();
+  if (!trimmed) return { error: "Add a short note." };
+  const supabase = await createClient();
+  const { error } = await supabase.from("tasks").update({
+    followup_note: trimmed,
+    followup_note_at: new Date().toISOString(),
+  }).eq("id", taskId).eq("run_id", runId);
+  if (error) return { error: error.message };
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 /** Lists the org's SOPs / templates for linking to internal projects & tasks. */
 export async function listSops(): Promise<{ sops: { id: string; title: string; flow: string | null; category: string | null; scope: string | null }[] }> {
   const session = await getSession();
@@ -889,6 +1459,12 @@ export async function listSops(): Promise<{ sops: { id: string; title: string; f
     .eq("org_id", session.profile.org_id)
     .order("title");
   return { sops: (data ?? []) as { id: string; title: string; flow: string | null; category: string | null; scope: string | null }[] };
+}
+
+/** Lightweight template list (id + name) for linking a template to a project task. */
+export async function listTemplatesLite(): Promise<{ templates: { id: string; name: string }[] }> {
+  const all = await getAllTemplates();
+  return { templates: all.map((t) => ({ id: t.id, name: t.name })) };
 }
 
 /** Saves the SOPs/templates linked to this run's internal project & tasks. */
@@ -956,20 +1532,68 @@ export async function addTask(runId: string, input: TaskInput): Promise<{ error?
   const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
   const { data: maxRow } = await supabase.from("tasks").select("sort").eq("run_id", runId).order("sort", { ascending: false }).limit(1).maybeSingle();
+  const ownerKind = input.ownerKind ?? "team";
+  const ownerId = ownerKind === "client" ? null : (input.ownerId || null);
   const { error } = await supabase.from("tasks").insert({
     org_id: run.org_id, run_id: runId, client_id: run.client_id,
     title: input.title.trim(),
     type: input.type ?? "internal",
     status: input.status ?? "not_started",
-    owner_kind: input.ownerKind ?? "team",
-    owner_id: input.ownerKind === "client" ? null : (input.ownerId || null),
-    service: input.due?.trim() || null,
+    owner_kind: ownerKind,
+    owner_id: ownerId,
+    due_date: input.due?.trim() || null,
+    notes: input.notes?.trim() || null,
     client_visible: input.clientVisible ?? false,
     sort: (maxRow?.sort ?? 0) + 1,
   });
   if (error) return { error: error.message };
+  if (ownerId) await onboardTaskOwner(supabase, run.org_id, runId, ownerId, input.title.trim());
   revalidatePath(`/onboarding/${runId}`);
   return {};
+}
+
+/**
+ * Bring a task owner into the run: upsert them into run_team (so the run shows
+ * in their list + they appear in RunChat) and notify them that a task is on
+ * their plate. Gautham feedback 2026-06-24.
+ */
+async function onboardTaskOwner(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  orgId: string,
+  runId: string,
+  ownerId: string,
+  taskTitle: string,
+) {
+  const { data: tm } = await supabase
+    .from("team_members")
+    .select("role,full_name")
+    .eq("id", ownerId)
+    .maybeSingle();
+  if (tm) {
+    await supabase
+      .from("run_team")
+      .upsert(
+        { run_id: runId, team_member_id: ownerId, role_in_run: tm.role ?? "senior" },
+        { onConflict: "run_id,team_member_id" },
+      );
+  }
+  await supabase.from("notifications").insert({
+    org_id: orgId,
+    run_id: runId,
+    recipient_id: ownerId,
+    kind: "task_assigned",
+    title: "New task assigned to you",
+    body: taskTitle,
+  });
+  // Pull the run's client_id so the helper can find the right Drive folder.
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (run?.client_id) {
+    try {
+      await shareDriveWithRunTeam(supabase, runId, orgId, run.client_id);
+    } catch (e) {
+      console.error("[Drive share / task owner] failed for run", runId, e);
+    }
+  }
 }
 
 /** Edit any field of a task. */
@@ -979,16 +1603,34 @@ export async function updateTask(runId: string, taskId: string, patch: TaskInput
   if (patch.title !== undefined) upd.title = patch.title.trim();
   if (patch.type !== undefined) upd.type = patch.type;
   if (patch.status !== undefined) upd.status = patch.status;
-  if (patch.due !== undefined) upd.service = patch.due?.trim() || null;
+  if (patch.due !== undefined) upd.due_date = patch.due?.trim() || null;
+  if (patch.notes !== undefined) upd.notes = patch.notes ?? null;
   if (patch.clientVisible !== undefined) upd.client_visible = patch.clientVisible;
   if (patch.boardColumn !== undefined) upd.board_column = patch.boardColumn || null;
+  let newOwnerId: string | null = null;
+  let ownerChanged = false;
   if (patch.ownerKind !== undefined) {
     upd.owner_kind = patch.ownerKind;
-    upd.owner_id = patch.ownerKind === "client" ? null : (patch.ownerId || null);
+    newOwnerId = patch.ownerKind === "client" ? null : (patch.ownerId || null);
+    upd.owner_id = newOwnerId;
+    ownerChanged = true;
   } else if (patch.ownerId !== undefined) {
-    upd.owner_id = patch.ownerId || null;
+    newOwnerId = patch.ownerId || null;
+    upd.owner_id = newOwnerId;
+    ownerChanged = true;
   }
   if (!Object.keys(upd).length) return {};
+  // Compare against previous owner so we only notify on an actual change.
+  let prevOwnerId: string | null = null;
+  if (ownerChanged) {
+    const { data: prev } = await supabase.from("tasks").select("owner_id,title").eq("id", taskId).maybeSingle();
+    prevOwnerId = (prev?.owner_id as string | null) ?? null;
+    if (newOwnerId && newOwnerId !== prevOwnerId) {
+      const { data: run } = await supabase.from("onboarding_runs").select("org_id").eq("id", runId).maybeSingle();
+      const title = (patch.title ?? prev?.title ?? "Task").trim();
+      if (run?.org_id) await onboardTaskOwner(supabase, run.org_id, runId, newOwnerId, title);
+    }
+  }
   const { error } = await supabase.from("tasks").update(upd).eq("id", taskId).eq("run_id", runId);
   if (error) return { error: error.message };
   revalidatePath(`/onboarding/${runId}`);
@@ -1030,8 +1672,92 @@ export async function nudgeTeam(runId: string, message: string): Promise<{ error
   return { notified: ids.length };
 }
 
-/** Creates (or reuses) the client portal magic link for this run. */
-export async function dispatchMagicLink(runId: string): Promise<{ error?: string; token?: string; url?: string; email?: string }> {
+/** Creates (or reuses) the onboarding portal magic link for this run. */
+export async function dispatchMagicLink(runId: string, additionalEmails?: string[]): Promise<{ error?: string; token?: string; url?: string; email?: string; clientName?: string; contactName?: string; altEmails?: string[] }> {
+  const supabase = await createClient();
+  const { data: run } = await supabase
+    .from("onboarding_runs")
+    .select("client_id,org_id,group_id")
+    .eq("id", runId)
+    .maybeSingle();
+  if (!run) return { error: "Run not found." };
+
+  const { data: existing } = await supabase
+    .from("magic_links")
+    .select("token,alt_emails,group_id")
+    .eq("run_id", runId)
+    .eq("purpose", "portal")
+    .maybeSingle();
+
+  // The portal is email-locked, so a real client email MUST be configured first.
+  const { data: client } = await supabase.from("clients").select("name,owner_name,primary_contact_email").eq("id", run.client_id).maybeSingle();
+  const clientEmail = client?.primary_contact_email?.trim();
+  if (!clientEmail) {
+    return { error: "Set the client's email first (Client → Client Data). The portal can only be opened by that email." };
+  }
+
+  // Merge any additional teammate emails into alt_emails (de-duplicated, lower-cased,
+  // never duplicating the primary email). Empty array clears nothing — we always
+  // append rather than replace, so the AM can re-dispatch without losing prior invites.
+  const cleanExtras = (additionalEmails ?? [])
+    .map((e) => (e ?? "").trim().toLowerCase())
+    .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e))
+    .filter((e) => e !== clientEmail.toLowerCase());
+
+  let token = existing?.token as string | undefined;
+  if (!token) {
+    token = crypto.randomBytes(24).toString("base64url");
+    const expires = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const { error } = await supabase.from("magic_links").insert({
+      org_id: run.org_id, run_id: runId, client_id: run.client_id,
+      group_id: run.group_id ?? null,
+      email: clientEmail,
+      token, purpose: "portal", expires_at: expires,
+      alt_emails: cleanExtras.length ? Array.from(new Set(cleanExtras)) : [],
+    });
+    if (error) return { error: error.message };
+  } else {
+    const current = ((existing?.alt_emails ?? []) as string[]).map((e) => (e ?? "").trim().toLowerCase()).filter(Boolean);
+    const merged = Array.from(new Set([...current, ...cleanExtras]));
+    // Keep the link's email in sync with the (possibly just-set) client email,
+    // and merge any new teammate invites into alt_emails. Also stamp group_id
+    // if the run belongs to a group and the legacy link lacked it (otherwise
+    // the portal switcher won't render on existing dispatched links).
+    const patch: Record<string, unknown> = { email: clientEmail, alt_emails: merged };
+    if (run.group_id && !existing?.group_id) patch.group_id = run.group_id;
+    await supabase.from("magic_links").update(patch).eq("token", token);
+  }
+
+  // Read the final alt_emails back so the caller can show what's saved.
+  const { data: final } = await supabase.from("magic_links").select("alt_emails").eq("token", token).maybeSingle();
+  const altEmails = ((final?.alt_emails ?? []) as string[]).filter(Boolean);
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const absUrl = appUrl ? `${appUrl.replace(/\/+$/, "")}/portal/${token}` : `/portal/${token}`;
+  return {
+    token,
+    url: absUrl,
+    email: clientEmail,
+    altEmails,
+    clientName: client?.name ?? undefined,
+    contactName: (client?.owner_name as string | undefined) ?? undefined,
+  };
+}
+
+/**
+ * Creates (or reuses) the PUBLIC INTAKE link for this run — a no-login token-only
+ * URL (different from the OTP-gated portal). The client opens /intake/<token>,
+ * fills the form, answers autosave field-by-field. Team sees them live in the
+ * run view.
+ */
+export async function dispatchIntakeLink(runId: string): Promise<{
+  error?: string;
+  token?: string;
+  url?: string;
+  email?: string;
+  clientName?: string;
+  contactName?: string;
+}> {
   const supabase = await createClient();
   const { data: run } = await supabase
     .from("onboarding_runs")
@@ -1044,31 +1770,39 @@ export async function dispatchMagicLink(runId: string): Promise<{ error?: string
     .from("magic_links")
     .select("token")
     .eq("run_id", runId)
-    .eq("purpose", "portal")
+    .eq("purpose", "intake")
     .maybeSingle();
 
-  // The portal is email-locked, so a real client email MUST be configured first.
-  const { data: client } = await supabase.from("clients").select("primary_contact_email").eq("id", run.client_id).maybeSingle();
-  const clientEmail = client?.primary_contact_email?.trim();
-  if (!clientEmail) {
-    return { error: "Set the client's email first (Client → Client Data). The portal can only be opened by that email." };
-  }
+  const { data: client } = await supabase
+    .from("clients")
+    .select("name,owner_name,primary_contact_email")
+    .eq("id", run.client_id)
+    .maybeSingle();
 
   let token = existing?.token as string | undefined;
   if (!token) {
     token = crypto.randomBytes(24).toString("base64url");
-    const expires = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const expires = new Date(Date.now() + 90 * 86_400_000).toISOString();
     const { error } = await supabase.from("magic_links").insert({
-      org_id: run.org_id, run_id: runId, client_id: run.client_id,
-      email: clientEmail,
-      token, purpose: "portal", expires_at: expires,
+      org_id: run.org_id,
+      run_id: runId,
+      client_id: run.client_id,
+      email: client?.primary_contact_email ?? null,
+      token,
+      purpose: "intake",
+      expires_at: expires,
     });
     if (error) return { error: error.message };
-  } else {
-    // Keep the link's email in sync with the (possibly just-set) client email.
-    await supabase.from("magic_links").update({ email: clientEmail }).eq("token", token);
   }
-  return { token, url: `/portal/${token}`, email: clientEmail };
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const absUrl = appUrl ? `${appUrl.replace(/\/+$/, "")}/intake/${token}` : `/intake/${token}`;
+  return {
+    token,
+    url: absUrl,
+    email: (client?.primary_contact_email as string | null) ?? undefined,
+    clientName: client?.name ?? undefined,
+    contactName: (client?.owner_name as string | undefined) ?? undefined,
+  };
 }
 
 /** Completes the whole onboarding immediately (e.g. handover not needed): marks every
@@ -1097,6 +1831,46 @@ export async function completeOnboarding(runId: string): Promise<{ error?: strin
   await recompute(supabase, runId, run.template_key);
   revalidatePath(`/onboarding/${runId}`);
   return {};
+}
+
+/**
+ * Pause SLA + compliance alerts for this run because work is blocked upstream
+ * (catch-up incomplete, client docs pending, FTA portal outage…). The crons
+ * skip blocked runs entirely until `setRunBlocked(runId, null)` clears it.
+ *
+ * AM-level and above only — Senior/Junior shouldn't unilaterally silence
+ * deadline alerts on a compliance run.
+ */
+export async function setRunBlocked(runId: string, reason: string | null): Promise<{ error?: string; blocked?: boolean }> {
+  const supabase = await createClient();
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const myRole = session?.teamMember?.role ?? session?.profile.role;
+  if ((ROLE_RANK[myRole ?? ""] ?? 0) < ROLE_RANK.am) {
+    return { error: "Only an Account Manager or above can pause a run." };
+  }
+
+  const trimmed = (reason ?? "").trim();
+  const patch = trimmed
+    ? { blocked_reason: trimmed, blocked_at: new Date().toISOString(), blocked_by: session.teamMember?.id ?? null }
+    : { blocked_reason: null, blocked_at: null, blocked_by: null };
+
+  const { error } = await supabase.from("onboarding_runs").update(patch).eq("id", runId);
+  if (error) return { error: error.message };
+
+  // Audit trail so we can answer "who paused this and why".
+  await supabase.from("audit_events").insert({
+    org_id: session.profile.org_id,
+    actor: session.teamMember?.full_name ?? session.email,
+    actor_role: myRole ?? "unknown",
+    action: trimmed ? "run_blocked" : "run_unblocked",
+    resource_id: runId,
+    resource_type: "onboarding_run",
+    details: trimmed ? { reason: trimmed } : {},
+  });
+
+  revalidatePath(`/onboarding/${runId}`);
+  return { blocked: !!trimmed };
 }
 
 export async function rollbackToStage(runId: string, stageNo: number) {
@@ -1144,4 +1918,58 @@ export async function rollbackStep(runId: string, stepId: string) {
   await recompute(supabase, runId, run.template_key);
   revalidatePath(`/onboarding/${runId}`);
   return {};
+}
+
+/**
+ * Push the run's finalised COA into the connected Zoho Books org. Used by
+ * step t3.3 / m3.3 (act.type='zoho'). Requires:
+ *   - someone in this org has Zoho connected via My Connections
+ *   - the run has a saved COA (coa_instances.accounts non-empty)
+ *
+ * Returns the per-line counts; failures don't abort.
+ */
+export async function pushCoaToZoho(
+  runId: string,
+  stepId?: string,
+): Promise<{ error?: string; created?: number; skipped?: number; failed?: number; zohoOrganizationId?: string; errors?: Array<{ code: string; account: string; reason: string }> }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!["senior", "team_lead", "am", "ops_head", "admin"].includes(role))
+    return { error: "Only a Senior or above can push the COA to Zoho." };
+
+  const supabase = await createClient();
+  const { data: coa } = await supabase
+    .from("coa_instances")
+    .select("accounts")
+    .eq("run_id", runId)
+    .maybeSingle();
+  const lines = ((coa?.accounts ?? []) as Array<{ code: string; account: string; section: string; description?: string; include?: boolean }>)
+    .filter((l) => l.include !== false && l.account?.trim());
+  if (!lines.length) return { error: "No COA saved on this run yet — finalise the COA first." };
+
+  const { pushCoaToZohoBooks } = await import("@/lib/zoho-books");
+  try {
+    const result = await pushCoaToZohoBooks({
+      orgId: session.profile.org_id,
+      pushedByTeamMemberId: session.teamMember?.id ?? null,
+      lines,
+    });
+    await supabase.from("audit_events").insert({
+      org_id: session.profile.org_id,
+      actor: session.teamMember?.full_name ?? session.email,
+      actor_role: role,
+      action: "coa_pushed_to_zoho",
+      module: "onboarding",
+      resource_ref: `Pushed COA to Zoho Books (${result.created} created, ${result.skipped} already there, ${result.failed} failed)`,
+      resource_id: runId,
+      resource_type: "run",
+      details: { zoho_org: result.zohoOrganizationId, errors: result.errors.slice(0, 20) },
+    });
+    if (stepId && result.failed === 0) await completeStep(runId, stepId);
+    revalidatePath(`/onboarding/${runId}`);
+    return result;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Zoho push failed." };
+  }
 }

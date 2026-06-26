@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { getRunCards } from "@/lib/data/runs";
 import { type RunCardAction } from "@/components/run-card";
 import { MyWorkBoard } from "./my-work-board";
+import { MyTasksSection, type AdminTaskItem } from "./my-tasks-section";
+import { UrgentRunsSection } from "./urgent-runs-section";
 import { templateById, type TemplateStep } from "@/lib/onboarding-templates";
 import { ROLE_LABEL } from "@/lib/roles";
 import type { Role } from "@/lib/types";
@@ -18,6 +20,8 @@ function reqRole(step: TemplateStep): string | null {
   for (const w of step.who ?? []) { const r = WHO[String(w).trim().toLowerCase()]; if (r) return r; }
   return step.assignRole ?? null;
 }
+
+const URGENT_TEMPLATES = new Set(["urgent-compliance", "catchup", "compliance-renewal"]);
 
 export default async function MyWorkPage() {
   const session = await requireSession();
@@ -43,9 +47,57 @@ export default async function MyWorkPage() {
     runIds = [];
   }
 
-  const runs = (await getRunCards(supabase, runIds)).filter(
+  const allRuns = (await getRunCards(supabase, runIds)).filter(
     (r) => r.status !== "archived" && r.status !== "closed",
   );
+  const urgentRuns = allRuns.filter((r) => URGENT_TEMPLATES.has(r.templateKey));
+  const runs = allRuns.filter((r) => !URGENT_TEMPLATES.has(r.templateKey));
+
+  // Auto-generated admin tasks owned by this user OR scoped to the viewer's role.
+  //   • admin / ops_head → all admin_tasks in the org
+  //   • am               → tasks the viewer owns
+  //   • team_lead        → tasks for runs the viewer is on the run_team of
+  //   • other            → tasks they own only
+  let adminTasks: AdminTaskItem[] = [];
+  if (memberId || role === "admin" || role === "ops_head") {
+    let q = supabase
+      .from("admin_tasks")
+      .select("id,kind,run_id,client_id,step_id,title,body,status,history,notes,created_at,owner_id");
+    if (role === "admin" || role === "ops_head") {
+      // no extra filter — sees everything in the org (RLS guards the org boundary)
+    } else if (role === "team_lead" && memberId) {
+      const { data: teamRows } = await supabase.from("run_team").select("run_id").eq("team_member_id", memberId);
+      const teamRunIds = (teamRows ?? []).map((r) => r.run_id);
+      // include tasks the viewer owns AND tasks for runs they're on
+      if (teamRunIds.length) {
+        q = q.or(`owner_id.eq.${memberId},run_id.in.(${teamRunIds.join(",")})`);
+      } else {
+        q = q.eq("owner_id", memberId);
+      }
+    } else if (memberId) {
+      q = q.eq("owner_id", memberId);
+    }
+    const { data: rows } = await q.order("created_at", { ascending: false }).limit(200);
+    const clientIds = [...new Set((rows ?? []).map((r) => r.client_id).filter(Boolean) as string[])];
+    const nameById = new Map<string, string>();
+    if (clientIds.length) {
+      const { data: cs } = await supabase.from("clients").select("id,name").in("id", clientIds);
+      (cs ?? []).forEach((c) => nameById.set(c.id, c.name));
+    }
+    adminTasks = (rows ?? []).map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      title: r.title,
+      body: r.body,
+      runId: r.run_id,
+      stepId: r.step_id ?? null,
+      clientName: r.client_id ? nameById.get(r.client_id) ?? null : null,
+      createdAt: r.created_at,
+      status: r.status,
+      history: Array.isArray(r.history) ? r.history : [],
+      notes: r.notes,
+    }));
+  }
 
   // Work out, per run, the specific step this person should do next (or who it's waiting on).
   const ids = runs.map((r) => r.id);
@@ -82,9 +134,29 @@ export default async function MyWorkPage() {
     }
   }
 
+  const canScan = role === "admin" || role === "ops_head";
+
   return (
     <div className="scroll">
       <div className="page">
+        {(adminTasks.length > 0 || canScan) && (
+          <MyTasksSection items={adminTasks} canScan={canScan} />
+        )}
+
+        <UrgentRunsSection
+          runs={urgentRuns.map((r) => ({
+            id: r.id,
+            clientName: r.clientName,
+            templateName: r.templateName,
+            currentStageName: r.currentStageName ?? null,
+            currentStage: r.currentStage,
+            progress: r.progress,
+            target: r.target ?? null,
+            sla: r.sla ?? null,
+            amName: r.amName ?? null,
+          }))}
+        />
+
         <div className="section-head">
           <div>
             <h2>My Work</h2>

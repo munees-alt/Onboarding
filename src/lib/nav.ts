@@ -15,9 +15,14 @@ export const NAV: NavItem[] = [
   { id: "sop", label: "SOP Library", icon: "book-open", href: "/sop", group: "more" },
   { id: "create-run", label: "Create Run", icon: "plus-circle", href: "/create-run", group: "more", stub: true, roles: ["admin", "ops_head", "am"] },
 
+  { id: "pulse", label: "Weekly Pulse", icon: "activity", href: "/pulse", group: "admin", roles: ["admin"] },
+  { id: "weekly-updates", label: "Weekly Client Updates", icon: "send", href: "/weekly-updates", group: "admin", roles: ["admin"] },
   { id: "master-coa", label: "Master COA", icon: "book-open", href: "/master-coa", group: "admin", roles: ["admin", "ops_head", "am"] },
+  { id: "master-tax-codes", label: "Master Tax Codes", icon: "percent", href: "/master-tax-codes", group: "admin", roles: ["admin", "ops_head", "am"] },
   { id: "org-chart", label: "Org Chart", icon: "network", href: "/org-chart", group: "admin", roles: ["admin", "ops_head"] },
   { id: "tickets", label: "Requests", icon: "lightbulb", href: "/tickets", group: "admin", roles: ["admin", "ops_head"] },
+  { id: "aml", label: "AML Compliance", icon: "file-lock", href: "/aml", group: "admin" },
+  { id: "doc-audit", label: "Document Audit", icon: "folder-search", href: "/clients/doc-audit", group: "admin", roles: ["admin", "ops_head", "am"] },
   { id: "audit-log", label: "Audit Log", icon: "shield-check", href: "/audit-log", group: "admin", roles: ["admin", "ops_head"] },
   { id: "settings", label: "Settings", icon: "settings", href: "/settings", group: "admin", roles: ["admin", "ops_head"] },
 ];

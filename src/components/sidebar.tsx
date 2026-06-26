@@ -15,8 +15,21 @@ const GROUP_LABEL: Record<NavItem["group"], string | null> = {
 
 export function Sidebar({ expanded }: { expanded: boolean }) {
   const pathname = usePathname();
-  const { me, effectiveRole } = useIdentity();
-  const items = visibleNav(effectiveRole);
+  const { me, effectiveRole, accessOverrides } = useIdentity();
+  const items = visibleNav(effectiveRole).filter((n) => {
+    const o = accessOverrides[effectiveRole]?.[n.id];
+    if (typeof o === "boolean") return o;
+    return true; // visibleNav already applied defaults
+  }).concat(
+    // Also restore items the default would hide but an override explicitly allows.
+    Object.entries(accessOverrides[effectiveRole] ?? {})
+      .filter(([, allow]) => allow === true)
+      .map(([navId]) => {
+        const base = visibleNav("admin").find((n) => n.id === navId);
+        return base;
+      })
+      .filter((n): n is NonNullable<typeof n> => !!n && !visibleNav(effectiveRole).some((v) => v.id === n.id)),
+  );
 
   const isActive = (href: string) =>
     pathname === href || pathname.startsWith(href + "/");

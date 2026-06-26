@@ -3,12 +3,33 @@
 import { useState, useTransition } from "react";
 import { Icon } from "@/components/icon";
 import { PROVIDER_MODELS, AI_FEATURES, type AiFeature, type FeatureModel, type Provider } from "@/lib/ai-config";
-import { saveAiKeys, saveFeatureModels, saveIntegrations } from "./actions";
+import { saveAiKeys, saveFeatureModels, saveIntegrations, saveLeadSyncConfig, syncLeadsNow, saveRoleOverride, awardUserPoints, saveFollowupConfig } from "./actions";
+import { setFeedbackFormUrl } from "../weekly-updates/actions";
+import type { AccessMatrix } from "@/lib/role-access";
+import type { Role } from "@/lib/types";
+import { ROLE_LABEL } from "@/lib/roles";
 
 const PROVIDERS: Provider[] = ["openai", "anthropic", "google"];
 
+interface LeadCfg {
+  enabled: boolean;
+  gmailLabel: string;
+  matchFrom: string;
+  matchSubjectPrefix: string;
+  services: string[];
+  mailboxMemberId: string;
+  lastSyncedAt: string | null;
+  lastResult: { scanned: number; created: number; at: string } | null;
+}
+
+export interface TeamMemberRow { id: string; name: string; role: string; title: string | null; points: number }
+export interface RecentPointEntry { member_id: string; points: number; reason: string; created_at: string }
+export interface FollowupCfg { docsOverdueDays: number; accessOverdueDays: number; taskOverdueDays: number; noteExtensionDays: number }
+
 export function SettingsForm({
-  keysSet, models, fathomSet, pmsName, pmsSet, googleEmail, zohoConnected,
+  keysSet, models, fathomSet, pmsName, pmsSet, googleEmail, zohoConnected, slackWorkspace = null,
+  isAdmin = false, lead, mailboxes = [],
+  accessMatrix = null, accessRoles = [], team = [], recentPoints = [], followup, feedbackFormUrl = null,
 }: {
   keysSet: Record<Provider, boolean>;
   models: Partial<Record<AiFeature, FeatureModel>>;
@@ -17,6 +38,16 @@ export function SettingsForm({
   pmsSet: boolean;
   googleEmail: string | null;
   zohoConnected: boolean;
+  slackWorkspace?: string | null;
+  isAdmin?: boolean;
+  lead?: LeadCfg;
+  mailboxes?: { id: string; label: string }[];
+  accessMatrix?: AccessMatrix | null;
+  accessRoles?: Role[];
+  team?: TeamMemberRow[];
+  recentPoints?: RecentPointEntry[];
+  followup?: FollowupCfg;
+  feedbackFormUrl?: string | null;
 }) {
   const [busy, start] = useTransition();
   const [toast, setToast] = useState<string | null>(null);
@@ -26,6 +57,19 @@ export function SettingsForm({
   const [fm, setFm] = useState<Partial<Record<AiFeature, FeatureModel>>>(models);
   const [fathom, setFathom] = useState("");
   const [pms, setPms] = useState({ name: pmsName, key: "" });
+
+  const [lc, setLc] = useState<LeadCfg>(lead ?? {
+    enabled: true, gmailLabel: "Cadence Onboarding", matchFrom: "", matchSubjectPrefix: "",
+    services: ["Accounting & Bookkeeping", "Prior-Period Catch-Up & Books Cleanup"], mailboxMemberId: "",
+    lastSyncedAt: null, lastResult: null,
+  });
+  const [newSvc, setNewSvc] = useState("");
+  const setL = <K extends keyof LeadCfg>(k: K, v: LeadCfg[K]) => setLc((c) => ({ ...c, [k]: v }));
+
+  const [fu, setFu] = useState<FollowupCfg>(followup ?? { docsOverdueDays: 2, accessOverdueDays: 2, taskOverdueDays: 0, noteExtensionDays: 2 });
+  const setF = <K extends keyof FollowupCfg>(k: K, v: FollowupCfg[K]) => setFu((c) => ({ ...c, [k]: v }));
+
+  const [feedbackUrl, setFeedbackUrl] = useState<string>(feedbackFormUrl ?? "");
 
   const allCombos = PROVIDERS.flatMap((p) => PROVIDER_MODELS[p].models.map((m) => ({ provider: p, model: m })));
 
@@ -89,12 +133,114 @@ export function SettingsForm({
           </div>
         </Card>
 
+        {/* ── Access panel (Master Admin only) ── */}
+        {isAdmin && accessMatrix && <AccessPanel matrix={accessMatrix} roles={accessRoles} onChange={(role, navId, allow) => start(async () => { const r = await saveRoleOverride({ role, navId, allow }); note(r.error ?? "Access saved"); })} busy={busy} />}
+
+        {/* ── User Points (Master Admin only) ── */}
+        {isAdmin && <UserPointsPanel team={team} recent={recentPoints} onAward={(memberId, points, reason) => start(async () => { const r = await awardUserPoints({ memberId, points, reason }); note(r.error ?? `Awarded ${points > 0 ? "+" : ""}${points} pts`); })} busy={busy} />}
+
+        {/* ── Onboarding lead automation (Master Admin only) ── */}
+        {isAdmin && (
+          <Card title="Onboarding lead automation" icon="mail" desc="Any new email landing in the chosen Gmail label is turned into an onboarding lead automatically (and on every manual sync). Change any rule here — no code needed.">
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600 }}>
+              <input type="checkbox" checked={lc.enabled} onChange={(e) => setL("enabled", e.target.checked)} />
+              Automation enabled
+            </label>
+
+            <div className="field">
+              <label>Watch this Gmail label</label>
+              <input value={lc.gmailLabel} onChange={(e) => setL("gmailLabel", e.target.value)} placeholder="Cadence Onboarding" />
+              <div style={{ fontSize: 11.5, color: "var(--ink-4)", marginTop: 4 }}>In Gmail, add a filter that labels the incoming onboarding emails with this exact label. Any new mail in it becomes a lead.</div>
+            </div>
+
+            <div className="field">
+              <label>Mailbox to read</label>
+              <select value={lc.mailboxMemberId} onChange={(e) => setL("mailboxMemberId", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
+                <option value="">Master Admin (default — first connected)</option>
+                {mailboxes.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </select>
+            </div>
+
+            <div className="field">
+              <label>Configured services</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {lc.services.map((svc) => (
+                  <span key={svc} className="tab-pill active" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    {svc}
+                    <button type="button" onClick={() => setL("services", lc.services.filter((x) => x !== svc))} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", lineHeight: 1 }}><Icon name="x" size={12} /></button>
+                  </span>
+                ))}
+                {lc.services.length === 0 && <span style={{ fontSize: 12, color: "var(--ink-4)" }}>No services configured yet.</span>}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input value={newSvc} onChange={(e) => setNewSvc(e.target.value)} placeholder="Add a service (e.g. VAT Filing)" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); const v = newSvc.trim(); if (v && !lc.services.includes(v)) setL("services", [...lc.services, v]); setNewSvc(""); } }} />
+                <button className="btn-ghost" type="button" onClick={() => { const v = newSvc.trim(); if (v && !lc.services.includes(v)) setL("services", [...lc.services, v]); setNewSvc(""); }}>Add</button>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--ink-4)", marginTop: 4 }}>Services found in the email are matched to these names. e.g. Accounting &amp; Bookkeeping, Prior-Period Catch-Up &amp; Books Cleanup.</div>
+            </div>
+
+            <details>
+              <summary style={{ cursor: "pointer", fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>Optional extra filters (sender / subject)</summary>
+              <div className="field" style={{ marginTop: 10 }}>
+                <label>Only from sender (optional)</label>
+                <input value={lc.matchFrom} onChange={(e) => setL("matchFrom", e.target.value)} placeholder="leave blank — the label is enough" />
+              </div>
+              <div className="field">
+                <label>Subject starts with (optional)</label>
+                <input value={lc.matchSubjectPrefix} onChange={(e) => setL("matchSubjectPrefix", e.target.value)} placeholder="leave blank — the label is enough" />
+              </div>
+            </details>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await saveLeadSyncConfig({ enabled: lc.enabled, gmailLabel: lc.gmailLabel, matchFrom: lc.matchFrom, matchSubjectPrefix: lc.matchSubjectPrefix, services: lc.services, mailboxMemberId: lc.mailboxMemberId || null }); note(r.error ?? "Rules saved"); })}>Save rules</button>
+              <button className="btn-ghost" disabled={busy} onClick={() => start(async () => { const r = await syncLeadsNow(); if (r.error) { note(r.error); return; } const res = r.result; note(res ? `Synced — ${res.created} new lead(s), ${res.scanned} scanned${res.errors.length ? ` · ${res.errors[0]}` : ""}` : "Synced"); })}><Icon name="refresh-cw" size={14} /> Sync from email now</button>
+              {lc.lastResult && <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Last sync: {lc.lastResult.created} created of {lc.lastResult.scanned} · {new Date(lc.lastResult.at).toLocaleString()}</span>}
+            </div>
+          </Card>
+        )}
+
+        {/* ── Follow-up SLA (Master Admin only) ── */}
+        {isAdmin && (
+          <Card title="Follow-up SLA" icon="clock" desc="When the daily scan auto-creates a follow-up task for the master admin and AM. Adding a follow-up note inside a run extends the next auto-task by the note-extension window.">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div className="field"><label>Docs received within (days)</label><input type="number" min={0} value={fu.docsOverdueDays} onChange={(e) => setF("docsOverdueDays", Number(e.target.value))} /></div>
+              <div className="field"><label>Access shared within (days)</label><input type="number" min={0} value={fu.accessOverdueDays} onChange={(e) => setF("accessOverdueDays", Number(e.target.value))} /></div>
+              <div className="field"><label>Task escalation (days past due)</label><input type="number" min={0} value={fu.taskOverdueDays} onChange={(e) => setF("taskOverdueDays", Number(e.target.value))} /></div>
+              <div className="field"><label>Note extension (days)</label><input type="number" min={0} value={fu.noteExtensionDays} onChange={(e) => setF("noteExtensionDays", Number(e.target.value))} /></div>
+            </div>
+            <div><button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await saveFollowupConfig(fu); note(r.error ?? "Follow-up SLA saved"); })}>Save follow-up SLA</button></div>
+            <div style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Defaults: 2 / 2 / 0 / 2. Task escalation 0 fires as soon as a task is past its due date.</div>
+          </Card>
+        )}
+
+        {/* ── Client feedback form URL (Master Admin only) ── */}
+        {isAdmin && (
+          <Card title="Client feedback form" icon="message-square" desc="A single feedback form link used by the Weekly Client Updates module. When set, the weekly draft includes a ‘share quick feedback’ link to the client.">
+            <div className="field">
+              <label>Feedback form URL</label>
+              <input value={feedbackUrl} onChange={(e) => setFeedbackUrl(e.target.value)} placeholder="https://forms.gle/…" />
+            </div>
+            <div>
+              <button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await setFeedbackFormUrl(feedbackUrl); note(r.error ?? "Feedback URL saved"); })}>Save feedback URL</button>
+            </div>
+          </Card>
+        )}
+
         {/* ── Google (per-member) ── */}
         <Card title="Google — Gmail & Drive (per member)" icon="hard-drive" desc="Connect your own Google account so onboarding folders are created inside your Drive and email sends from your Gmail. Each member connects their own — just sign in.">
           {googleEmail ? (
             <div className="sop-ref-bar"><Icon name="check-circle" size={14} /> Connected as <strong>{googleEmail}</strong><a href="/api/connect/google">Reconnect →</a></div>
           ) : (
             <a className="btn-primary" href="/api/connect/google" style={{ textDecoration: "none", width: "fit-content" }}><Icon name="link" size={14} /> Connect Google</a>
+          )}
+        </Card>
+
+        {/* ── Slack (per-org workspace) ── */}
+        <Card title="Slack (workspace)" icon="message-circle" desc="Connect your Slack workspace so onboarding steps can post templated messages — e.g. ping the accounting-software team with the trade licence + VAT certificate when a client is ready for setup.">
+          {slackWorkspace ? (
+            <div className="sop-ref-bar"><Icon name="check-circle" size={14} /> Connected to <strong>{slackWorkspace}</strong><a href="/api/connect/slack">Reconnect →</a></div>
+          ) : (
+            <a className="btn-primary" href="/api/connect/slack" style={{ textDecoration: "none", width: "fit-content" }}><Icon name="link" size={14} /> Connect Slack</a>
           )}
         </Card>
 
@@ -119,6 +265,133 @@ export function SettingsForm({
       </div>
 
       {toast && <div className="toast show green"><Icon name="check-circle" size={15} /><span>{toast}</span></div>}
+    </div>
+  );
+}
+
+function AccessPanel({ matrix, roles, onChange, busy }: { matrix: AccessMatrix; roles: Role[]; onChange: (role: Role, navId: string, allow: boolean | null) => void; busy: boolean }) {
+  // For each (role × module), what's the resolved state? Override → use override; else module default.
+  function resolve(role: Role, m: AccessMatrix["modules"][number]): { allowed: boolean; isOverride: boolean } {
+    const o = matrix.overrides[role]?.[m.id];
+    if (typeof o === "boolean") return { allowed: o, isOverride: true };
+    const allowed = !m.defaultRoles || m.defaultRoles.includes(role);
+    return { allowed, isOverride: false };
+  }
+  function cycle(role: Role, m: AccessMatrix["modules"][number]) {
+    const cur = matrix.overrides[role]?.[m.id];
+    const def = !m.defaultRoles || m.defaultRoles.includes(role);
+    // Tri-state cycle: default → opposite-of-default → cleared (back to default).
+    if (typeof cur !== "boolean") onChange(role, m.id, !def);
+    else if (cur !== def) onChange(role, m.id, null);
+    else onChange(role, m.id, !def);
+  }
+  return (
+    <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        <span style={{ width: 32, height: 32, borderRadius: 8, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center" }}><Icon name="shield" size={16} /></span>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Access · who can open which module</h3>
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 14, marginLeft: 42 }}>Master-Admin only. Click a cell to toggle: ✓ allowed · ✗ blocked · — using the default. Changes take effect on next page load for that user.</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)" }}>Module</th>
+              {roles.map((r) => (
+                <th key={r} style={{ textAlign: "center", padding: "8px 6px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)", minWidth: 64 }}>{ROLE_LABEL[r]}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.modules.map((m) => (
+              <tr key={m.id}>
+                <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-light, #eee)", fontWeight: 600 }}>{m.label}</td>
+                {roles.map((r) => {
+                  const { allowed, isOverride } = resolve(r, m);
+                  return (
+                    <td key={r} style={{ textAlign: "center", padding: "6px", borderBottom: "1px solid var(--border-light, #eee)" }}>
+                      <button type="button" disabled={busy} onClick={() => cycle(r, m)}
+                        title={isOverride ? `Override: ${allowed ? "Allowed" : "Blocked"} (click to cycle)` : `Default: ${allowed ? "Allowed" : "Blocked"} (click to override)`}
+                        style={{ width: 30, height: 30, border: isOverride ? "1.5px solid var(--orange)" : "1px solid var(--border)", borderRadius: 7, background: allowed ? (isOverride ? "var(--orange-soft)" : "var(--green-soft, #ecfdf5)") : "#fff", color: allowed ? "var(--green-700, #047857)" : "var(--red, #dc2626)", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: "var(--font)" }}>
+                        {isOverride ? (allowed ? "✓" : "✗") : (allowed ? "✓" : "—")}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function UserPointsPanel({ team, recent, onAward, busy }: { team: TeamMemberRow[]; recent: RecentPointEntry[]; onAward: (memberId: string, points: number, reason: string) => void; busy: boolean }) {
+  const [memberId, setMemberId] = useState(team[0]?.id ?? "");
+  const [pts, setPts] = useState<number | "">("");
+  const [reason, setReason] = useState("");
+  const memberById = Object.fromEntries(team.map((t) => [t.id, t]));
+  const submit = () => {
+    if (!memberId || !pts || !reason.trim()) return;
+    onAward(memberId, Number(pts), reason.trim());
+    setPts(""); setReason("");
+  };
+  const top = team.slice(0, 10);
+  return (
+    <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        <span style={{ width: 32, height: 32, borderRadius: 8, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center" }}><Icon name="award" size={16} /></span>
+        <h3 style={{ margin: 0, fontSize: 15 }}>User points · performance leaderboard</h3>
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 14, marginLeft: 42 }}>Master-Admin only. Award + or − points with a short reason; teammates see their total later in their profile.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Award points</div>
+          <div className="field">
+            <label>Team member</label>
+            <select value={memberId} onChange={(e) => setMemberId(e.target.value)} style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
+              {team.map((t) => <option key={t.id} value={t.id}>{t.name} · {ROLE_LABEL[t.role as Role] ?? t.role}{t.points ? ` · ${t.points} pts` : ""}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Points (use a negative number to deduct)</label>
+            <input type="number" value={pts} onChange={(e) => setPts(e.target.value === "" ? "" : Number(e.target.value))} placeholder="e.g. 10 or -5" />
+          </div>
+          <div className="field">
+            <label>Reason</label>
+            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Closed Avobar onboarding 4 days ahead of SLA" />
+          </div>
+          <button className="btn-primary" disabled={busy || !memberId || !pts || !reason.trim()} onClick={submit}>Award points</button>
+        </div>
+        <div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Top 10 · leaderboard</div>
+          {top.length ? (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+              {top.map((t, i) => (
+                <div key={t.id} style={{ display: "grid", gridTemplateColumns: "24px 1fr auto", alignItems: "center", gap: 8, padding: "8px 12px", borderTop: i === 0 ? "none" : "1px solid var(--border-light, #f1f1f1)", fontSize: 12.5 }}>
+                  <span style={{ color: "var(--ink-4)", fontWeight: 700 }}>{i + 1}</span>
+                  <div><div style={{ fontWeight: 600 }}>{t.name}</div><div style={{ fontSize: 11, color: "var(--ink-3)" }}>{ROLE_LABEL[t.role as Role] ?? t.role}</div></div>
+                  <span style={{ fontWeight: 700, color: t.points >= 0 ? "var(--green-700, #047857)" : "var(--red)" }}>{t.points > 0 ? "+" : ""}{t.points} pts</span>
+                </div>
+              ))}
+            </div>
+          ) : <div style={{ fontSize: 12, color: "var(--ink-4)" }}>No points awarded yet.</div>}
+          {recent.length > 0 && (
+            <details style={{ marginTop: 12 }}>
+              <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>Recent · last {recent.length} awards</summary>
+              <ul style={{ margin: "8px 0 0", paddingLeft: 0, listStyle: "none", maxHeight: 180, overflowY: "auto" }}>
+                {recent.map((p, i) => (
+                  <li key={i} style={{ fontSize: 12, padding: "6px 0", borderBottom: "1px solid var(--border-light, #f1f1f1)" }}>
+                    <span style={{ fontWeight: 700, color: p.points >= 0 ? "var(--green-700, #047857)" : "var(--red)", marginRight: 6 }}>{p.points > 0 ? "+" : ""}{p.points}</span>
+                    <span>{memberById[p.member_id]?.name ?? "Unknown"}</span> · <span style={{ color: "var(--ink-3)" }}>{p.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -42,3 +42,11 @@ yarn-error.log*
 next-env.d.ts
 
 .vercel
+
+# ── added to match team security baseline ──
+dist/
+.vscode/
+.idea/
+eval/fixtures/real/
+supabase/.temp/
+supabase/.branches/

@@ -25,6 +25,50 @@ export async function getSession(): Promise<SessionInfo | null> {
       .maybeSingle<TeamMember>();
     teamMember = data ?? null;
   }
+  // Fallback: the handle_new_user trigger only links by email AT SIGNUP. If the
+  // user's team_members row was created after they signed up, or their email
+  // was edited later, profiles.team_member_id stays null and Senior/TL/Junior
+  // can't see anything role-scoped. Two-step fallback that ALSO covers the
+  // common case where the org chart row has no email yet:
+  //   1) Direct email match (ilike).
+  //   2) Local-part of the user's email matched against team_members.full_name
+  //      (e.g. "shahil@finanshels.com" → "Shahil"). Only when exactly one
+  //      active match exists; we also stamp the team_member's email so the
+  //      trigger / next read take the fast path.
+  if (!teamMember && user.email) {
+    const { data: byEmail } = await supabase
+      .from("team_members")
+      .select("*")
+      .ilike("email", user.email)
+      .eq("active", true)
+      .maybeSingle<TeamMember>();
+    if (byEmail) {
+      teamMember = byEmail;
+    } else {
+      const local = (user.email.split("@")[0] ?? "").trim();
+      if (local.length >= 3) {
+        const { data: cand } = await supabase
+          .from("team_members")
+          .select("*")
+          .ilike("full_name", `%${local}%`)
+          .eq("active", true)
+          .limit(2)
+          .returns<TeamMember[]>();
+        if (cand && cand.length === 1) {
+          teamMember = cand[0];
+          // Stamp the team_members.email so this match is permanent + so trigger-based
+          // linking works for any future logins on the same email.
+          await supabase.from("team_members").update({ email: user.email }).eq("id", teamMember.id);
+        }
+      }
+    }
+    if (teamMember && profile && !profile.team_member_id) {
+      await supabase
+        .from("profiles")
+        .update({ team_member_id: teamMember.id, role: teamMember.role ?? profile.role })
+        .eq("id", user.id);
+    }
+  }
 
   let org: Org | null = null;
   if (profile?.org_id) {

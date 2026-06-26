@@ -5,18 +5,61 @@ import { cookies } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { uploadClientDocToDrive, sendGmailAs, getDriveCapableMemberId } from "@/lib/google";
 import { PORTAL_COOKIE, makePortalCookie, hashCode, makeCode } from "@/lib/portal-auth";
+import { encryptSecret, decryptSecret } from "@/lib/crypto";
+import { getSession } from "@/lib/auth";
+import { canManageCoa } from "@/lib/roles";
+
+/** Caps a best-effort async step so a hung external call (e.g. the Google Drive API,
+    which has no built-in timeout) can never leave a portal upload stuck. Returns
+    `fallback` if the work doesn't finish in time. */
+async function withTimeout<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const guard = new Promise<T>((res) => { timer = setTimeout(() => res(fallback), ms); });
+  try {
+    return await Promise.race([work, guard]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
 
 /** Validates a portal token → returns the magic link row (or null). */
 async function resolve(token: string) {
   const admin = createAdminClient();
   const { data } = await admin
     .from("magic_links")
-    .select("id,client_id,run_id,org_id,expires_at,purpose,email")
+    .select("id,client_id,run_id,org_id,group_id,expires_at,purpose,email")
     .eq("token", token)
     .maybeSingle();
   if (!data) return null;
   if (new Date(data.expires_at).getTime() < Date.now()) return null;
   return data;
+}
+
+/**
+ * Resolves the ACTIVE entity for the portal request. In a single-client portal
+ * (the 95% case) this is just link.client_id/run_id. In a group portal the
+ * client picks an entity via ?entity=<runId> and we route data + uploads to
+ * THAT entity's client/run — never to the magic link's pinned first client.
+ */
+async function resolveActive(
+  token: string, entityRunId?: string | null,
+): Promise<{ client_id: string; run_id: string | null; org_id: string; group_id: string | null } | null> {
+  const link = await resolve(token);
+  if (!link?.client_id) return null;
+  const baseline = {
+    client_id: link.client_id as string,
+    run_id: (link.run_id as string | null) ?? null,
+    org_id: link.org_id as string,
+    group_id: (link.group_id as string | null) ?? null,
+  };
+  if (!entityRunId || !link.group_id) return baseline;
+  // Verify the chosen runId belongs to the SAME group as the magic link.
+  const admin = createAdminClient();
+  const { data: sib } = await admin
+    .from("onboarding_runs").select("id,client_id,group_id")
+    .eq("id", entityRunId).maybeSingle();
+  if (!sib || sib.group_id !== link.group_id) return baseline;
+  return { ...baseline, client_id: sib.client_id as string, run_id: sib.id as string };
 }
 
 /** Finds a Google-connected team member to send the OTP email from (prefers the run's AM). */
@@ -53,8 +96,13 @@ export async function requestPortalCode(token: string, email: string): Promise<{
   if (!allowed.includes(entered)) return { error: "That email isn't on this onboarding. Ask whoever received the link to add you as a teammate, then try again." };
 
   const code = makeCode();
+  // Store hash (for verification) + an encrypted copy of the code (team backup) + sent time.
+  // The encrypted copy lets the team read the code out when the email doesn't arrive; it auto-
+  // expires with the same 10-minute window.
   await admin.from("magic_links").update({
     otp_hash: hashCode(code),
+    otp_code_enc: encryptSecret(code),
+    otp_sent_at: new Date().toISOString(),
     otp_expiry: new Date(Date.now() + 10 * 60_000).toISOString(),
     otp_attempts: 0,
   }).eq("id", link.id);
@@ -64,12 +112,39 @@ export async function requestPortalCode(token: string, email: string): Promise<{
     const { data: run } = await admin.from("onboarding_runs").select("am_id").eq("id", link.run_id).maybeSingle();
     amId = run?.am_id ?? null;
   }
+  // The code is already saved, so even if email fails the team can read it to the client.
   const sender = await findEmailSender(link.org_id, amId);
-  if (!sender) return { error: "Couldn't send the code (email not configured). Please contact your account manager." };
+  if (!sender) return { error: "We couldn't email the code automatically. Your account manager can read it to you — please contact them.", ok: false };
   // Send the code to the address that asked for it (so invited teammates get their own).
   const res = await sendGmailAs(sender, entered, "Your Finanshels portal access code", `Your one-time access code is: ${code}\n\nIt expires in 10 minutes.\n\nIf you didn't request this, you can ignore this email.`);
-  if (!res.ok) return { error: "Couldn't send the code right now. Please try again or contact your account manager." };
+  if (!res.ok) return { error: "We couldn't email the code right now. Your account manager can read it to you — please contact them, or try again.", ok: false };
   return { ok: true };
+}
+
+/** Team-only backup: read the current portal access code for a run (decrypted) when the
+    client didn't receive the email. Requires a signed-in team member; returns the code only
+    while it's still valid (within the 10-minute window). */
+export async function getPortalAccessCode(runId: string): Promise<{ error?: string; code?: string; secondsLeft?: number; sentAt?: string; sentTo?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  // AM and above only (Account Manager / Ops Head / Master Admin) — same bar as revealing logins.
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!canManageCoa(role)) return { error: "Only an Account Manager or admin can view the access code." };
+  const admin = createAdminClient();
+  const { data: link } = await admin
+    .from("magic_links")
+    .select("email,otp_code_enc,otp_expiry,otp_sent_at,org_id")
+    .eq("run_id", runId)
+    .eq("org_id", session.profile.org_id)
+    .order("otp_sent_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (!link?.otp_code_enc || !link.otp_expiry) return { error: "No code has been sent yet. Ask the client to request one from the portal." };
+  const msLeft = new Date(link.otp_expiry).getTime() - Date.now();
+  if (msLeft <= 0) return { error: "The last code has expired. Ask the client to request a new one." };
+  let code = "";
+  try { code = decryptSecret(link.otp_code_enc); } catch { return { error: "Could not read the code." }; }
+  return { code, secondsLeft: Math.floor(msLeft / 1000), sentAt: link.otp_sent_at ?? undefined, sentTo: link.email ?? undefined };
 }
 
 /** Client invites a teammate to the portal — they can then log in with their own email + code. */
@@ -256,6 +331,32 @@ export async function confirmAccessItem(token: string, rowId: string, note?: str
   return { ok: true };
 }
 
+/** Client stores a login (credentials-mode access). Password is encrypted at rest;
+    the username is kept in clear so the team can identify the login. Marks it granted. */
+export async function savePortalCredentials(token: string, rowId: string, username: string, password: string): Promise<{ error?: string; ok?: boolean }> {
+  const link = await resolve(token);
+  if (!link?.run_id) return { error: "Link invalid or expired." };
+  if (!username.trim() || !password) return { error: "Enter both the username and the password." };
+  const admin = createAdminClient();
+  const { data: row } = await admin.from("run_items").select("data").eq("id", rowId).eq("run_id", link.run_id).eq("kind", "access").maybeSingle();
+  if (!row) return { error: "Access item not found." };
+  const data = {
+    ...(row.data as Record<string, unknown>),
+    credUsername: username.trim(),
+    credPasswordEnc: encryptSecret(password),
+    credSavedAt: new Date().toISOString(),
+    status: "granted",
+  };
+  const { error } = await admin.from("run_items").update({ data, status: "granted" }).eq("id", rowId).eq("run_id", link.run_id);
+  if (error) return { error: error.message };
+  await admin.from("notifications").insert({
+    org_id: link.org_id, run_id: link.run_id, kind: "info",
+    title: "Client shared login credentials", body: `${String((data as { label?: string }).label ?? "Access")} — the client saved a login. Reveal it in the Onboarding Portal tab.`,
+  });
+  revalidatePath(`/portal/${token}`);
+  return { ok: true };
+}
+
 /** Client signs off their onboarding — notifies the team in-app and in the run chat. */
 export async function signOffOnboarding(token: string, signerName?: string): Promise<{ error?: string; ok?: boolean }> {
   const link = await resolve(token);
@@ -272,7 +373,7 @@ export async function signOffOnboarding(token: string, signerName?: string): Pro
     clientName: cname,
     signedBy: signer,
     signedEmail: link.email ?? null,
-    statement: `${signer} reviewed and confirmed the onboarding setup for ${cname} (chart of accounts, documents and configuration) via the secure Finanshels client portal. Access was verified by email code.`,
+    statement: `${signer} reviewed and confirmed the onboarding setup for ${cname} (chart of accounts, documents and configuration) via the secure Finanshels onboarding portal. Access was verified by email code.`,
   };
   await admin.from("run_items").delete().eq("run_id", link.run_id).eq("kind", "signoff");
   await admin.from("run_items").insert(
@@ -290,7 +391,7 @@ export async function signOffOnboarding(token: string, signerName?: string): Pro
   return { ok: true };
 }
 
-/** Real file upload from the client portal → Supabase Storage → marks the document received. */
+/** Real file upload from the onboarding portal → Supabase Storage → marks the document received. */
 export async function uploadDocFile(token: string, docId: string, formData: FormData): Promise<{ error?: string; ok?: boolean }> {
   const link = await resolve(token);
   if (!link?.client_id) return { error: "Link invalid or expired." };
@@ -381,6 +482,136 @@ export async function uploadDocsBatch(token: string, formData: FormData): Promis
   }
   revalidatePath(`/portal/${token}`);
   return { uploaded };
+}
+
+/**
+ * Direct-upload step 1 (the reliable path). The browser asks for a short-lived signed
+ * URL and uploads the file bytes STRAIGHT to Supabase Storage. This bypasses the request-
+ * body size limit on Server Actions (1 MB by default in Next.js, ~4.5 MB on Vercel) that
+ * was silently failing every real document — the symptom being a portal stuck on
+ * "Uploading…" forever. Issues a path scoped to this client's folder.
+ */
+export async function createDocUploadUrl(
+  token: string,
+  docId: string,
+  filename: string,
+  entityRunId?: string | null,
+): Promise<{ error?: string; path?: string; signedToken?: string }> {
+  const active = await resolveActive(token, entityRunId);
+  if (!active?.client_id) return { error: "Link invalid or expired." };
+  const safe = (filename || "file").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120);
+  const admin = createAdminClient();
+  const path = `${active.client_id}/${docId}-${Date.now()}-${safe}`;
+  const { data, error } = await admin.storage.from("client-docs").createSignedUploadUrl(path);
+  if (error || !data) return { error: error?.message ?? "Could not start the upload. Please try again." };
+  return { path: data.path, signedToken: data.token };
+}
+
+/**
+ * Direct-upload step 2. Confirms the bytes actually landed in Storage, then (best-effort)
+ * copies the file into the org's Google Drive and marks the checklist document received.
+ * `path` MUST be one issued by createDocUploadUrl for this client.
+ */
+export async function finalizeDocUpload(
+  token: string,
+  docId: string,
+  path: string,
+  filename: string,
+  mimeType: string,
+  entityRunId?: string | null,
+): Promise<{ error?: string; ok?: boolean }> {
+  const active = await resolveActive(token, entityRunId);
+  if (!active?.client_id) return { error: "Link invalid or expired." };
+  // Path must live under THIS entity's folder (defends against a tampered finalize call).
+  if (!path.startsWith(`${active.client_id}/`)) return { error: "Invalid upload reference." };
+  const admin = createAdminClient();
+  // Verify the object exists before we mark the document as received.
+  const { data: blob, error: dlErr } = await admin.storage.from("client-docs").download(path);
+  if (dlErr || !blob) return { error: "The upload didn't complete — please try again." };
+
+  // Best-effort: also place a copy in this entity's Drive (Cadence/<client>).
+  // Use the entity's own client name + run_id so Drive routing stays per-entity
+  // (this is the fix for group portals where uploads were landing on entity #1).
+  let finalPath = path;
+  const { data: client } = await admin.from("clients").select("name").eq("id", active.client_id).maybeSingle();
+  const memberId = await getDriveCapableMemberId(active.org_id, active.run_id);
+  if (memberId) {
+    try {
+      const buf = Buffer.from(await blob.arrayBuffer());
+      const safe = (filename || "file").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const r = await withTimeout(uploadClientDocToDrive(memberId, client?.name ?? "Client", safe, mimeType || "application/octet-stream", buf), 20_000, null);
+      if (r) finalPath = r.link;
+    } catch { /* keep the Storage path */ }
+  }
+  const { error } = await admin
+    .from("documents")
+    .update({ status: "uploaded", uploaded_at: new Date().toISOString(), storage_path: finalPath, review_note: null })
+    .eq("id", docId)
+    .eq("client_id", active.client_id);
+  if (error) return { error: error.message };
+  await admin.from("notifications").insert({
+    org_id: active.org_id, run_id: active.run_id, kind: "info",
+    title: "Client uploaded a document", body: filename,
+  });
+  revalidatePath(`/portal/${token}`);
+  return { ok: true };
+}
+
+/** Direct-upload step 1 for a file the client attaches to a task chat thread. */
+export async function createTaskFileUploadUrl(
+  token: string,
+  filename: string,
+): Promise<{ error?: string; path?: string; signedToken?: string }> {
+  const link = await resolve(token);
+  if (!link?.run_id || !link?.client_id) return { error: "Link invalid or expired." };
+  const safe = (filename || "file").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120);
+  const admin = createAdminClient();
+  const path = `${link.client_id}/task-${Date.now()}-${safe}`;
+  const { data, error } = await admin.storage.from("client-docs").createSignedUploadUrl(path);
+  if (error || !data) return { error: error?.message ?? "Could not start the upload. Please try again." };
+  return { path: data.path, signedToken: data.token };
+}
+
+/** Direct-upload step 2 for a task attachment: copies to Drive (best-effort) and posts the
+    link into the same run chat thread the team reads, tagged to the task. */
+export async function finalizeTaskFile(
+  token: string,
+  taskRef: string,
+  path: string,
+  filename: string,
+  mimeType: string,
+): Promise<{ error?: string; ok?: boolean }> {
+  const link = await resolve(token);
+  if (!link?.run_id || !link?.client_id) return { error: "Link invalid or expired." };
+  if (!path.startsWith(`${link.client_id}/`)) return { error: "Invalid upload reference." };
+  const admin = createAdminClient();
+  const { data: blob, error: dlErr } = await admin.storage.from("client-docs").download(path);
+  if (dlErr || !blob) return { error: "The upload didn't complete — please try again." };
+  const { data: client } = await admin.from("clients").select("name").eq("id", link.client_id).maybeSingle();
+  const clientName = client?.name ?? "Client";
+
+  let fileLink: string;
+  const { data: signed } = await admin.storage.from("client-docs").createSignedUrl(path, 60 * 60 * 24 * 30);
+  fileLink = signed?.signedUrl ?? path;
+  const memberId = await getDriveCapableMemberId(link.org_id, link.run_id);
+  if (memberId) {
+    try {
+      const buf = Buffer.from(await blob.arrayBuffer());
+      const safe = (filename || "file").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const r = await withTimeout(uploadClientDocToDrive(memberId, clientName, safe, mimeType || "application/octet-stream", buf), 20_000, null);
+      if (r) fileLink = r.link;
+    } catch { /* keep the signed Storage URL */ }
+  }
+  await admin.from("run_messages").insert({
+    run_id: link.run_id, author_name: clientName, author_role: "Client",
+    body: `📎 ${filename} — ${fileLink}`, task_ref: taskRef?.trim() || null,
+  });
+  await admin.from("notifications").insert({
+    org_id: link.org_id, run_id: link.run_id, kind: "info",
+    title: "Client attached a file", body: `[${taskRef}] ${filename}`,
+  });
+  revalidatePath(`/portal/${token}`);
+  return { ok: true };
 }
 
 /** Client views one of their own uploaded documents (Drive link or signed Storage URL). */

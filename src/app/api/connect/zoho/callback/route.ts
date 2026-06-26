@@ -11,7 +11,10 @@ export async function GET(request: NextRequest) {
 
   const params = new URL(request.url).searchParams;
   const code = params.get("code");
-  if (!code) return NextResponse.redirect(`${base}/settings?zoho=error`);
+  // Zoho can deny consent and bounce back with ?error=… instead of a code.
+  const denied = params.get("error");
+  if (denied) return NextResponse.redirect(`${base}/connections?zoho=error&reason=${encodeURIComponent(denied)}`);
+  if (!code) return NextResponse.redirect(`${base}/connections?zoho=error&reason=no_code`);
 
   const accounts = params.get("accounts-server") || process.env.ZOHO_ACCOUNTS_DOMAIN || "https://accounts.zoho.com";
   const tokenRes = await fetch(`${accounts}/oauth/v2/token`, {
@@ -26,7 +29,14 @@ export async function GET(request: NextRequest) {
     }),
   });
   const tok = await tokenRes.json();
-  if (!tok.access_token) return NextResponse.redirect(`${base}/settings?zoho=error`);
+  if (!tok.access_token) {
+    // Surface WHY (invalid_client, redirect_uri_mismatch, invalid_code…) so it's diagnosable
+    // rather than a silent "error". Most failures are a redirect-URI / data-centre mismatch in
+    // the Zoho API console — the registered URI must equal {APP_URL}/api/connect/zoho/callback.
+    const reason = tok.error || tok.error_description || "token_exchange_failed";
+    console.error("[zoho] token exchange failed:", JSON.stringify(tok));
+    return NextResponse.redirect(`${base}/connections?zoho=error&reason=${encodeURIComponent(String(reason))}`);
+  }
 
   const admin = createAdminClient();
   await admin.from("member_connections").upsert(
@@ -44,5 +54,5 @@ export async function GET(request: NextRequest) {
     { onConflict: "team_member_id,provider" },
   );
 
-  return NextResponse.redirect(`${base}/settings?zoho=connected`);
+  return NextResponse.redirect(`${base}/connections?zoho=connected`);
 }

@@ -1,0 +1,11 @@
+-- Registration & key compliance dates extracted from the client's uploaded documents
+-- (Trade Licence, VAT certificate, Corporate Tax registration). Captured when the team
+-- builds the compliance calendar from documents, so the client playbook + onboarding deck
+-- can show real dates instead of generic notes.
+--   reg_facts = {
+--     "incorporationDate":   "YYYY-MM-DD",  -- from the Trade Licence
+--     "tradeLicenceExpiry":  "YYYY-MM-DD",  -- from the Trade Licence
+--     "vatFirstFiling":      "YYYY-MM-DD",  -- from the VAT certificate
+--     "ctFirstFiling":       "YYYY-MM-DD"   -- from the Corporate Tax registration
+--   }
+alter table clients add column if not exists reg_facts jsonb not null default '{}'::jsonb;

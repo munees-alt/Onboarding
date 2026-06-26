@@ -22,7 +22,11 @@ export async function getAllTemplates(): Promise<OnbTemplate[]> {
     await seedTemplatesIfEmpty();
     return ONB_TEMPLATES;
   }
-  return data.map((r) => r.data as OnbTemplate);
+  // DB templates win (edits persist); add any CODE template whose id isn't in the DB yet,
+  // so newly-shipped templates (e.g. Monthly Accounting) appear without a manual reseed.
+  const dbTpls = data.map((r) => r.data as OnbTemplate);
+  const ids = new Set(dbTpls.map((t) => t.id));
+  return [...dbTpls, ...ONB_TEMPLATES.filter((t) => !ids.has(t.id))];
 }
 
 export async function getTemplate(id: string): Promise<OnbTemplate | null> {

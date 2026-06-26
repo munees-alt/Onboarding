@@ -12,20 +12,26 @@ export interface Me {
   memberId: string | null;
 }
 
+/** Master-Admin role-overrides for nav visibility. Shape: { [role]: { [navId]: allow } }. */
+export type AccessOverrides = Partial<Record<Role, Partial<Record<string, boolean>>>>;
+
 interface IdentityCtx {
   me: Me;
   effectiveRole: Role;
   setEffectiveRole: (r: Role) => void;
   isAdmin: boolean;
+  accessOverrides: AccessOverrides;
 }
 
 const Ctx = createContext<IdentityCtx | null>(null);
 
 export function IdentityProvider({
   me,
+  accessOverrides = {},
   children,
 }: {
   me: Me;
+  accessOverrides?: AccessOverrides;
   children: React.ReactNode;
 }) {
   const isAdmin = me.role === "admin";
@@ -49,6 +55,7 @@ export function IdentityProvider({
         effectiveRole: isAdmin ? viewAs : me.role,
         setEffectiveRole,
         isAdmin,
+        accessOverrides,
       }}
     >
       {children}

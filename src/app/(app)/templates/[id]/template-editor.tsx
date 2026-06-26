@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { ASSIGN_ROLES, type OnbTemplate, type TemplateStep, type StepKind } from "@/lib/onboarding-templates";
-import { saveTemplateAction } from "../actions";
+import { forkTemplate, saveTemplateAction } from "../actions";
 
 const KINDS: StepKind[] = ["person", "ai", "link", "doc", "check"];
 
@@ -24,6 +24,13 @@ export function TemplateEditor({ initial }: { initial: OnbTemplate }) {
       else { setToast("Template saved"); setTimeout(() => setToast(null), 2000); router.refresh(); }
     });
 
+  const fork = () =>
+    start(async () => {
+      const r = await forkTemplate(tpl.id);
+      if (r.error) { setToast(r.error); setTimeout(() => setToast(null), 3000); return; }
+      if (r.id) router.push(`/templates/${r.id}`);
+    });
+
   return (
     <div className="scroll">
       <div className="page" style={{ maxWidth: 880 }}>
@@ -32,7 +39,10 @@ export function TemplateEditor({ initial }: { initial: OnbTemplate }) {
         </div>
         <div className="section-head">
           <div><h2>Edit template</h2><div className="sub">Changes apply to new runs created from this template.</div></div>
-          <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save template"}</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-ghost" onClick={fork} disabled={saving} title="Duplicate this template as a new editable copy"><Icon name="copy" size={14} /> Fork</button>
+            <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save template"}</button>
+          </div>
         </div>
 
         <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: 18, marginBottom: 14 }}>

@@ -1,0 +1,104 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { requireSession } from "@/lib/auth";
+import { createClient } from "@/lib/supabase/server";
+
+// Close an auto-generated admin task with the admin's follow-up notes. Saved
+// notes are carried into the next auto-recreation by the cron so context
+// accumulates across cycles.
+export async function closeAdminTask(id: string, notes: string) {
+  const session = await requireSession();
+  const supabase = await createClient();
+  const trimmed = (notes ?? "").trim();
+  const { data: row } = await supabase
+    .from("admin_tasks")
+    .select("history,owner_id")
+    .eq("id", id)
+    .maybeSingle();
+  if (!row) return { ok: false as const, error: "not_found" };
+  if (row.owner_id !== session.teamMember?.id && session.profile.role !== "admin" && session.profile.role !== "ops_head") {
+    return { ok: false as const, error: "forbidden" };
+  }
+  const history = Array.isArray(row.history) ? row.history : [];
+  const nextHistory = [...history, { at: new Date().toISOString(), action: "closed", notes: trimmed }];
+  await supabase
+    .from("admin_tasks")
+    .update({ status: "closed", notes: trimmed, closed_at: new Date().toISOString(), history: nextHistory })
+    .eq("id", id);
+  revalidatePath("/my-work");
+  return { ok: true as const };
+}
+
+// Re-open a task by hand (e.g. premature close). Resets closed_at + status.
+export async function reopenAdminTask(id: string) {
+  const session = await requireSession();
+  const supabase = await createClient();
+  const { data: row } = await supabase.from("admin_tasks").select("owner_id,history").eq("id", id).maybeSingle();
+  if (!row) return { ok: false as const, error: "not_found" };
+  if (row.owner_id !== session.teamMember?.id && session.profile.role !== "admin" && session.profile.role !== "ops_head") {
+    return { ok: false as const, error: "forbidden" };
+  }
+  const history = Array.isArray(row.history) ? row.history : [];
+  await supabase
+    .from("admin_tasks")
+    .update({ status: "open", closed_at: null, history: [...history, { at: new Date().toISOString(), action: "reopened" }] })
+    .eq("id", id);
+  revalidatePath("/my-work");
+  return { ok: true as const };
+}
+
+// Close multiple admin tasks at once with a shared note (one note applies to each).
+export async function bulkCloseAdminTasks(ids: string[], notes: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await requireSession();
+  const supabase = await createClient();
+  const trimmed = (notes ?? "").trim();
+  const role = session.profile.role;
+  const memberId = session.teamMember?.id;
+
+  for (const id of ids) {
+    const { data: row } = await supabase.from("admin_tasks").select("history,owner_id").eq("id", id).maybeSingle();
+    if (!row) continue;
+    if (row.owner_id !== memberId && role !== "admin" && role !== "ops_head") continue;
+    const history = Array.isArray(row.history) ? row.history : [];
+    const nextHistory = [...history, { at: new Date().toISOString(), action: "bulk_closed", notes: trimmed || undefined }];
+    await supabase
+      .from("admin_tasks")
+      .update({ status: "closed", notes: trimmed || null, closed_at: new Date().toISOString(), history: nextHistory })
+      .eq("id", id);
+  }
+  revalidatePath("/my-work");
+  return { ok: true };
+}
+
+// Archive an urgent compliance / catch-up run (e.g. client said they'll handle it themselves).
+export async function archiveUrgentRun(runId: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await requireSession();
+  if (session.profile.role !== "admin" && session.profile.role !== "ops_head" && session.profile.role !== "am") {
+    return { ok: false, error: "Only an AM or above can archive this run." };
+  }
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("onboarding_runs")
+    .update({ status: "archived" })
+    .eq("id", runId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePath("/my-work");
+  return { ok: true };
+}
+
+// Manual entry point so the admin can backfill / generate auto-tasks immediately
+// instead of waiting for the cron. Calls the same route logic via fetch.
+export async function runAutoAdminTaskScan() {
+  const session = await requireSession();
+  if (session.profile.role !== "admin" && session.profile.role !== "ops_head") {
+    return { ok: false as const, error: "forbidden" };
+  }
+  const base = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const headers: Record<string, string> = {};
+  if (process.env.CRON_SECRET) headers.authorization = `Bearer ${process.env.CRON_SECRET}`;
+  const res = await fetch(`${base}/api/cron/admin-tasks`, { headers, cache: "no-store" });
+  const j = (await res.json().catch(() => ({}))) as { created?: number };
+  revalidatePath("/my-work");
+  return { ok: true as const, created: j.created ?? 0 };
+}

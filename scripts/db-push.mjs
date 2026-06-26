@@ -12,6 +12,9 @@ async function connect() {
   const candidates = [
     ["DIRECT_URL", process.env.DIRECT_URL],
     ["DATABASE_URL", process.env.DATABASE_URL],
+    // On networks where the direct db host (:5432) and txn pooler (:6543) are firewalled,
+    // the SESSION pooler (pooler host on :5432) is reachable and supports DDL.
+    ["SESSION_POOLER", (process.env.DATABASE_URL ?? "").replace(":6543/", ":5432/")],
   ].filter(([, v]) => v);
 
   for (const [name, conn] of candidates) {

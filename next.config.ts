@@ -12,6 +12,14 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Server Actions cap request bodies at 1 MB by default, which silently fails any
+  // real document upload. Raise it to match the 25 MB storage limit. (On Vercel the
+  // platform also caps serverless bodies at ~4.5 MB, which is why portal document
+  // uploads go BROWSER → Supabase Storage directly via a signed URL — see
+  // createDocUploadUrl/finalizeDocUpload — bypassing the request body entirely.)
+  experimental: {
+    serverActions: { bodySizeLimit: "25mb" },
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

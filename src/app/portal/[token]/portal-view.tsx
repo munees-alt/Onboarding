@@ -3,8 +3,34 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { confirmCoa, commentCoa, uploadDocFile, uploadDocsBatch, submitIntake, postPortalMessage, signOffOnboarding, attachPortalTaskFile, documentViewUrl, confirmAccessItem, addPortalAltEmail } from "./actions";
+import { confirmCoa, commentCoa, createDocUploadUrl, finalizeDocUpload, createTaskFileUploadUrl, finalizeTaskFile, submitIntake, postPortalMessage, signOffOnboarding, documentViewUrl, confirmAccessItem, savePortalCredentials, addPortalAltEmail } from "./actions";
+import { createClient } from "@/lib/supabase/client";
 import { renderSopLine } from "@/lib/access-sops";
+import { formatEngagementPeriod } from "@/lib/contract-format";
+
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Uploads one file BROWSER → Supabase Storage via a signed URL, then finalizes server-side.
+ * This is the reliable path: file bytes never pass through a Server Action / serverless
+ * request body (1 MB Next default, ~4.5 MB on Vercel), which is what left uploads stuck on
+ * "Uploading…". Returns a plain {ok}/{error} result — it never throws.
+ */
+async function uploadDocDirect(token: string, docId: string, file: File, entityRunId?: string | null): Promise<{ ok?: boolean; error?: string }> {
+  try {
+    if (file.size > MAX_UPLOAD_BYTES) return { error: `${file.name} is larger than 25 MB. Please upload a smaller file.` };
+    const u = await createDocUploadUrl(token, docId, file.name, entityRunId);
+    if (u.error || !u.path || !u.signedToken) return { error: u.error ?? "Could not start the upload." };
+    const supabase = createClient();
+    const { error: upErr } = await supabase.storage
+      .from("client-docs")
+      .uploadToSignedUrl(u.path, u.signedToken, file, { contentType: file.type || "application/octet-stream" });
+    if (upErr) return { error: upErr.message };
+    return await finalizeDocUpload(token, docId, u.path, file.name, file.type || "application/octet-stream", entityRunId);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Upload failed — please try again." };
+  }
+}
 
 export interface PortalData {
   token: string;
@@ -15,7 +41,7 @@ export interface PortalData {
   currentStage: number;
   status: string;
   coa: { accounts: { code: string; account: string; section: string }[]; signedOff: boolean; industry: string | null } | null;
-  documents: { id: string; label: string; status: string; reviewNote?: string | null }[];
+  documents: { id: string; label: string; status: string; reviewNote?: string | null; receivedOutsidePortal?: boolean; receivedNote?: string | null }[];
   tasks: { title: string; status: string; type: string; boardColumn?: string | null; due?: string | null; ownerKind?: string }[];
   boardColumns?: string[] | null;
   team: Record<string, string>;
@@ -30,11 +56,33 @@ export interface PortalData {
   software: string | null;
   onboardingPartner: string | null;
   csm: { name: string; email: string | null } | null;
-  access: { rowId: string; label: string; method: string; email: string; sop: string[]; systemName?: string; status: string; note?: string }[];
+  access: { rowId: string; label: string; method: string; email: string; sop: string[]; systemName?: string; status: string; note?: string; accessMode?: "viewer" | "credentials"; credSaved?: boolean; receivedOutsidePortal?: boolean; receivedNote?: string | null }[];
   driveLink: string | null;
   clientEmail: string | null;
   altEmails: string[];
+  /** The run's template_key — drives simplified-compliance mode in the portal. */
+  templateKey?: string | null;
+  /** Group context — present only when this portal token covers multiple entities. */
+  group?: {
+    id: string;
+    name: string;
+    activeRunId: string;
+    entities: { runId: string; clientName: string; progress: number }[];
+  } | null;
 }
+
+/** Template ids where the portal collapses to a documents-only flow (no intake,
+ *  no COA, no access, no tasks tab). Use the same flag in compliance flows that
+ *  shouldn't burden the client with the full onboarding portal. */
+export const COMPLIANCE_ONLY_TEMPLATES = new Set<string>([
+  "urgent-compliance",
+  "ct-registration",
+  "ct-filing",
+  "vat-registration",
+  "vat-filing",
+  "fta-amendment",
+  "compliance-renewal",
+]);
 export interface IntakePrepView {
   enabled?: boolean;
   description?: string;
@@ -86,15 +134,24 @@ export function PortalView({ data }: { data: PortalData }) {
   const run = (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) =>
     start(async () => { const r = await fn(); if (r.error) note(r.error); else { note(ok); router.refresh(); } });
 
-  // The intake screen always exists: with a form when one was configured, or as a
-  // documents-only step when it wasn't. The document checklist must show either way.
-  const tabs: [Screen, string][] = [
-    ["welcome", "Welcome"],
-    ["intake", data.intakeEnabled ? "Intake form" : "Documents"],
-    ...(data.access.length ? ([["access", "Access"]] as [Screen, string][]) : []),
-    ["tasks", "Task board"],
-    ["live", "Live setup"],
-  ];
+  // Simplified compliance mode: when the run is one of the dedicated compliance
+  // templates (CT reg / VAT reg / FTA amendment / etc.), strip the portal to
+  // just Welcome + Documents. The full onboarding flow (COA, tasks, access,
+  // sign-off) doesn't belong on a one-time compliance engagement.
+  const complianceOnly = !!data.templateKey && COMPLIANCE_ONLY_TEMPLATES.has(data.templateKey);
+
+  const tabs: [Screen, string][] = complianceOnly
+    ? [
+        ["welcome", "Welcome"],
+        ["intake", "Documents"],
+      ]
+    : [
+        ["welcome", "Welcome"],
+        ["intake", data.intakeEnabled ? "Intake form" : "Documents"],
+        ...(data.access.length ? ([["access", "Access"]] as [Screen, string][]) : []),
+        ["tasks", "Task board"],
+        ["live", "Live setup"],
+      ];
 
   const amName = data.team.am ?? "your Account Manager";
   const amEmail = data.teamEmail.am ?? null;
@@ -119,6 +176,8 @@ export function PortalView({ data }: { data: PortalData }) {
           </div>
         </div>
       </div>
+
+      {data.group && <PortalGroupBar token={data.token} group={data.group} />}
 
       <div className="obv3-portal-wrap">
         <div className="obv3-screen-tabs">
@@ -404,13 +463,14 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
   const onFiles = async (docId: string, files: FileList) => {
     setUploading(docId);
     let ok = 0; let firstErr: string | null = null;
-    for (const file of Array.from(files)) {
-      const fd = new FormData();
-      fd.append("file", file);
-      const r = await uploadDocFile(data.token, docId, fd);
-      if (r.error) { firstErr = r.error; } else ok++;
+    try {
+      for (const file of Array.from(files)) {
+        const r = await uploadDocDirect(data.token, docId, file, data.group?.activeRunId);
+        if (r.error) { firstErr = r.error; } else ok++;
+      }
+    } finally {
+      setUploading(null);
     }
-    setUploading(null);
     if (ok > 0) note(ok === 1 ? "Document received — your team has been notified" : `${ok} files received — your team has been notified`);
     else if (firstErr) note(firstErr);
     router.refresh();
@@ -421,12 +481,21 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
   };
   const onUploadAll = async (files: FileList) => {
     setUploading("__all__");
-    const fd = new FormData();
-    Array.from(files).forEach((f) => fd.append("files", f));
-    const r = await uploadDocsBatch(data.token, fd);
-    setUploading(null);
-    if (r.error) note(r.error);
-    else note(`${r.uploaded ?? 0} file${(r.uploaded ?? 0) === 1 ? "" : "s"} received — your team has been notified`);
+    let ok = 0; let firstErr: string | null = null;
+    try {
+      // Match each chosen file to a still-pending checklist item, in order.
+      const slots = data.documents.filter((d) => d.status !== "uploaded").map((d) => d.id);
+      const arr = Array.from(files);
+      for (let i = 0; i < arr.length && i < slots.length; i++) {
+        const r = await uploadDocDirect(data.token, slots[i], arr[i], data.group?.activeRunId);
+        if (r.error) { firstErr = r.error; } else ok++;
+      }
+    } finally {
+      setUploading(null);
+    }
+    if (ok > 0) note(`${ok} file${ok === 1 ? "" : "s"} received — your team has been notified`);
+    else if (firstErr) note(firstErr);
+    else note("No pending documents to match these files.");
     router.refresh();
   };
   const pendingCount = data.documents.filter((d) => d.status !== "uploaded").length;
@@ -457,42 +526,108 @@ function Documents({ data, note }: { data: PortalData; note: (m: string) => void
           </div>
         );
       })()}
-      <div style={{ marginTop: 16 }}>
-        {data.documents.map((d) => {
-          const rejected = d.status === "rejected";
-          const uploaded = d.status === "uploaded";
-          return (
-            <div key={d.id} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8, marginBottom: 8 }}>
-              <div className="obv3-doc" style={{ borderBottom: "none", paddingBottom: 0, marginBottom: 0 }}>
-                <span className={"dstate " + (uploaded ? "done" : "pending")} style={rejected ? { background: "var(--red-soft)", color: "var(--red)" } : undefined}>
-                  {uploaded ? <Icon name="check" size={13} strokeWidth={2.6} /> : rejected ? <Icon name="rotate-ccw" size={12} /> : <Icon name="upload" size={12} />}
-                </span>
-                <span className="dname">{d.label}</span>
-                {uploaded && <button type="button" className="obv3-doc-upload" onClick={() => view(d.id)} style={{ cursor: "pointer" }}><Icon name="eye" size={12} /> View</button>}
-                {uploaded && (
-                  <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
-                    <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : "Replace"}
-                    <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onFiles(d.id, files); e.target.value = ""; }} />
-                  </label>
-                )}
-                {uploaded ? (
-                  <span className="pill green" style={{ fontSize: 10.5, height: 18 }}><span className="dot" />Received</span>
-                ) : (
-                  <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
-                    <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : rejected ? "Re-upload →" : "Upload →"}
-                    <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onFiles(d.id, files); e.target.value = ""; }} />
-                  </label>
-                )}
-              </div>
-              {rejected && d.reviewNote && (
-                <div style={{ marginTop: 6, marginLeft: 32, fontSize: 12, color: "var(--red)", background: "var(--red-soft)", borderRadius: 8, padding: "6px 10px", display: "flex", gap: 6, alignItems: "flex-start" }}>
-                  <Icon name="alert-circle" size={13} /> <span><strong>Please re-upload:</strong> {d.reviewNote}</span>
+      {/* Split docs into two groups — the "request list" only contains items we still
+          need from the client (pending / rejected). Items already shared by sales are
+          shown separately below so the client confirms what's on file but isn't asked
+          to re-upload them. */}
+      {(() => {
+        const pendingDocs = data.documents.filter((d) => d.status !== "uploaded");
+        const receivedDocs = data.documents.filter((d) => d.status === "uploaded");
+        return (
+          <>
+            <div style={{ marginTop: 16 }}>
+              {pendingDocs.length === 0 && receivedDocs.length > 0 && (
+                <div style={{ background: "var(--green-soft, #E7F6EE)", border: "1px solid #BBE7C6", borderRadius: 10, padding: "10px 14px", color: "#15803D", fontSize: 13, display: "flex", gap: 8, alignItems: "center" }}>
+                  <Icon name="check-circle" size={15} /> All documents are on file — nothing more to upload here.
                 </div>
               )}
+              {pendingDocs.map((d) => {
+                const rejected = d.status === "rejected";
+                return (
+                  <div key={d.id} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8, marginBottom: 8 }}>
+                    <div className="obv3-doc" style={{ borderBottom: "none", paddingBottom: 0, marginBottom: 0 }}>
+                      <span className={"dstate pending"} style={rejected ? { background: "var(--red-soft)", color: "var(--red)" } : undefined}>
+                        {rejected ? <Icon name="rotate-ccw" size={12} /> : <Icon name="upload" size={12} />}
+                      </span>
+                      <span className="dname">{d.label}</span>
+                      <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
+                        <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : rejected ? "Re-upload →" : "Upload →"}
+                        <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onFiles(d.id, files); e.target.value = ""; }} />
+                      </label>
+                    </div>
+                    {rejected && d.reviewNote && (
+                      <div style={{ marginTop: 6, marginLeft: 32, fontSize: 12, color: "var(--red)", background: "var(--red-soft)", borderRadius: 8, padding: "6px 10px", display: "flex", gap: 6, alignItems: "flex-start" }}>
+                        <Icon name="alert-circle" size={13} /> <span><strong>Please re-upload:</strong> {d.reviewNote}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
+            {receivedDocs.length > 0 && (
+              <div style={{ marginTop: pendingDocs.length ? 22 : 14, padding: "14px 16px", background: "var(--green-soft, #F1FAF4)", border: "1px solid #CFE9D8", borderRadius: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#15803D", marginBottom: 8, display: "flex", gap: 6, alignItems: "center" }}>
+                  <Icon name="check-circle" size={15} /> Already shared by our sales team — no need to re-send
+                </div>
+                {receivedDocs.map((d) => (
+                  <div key={d.id} className="obv3-doc" style={{ borderBottom: "none", paddingBottom: 4, marginBottom: 4, flexWrap: "wrap" }}>
+                    <span className="dstate done"><Icon name="check" size={13} strokeWidth={2.6} /></span>
+                    <span className="dname">{d.label}{d.receivedOutsidePortal && d.receivedNote ? <span style={{ display: "block", fontSize: 11.5, color: "var(--ink-3)", marginTop: 2, fontWeight: 400 }}>📥 Marked received by team — note: {d.receivedNote}</span> : null}</span>
+                    <button type="button" className="obv3-doc-upload" onClick={() => view(d.id)} style={{ cursor: "pointer" }}><Icon name="eye" size={12} /> View</button>
+                    <label className="obv3-doc-upload" style={{ cursor: uploading ? "default" : "pointer" }}>
+                      <Icon name="upload" size={12} /> {uploading === d.id ? "Uploading…" : "Replace"}
+                      <input type="file" hidden multiple disabled={!!uploading} onChange={(e) => { const files = e.target.files; if (files && files.length) onFiles(d.id, files); e.target.value = ""; }} />
+                    </label>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        );
+      })()}
+    </div>
+  );
+}
+
+/* Credentials entry for one access item. Once saved, the login can NOT be viewed back
+   here (we never send it to the browser) — the client can only replace it. */
+function CredEntry({ a, creds, setCreds, busy, run, token }: {
+  a: PortalData["access"][number];
+  creds: Record<string, { u: string; p: string }>;
+  setCreds: React.Dispatch<React.SetStateAction<Record<string, { u: string; p: string }>>>;
+  busy: boolean;
+  run: (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) => void;
+  token: string;
+}) {
+  const [replacing, setReplacing] = useState(false);
+  const showForm = !a.credSaved || replacing;
+  const set = (patch: Partial<{ u: string; p: string }>) =>
+    setCreds((c) => ({ ...c, [a.rowId]: { u: c[a.rowId]?.u ?? "", p: c[a.rowId]?.p ?? "", ...patch } }));
+  return (
+    <div style={{ marginTop: 12 }}>
+      {a.credSaved && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--green-soft)", borderRadius: 9, padding: "9px 12px", color: "var(--green)", fontSize: 12.5, flexWrap: "wrap" }}>
+          <Icon name="shield-check" size={15} />
+          <span style={{ fontWeight: 600 }}>Login saved &amp; encrypted.</span>
+          <span style={{ color: "var(--ink-3)" }}>For your security it can&apos;t be viewed here again — only your accounting team can access it.</span>
+          {!replacing && <button className="obv3-pbtn secondary" style={{ marginLeft: "auto" }} onClick={() => setReplacing(true)}><Icon name="rotate-ccw" size={13} /> Replace login</button>}
+        </div>
+      )}
+      {showForm && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: a.credSaved ? 10 : 0 }}>
+            <input value={creds[a.rowId]?.u ?? ""} onChange={(e) => set({ u: e.target.value })} placeholder="Username / login email" autoComplete="off" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "9px 11px", fontSize: 13 }} />
+            <input type="password" value={creds[a.rowId]?.p ?? ""} onChange={(e) => set({ p: e.target.value })} placeholder="Password" autoComplete="new-password" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "9px 11px", fontSize: 13 }} />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+            <button className="obv3-pbtn primary" disabled={busy} onClick={() => run(() => savePortalCredentials(token, a.rowId, creds[a.rowId]?.u ?? "", creds[a.rowId]?.p ?? ""), "Saved securely — your team has been notified")}>
+              <Icon name="lock" size={14} /> {a.credSaved ? "Save new login" : "Save login securely"}
+            </button>
+            {replacing && <button className="obv3-pbtn secondary" disabled={busy} onClick={() => { setReplacing(false); set({ u: "", p: "" }); }}>Cancel</button>}
+            <span style={{ fontSize: 11, color: "var(--ink-4)", display: "flex", alignItems: "center", gap: 4 }}><Icon name="lock" size={11} /> Encrypted — only your accounting team can read it.</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -502,6 +637,7 @@ function AccessSection({ data, busy, run, go }: {
   data: PortalData; busy: boolean; run: (fn: () => Promise<{ error?: string; ok?: boolean }>, ok: string) => void; go: (s: Screen) => void;
 }) {
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [creds, setCreds] = useState<Record<string, { u: string; p: string }>>({});
   const granted = data.access.filter((a) => a.status === "granted").length;
   return (
     <div className="obv3-fade">
@@ -511,7 +647,7 @@ function AccessSection({ data, busy, run, go }: {
             <div className="obv3-pcard-h">System access we need</div>
             <div className="obv3-pcard-sub">To manage your accounting & compliance we need access to the systems below. Follow each short guide, then mark it done.</div>
           </div>
-          <span className="pill amber"><span className="dot" />{granted} of {data.access.length} granted</span>
+          <span className="pill amber"><span className="dot" />{granted} of {data.access.length} shared</span>
         </div>
       </div>
 
@@ -528,7 +664,7 @@ function AccessSection({ data, busy, run, go }: {
             <span className={"pill " + (a.status === "granted" ? "green" : "gray")} style={{ fontSize: 10.5 }}><span className="dot" />{a.status === "granted" ? "Granted" : "Action needed"}</span>
           </div>
 
-          {a.email ? (
+          {a.accessMode !== "credentials" && (a.email ? (
             <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, background: "var(--bg-soft)", borderRadius: 9, padding: "9px 12px", flexWrap: "wrap" }}>
               <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Grant access to:</span>
               <CopyEmail email={a.email} />
@@ -538,7 +674,7 @@ function AccessSection({ data, busy, run, go }: {
             <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, background: "var(--red-soft)", borderRadius: 9, padding: "9px 12px", color: "var(--red)", fontSize: 12.5 }}>
               <Icon name="alert-triangle" size={14} /> No access email set yet — your account manager will share the address to grant access to.
             </div>
-          )}
+          ))}
 
           {a.sop.length > 0 && (
             <ol style={{ margin: "12px 0 0", paddingLeft: 20, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.7 }}>
@@ -546,9 +682,16 @@ function AccessSection({ data, busy, run, go }: {
             </ol>
           )}
 
-          {a.status === "granted" ? (
-            <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--green)", display: "flex", alignItems: "center", gap: 6 }}>
+          {a.accessMode === "credentials" ? (
+            /* Credentials mode: client pastes the login; password is stored encrypted and
+               can NOT be viewed back here once saved (security). They may still replace it. */
+            <CredEntry a={a} creds={creds} setCreds={setCreds} busy={busy} run={run} token={data.token} />
+          ) : a.status === "granted" ? (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--green)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <Icon name="check-circle" size={14} /> Thank you — access confirmed.{a.note ? ` (${a.note})` : ""}
+              {a.receivedOutsidePortal && a.receivedNote && (
+                <span style={{ display: "block", width: "100%", marginTop: 4, fontSize: 11.5, color: "var(--ink-3)" }}>📥 Marked received by team — note: {a.receivedNote}</span>
+              )}
             </div>
           ) : (
             <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -828,12 +971,24 @@ function PortalTaskChat({ token, task, amName, messages, onClose, note }: {
   const attach = async (files: FileList) => {
     setBusy(true);
     let ok = 0; let err: string | null = null;
-    for (const file of Array.from(files)) {
-      const fd = new FormData(); fd.append("file", file);
-      const r = await attachPortalTaskFile(token, task, fd);
-      if (r.error) err = r.error; else ok++;
+    try {
+      for (const file of Array.from(files)) {
+        if (file.size > MAX_UPLOAD_BYTES) { err = `${file.name} is larger than 25 MB.`; continue; }
+        const u = await createTaskFileUploadUrl(token, file.name);
+        if (u.error || !u.path || !u.signedToken) { err = u.error ?? "Could not start the upload."; continue; }
+        const supabase = createClient();
+        const { error: upErr } = await supabase.storage
+          .from("client-docs")
+          .uploadToSignedUrl(u.path, u.signedToken, file, { contentType: file.type || "application/octet-stream" });
+        if (upErr) { err = upErr.message; continue; }
+        const r = await finalizeTaskFile(token, task, u.path, file.name, file.type || "application/octet-stream");
+        if (r.error) err = r.error; else ok++;
+      }
+    } catch (e) {
+      err = e instanceof Error ? e.message : "Upload failed — please try again.";
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
     if (ok) note(ok === 1 ? "File attached" : `${ok} files attached`); else if (err) note(err);
     router.refresh();
   };
@@ -892,14 +1047,23 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
       </div>
 
       <div className="cp-live-grid">
-        <div className="obv3-pcard cp-live-poc">
-          <div className="cp-poc-eyebrow">Point of contact</div>
-          <div className="cp-poc-name">{amName}</div>
-          <div className="cp-poc-role">Account Manager — for scope, billing or anything else</div>
-          {amEmail && <div className="cp-poc-meta"><CopyEmail email={amEmail} /></div>}
-          <div className="cp-poc-meta"><Icon name="message-circle" size={13} /> WhatsApp preferred · mornings</div>
-          {data.onboardingPartner && <div className="cp-poc-meta"><Icon name="user-check" size={13} /> Onboarding Partner · {data.onboardingPartner}</div>}
-        </div>
+        {(() => {
+          // Day-to-day point of contact = the assigned Senior accountant (falls back to the AM if none assigned yet).
+          const pocName = data.team.senior || amName;
+          const pocEmail = data.teamEmail.senior || amEmail;
+          const isSenior = !!data.team.senior;
+          return (
+            <div className="obv3-pcard cp-live-poc">
+              <div className="cp-poc-eyebrow">Point of contact</div>
+              <div className="cp-poc-name">{pocName}</div>
+              <div className="cp-poc-role">{isSenior ? "Senior Accountant — your day-to-day point of contact" : "Account Manager — for scope, billing or anything else"}</div>
+              {pocEmail && <div className="cp-poc-meta"><CopyEmail email={pocEmail} /></div>}
+              <div className="cp-poc-meta"><Icon name="message-circle" size={13} /> WhatsApp preferred · mornings</div>
+              {isSenior && amName && <div className="cp-poc-meta"><Icon name="user" size={13} /> Account Manager · {amName}{amEmail ? ` · ${amEmail}` : ""}</div>}
+              {data.onboardingPartner && <div className="cp-poc-meta"><Icon name="user-check" size={13} /> Onboarding Partner · {data.onboardingPartner}</div>}
+            </div>
+          );
+        })()}
         <div className="obv3-pcard cp-live-book">
           <div className="cp-poc-eyebrow">Accounting book</div>
           <div className="cp-book-row">
@@ -970,7 +1134,7 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
             {(data.contract.periodStart || data.contract.periodEnd) && (
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 4 }}>Period</div>
-                <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{data.contract.periodStart ?? "—"} → {data.contract.periodEnd ?? "—"}</div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{formatEngagementPeriod(data.contract.periodStart, data.contract.periodEnd)}</div>
               </div>
             )}
           </div>
@@ -1037,7 +1201,8 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
       )}
 
       <div className="obv3-pcard" style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7 }}>
-        <div className="obv3-pcard-h" style={{ marginBottom: 10 }}>Escalation path</div>
+        <div className="obv3-pcard-h" style={{ marginBottom: 4 }}>Escalation path</div>
+        <div className="obv3-pcard-sub" style={{ marginBottom: 10 }}>Your day-to-day contact is your Senior accountant{senior ? ` (${senior})` : ""}. If something needs more attention, escalate here.</div>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
           <span style={{ width: 22, height: 22, borderRadius: 999, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 11, flexShrink: 0 }}>1</span>
           <div><div style={{ fontWeight: 700, color: "var(--ink-1)" }}>{amName}</div><div style={{ color: "var(--ink-3)", display: "flex", gap: 6, flexWrap: "wrap" }}>Account Manager{amEmail ? <CopyEmail email={amEmail} /> : null}</div></div>
@@ -1076,6 +1241,53 @@ function Live({ data, amName, amEmail, live, busy, run, go }: {
       </div>
 
       <button className="obv3-pbtn secondary" onClick={() => go("welcome")}><Icon name="arrow-left" size={14} /> Back to welcome</button>
+    </div>
+  );
+}
+
+/**
+ * Entity switcher bar for group-portal links. One token covers N companies;
+ * clicking an entity navigates with ?entity=<runId> so the server re-fetches
+ * for that run. Per-entity sign-off + COA + docs are preserved automatically.
+ */
+function PortalGroupBar({
+  token, group,
+}: {
+  token: string;
+  group: NonNullable<PortalData["group"]>;
+}) {
+  const router = useRouter();
+  const goEntity = (runId: string) => {
+    if (runId === group.activeRunId) return;
+    router.push(`/portal/${token}?entity=${runId}`);
+  };
+  return (
+    <div style={{ borderBottom: "1px solid var(--border, #e3e6ec)", background: "#fff7ed", padding: "8px 18px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 10px", borderRadius: 999, background: "#f97316", color: "#fff", fontSize: 11.5, fontWeight: 700 }}>
+        <Icon name="users" size={11} /> {group.name}
+      </span>
+      <span style={{ fontSize: 12, color: "#9a3412", fontWeight: 600 }}>Acting on:</span>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {group.entities.map((e) => {
+          const active = e.runId === group.activeRunId;
+          return (
+            <button
+              key={e.runId}
+              type="button"
+              onClick={() => goEntity(e.runId)}
+              style={{
+                border: active ? "1px solid #f97316" : "1px solid #fed7aa",
+                background: active ? "#f97316" : "#fff",
+                color: active ? "#fff" : "#9a3412",
+                fontSize: 12, fontWeight: 600, padding: "4px 10px", borderRadius: 999, cursor: active ? "default" : "pointer",
+              }}
+            >
+              {e.clientName}{active ? "" : ` · ${e.progress}%`}
+            </button>
+          );
+        })}
+      </div>
+      <span style={{ fontSize: 11.5, color: "#9a3412", marginLeft: "auto" }}>One login · {group.entities.length} {group.entities.length === 1 ? "company" : "companies"}</span>
     </div>
   );
 }

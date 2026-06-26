@@ -4,6 +4,9 @@ import { getSession } from "@/lib/auth";
 const SCOPES = [
   "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/gmail.send",
+  // gmail.readonly lets the master-admin mailbox be polled for sales "Payment Received"
+  // emails → auto-created onboarding leads. Requires a one-time Google reconnect to grant.
+  "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/userinfo.email",
   "openid",
 ];

@@ -1,0 +1,379 @@
+
+━━━ Al Hussein Group FZE ━━━
+  Status: onboarding | Industry: Retail & General Trading | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Aden  |  Email: adenhussein9611@gmail.com  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=No | effective -
+  CT:  TRN - | reg=No | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: under 1M
+  Services: [Corporate Tax, VAT]
+  Revenue channels: [security services, consultancy, import-export]
+  Pain points: 0  |  Description: We are launching a security company in two weeks and also have a backg...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 2
+  Runs:
+    • micro-2 [in_progress s5 79%]  am=Jasmeet Singh Monga  team=[Syed/team_lead, Nafla/junior, Jasmeet Singh Monga/am]
+  STILL BLANK (7): phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, pain_points
+
+━━━ ALTARYON GLOBAL ENERGY COMMODITY TRADING FZCO ━━━
+  Status: onboarding | Industry: Trading | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Zeynep Gurkas  |  Email: zeynep.gurkas@altaryon.ae  |  Phone: -
+  Trade Licence: DMCC-1021258  |  Expiry: 2027-04-20  |  Incorporated: 2026-04-21
+  Free zone / Jurisdiction: DMCC / Dubai
+  VAT: TRN - | reg=No | effective -
+  CT:  TRN - | reg=No | effective -
+  Banks: [FAB Bank, Adib]
+  Gateways: []
+  Accounting SW: Zoho Books  |  Revenue: Pre-revenue
+  Services: [Corporate Tax Registration, VAT Registration]
+  Revenue channels: [Transit trades, Internal UAE trades]
+  Pain points: 1  |  Description: We established the company very recently in May in the MCC, focused on...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 5
+  Runs:
+    • compliance-renewal [active s1 0%]  am=Jasmeet Singh Monga  team=[Jasmeet Singh Monga/am]
+    • compliance-renewal [active s1 0%]  am=Jasmeet Singh Monga  team=[Jasmeet Singh Monga/am]
+    • micro-team [in_progress s6 76%]  am=Jasmeet Singh Monga  team=[Mukesh/team_lead, Muskan/junior, Jasmeet Singh Monga/am, Hritheesh/senior]
+  STILL BLANK (3): phone, vat_trn, payment_gateways
+
+━━━ BluTalent Human Resources Consultancies Co LLC ━━━
+  Status: onboarding | Industry: Professional Services | Entity: mainland | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: SYED ABID ALI SABZWARI SYED AIJAZ  |  Email: syed@blutalent.ae  |  Phone: +971 58 821 2308
+  Trade Licence: 1292869  |  Expiry: 2027-03-02  |  Incorporated: 2024-01-15
+  Free zone / Jurisdiction: - / Dubai
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN 104942210600001 | reg=- | effective 2024-01-01
+  Banks: []
+  Gateways: []
+  Accounting SW: Zoho Books  |  Revenue: -
+  Services: [Bookkeeping, VAT, Corporate Tax, Catch-up Accounting]
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs:
+    • micro-team [in_progress s3 73%]  am=Jasmeet Singh Monga  team=[Mukesh/team_lead, Hritheesh/senior, Nadir/intern, Jasmeet Singh Monga/am]
+    • compliance-renewal [active s1 0%]  am=Jasmeet Singh Monga  team=[Jasmeet Singh Monga/am]
+    • compliance-renewal [active s1 0%]  am=Jasmeet Singh Monga  team=[Jasmeet Singh Monga/am]
+  STILL BLANK (7): vat_trn, bank_names, payment_gateways, revenue_channels, business_description, pain_points, call_notes
+
+━━━ BSK IT Consulting FZE ━━━
+  Status: onboarding | Industry: Technology / SaaS / IT Services | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Abdel  |  Email: aababdelkader@gmail.com  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=No | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: [Y.O.]
+  Gateways: []
+  Accounting SW: Zoho  |  Revenue: under 1M
+  Services: [Accounting, Consulting]
+  Revenue channels: [Consulting services]
+  Pain points: 3  |  Description: We are an IT consulting company that provides technology and software ...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 3
+  Runs:
+    • micro-2 [in_progress s5 80%]  am=Jasmeet Singh Monga  team=[Jasmeet Singh Monga/am, Shahil/senior, Syed/team_lead]
+  STILL BLANK (4): phone, trade_licence_no, vat_trn, payment_gateways
+
+━━━ Cross Border Consultancy FZCO ━━━
+  Status: onboarding | Industry: - | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Saurabh Saxena  |  Email: saurabh@crossborderpartners.ltd  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=No | effective -
+  CT:  TRN - | reg=Yes | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: 1-5M AED
+  Services: [Consulting]
+  Revenue channels: [Platform-based projects]
+  Pain points: 2  |  Description: Cross Border Consultancy FZCO provides consulting services primarily t...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 3
+  Runs:
+    • micro-2 [in_progress s6 79%]  am=Jasmeet Singh Monga  team=[Syed/team_lead, Jasmeet Singh Monga/am, Nafla/junior]
+  STILL BLANK (7): industry, phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software
+
+━━━ EMARGROW FZE LLC ━━━
+  Status: onboarding | Industry: Wholesale & Distribution | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Mohammed  |  Email: emargrow7@gmail.com  |  Phone: +971 55 422 3077
+  Trade Licence: 2625514005888  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN Started from 1st June | reg=Yes | effective -
+  CT:  TRN - | reg=Yes | effective -
+  Banks: [RAK Bank]
+  Gateways: []
+  Accounting SW: Zoho  |  Revenue: under 1M
+  Services: [Bookkeeping, VAT]
+  Revenue channels: [local market sales]
+  Pain points: 3  |  Description: We started our wholesale fruit and vegetable business, focusing on imp...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 3
+  Runs:
+    • micro-2 [in_progress s6 90%]  am=Jasmeet Singh Monga  team=[Nafla/junior, Jasmeet Singh Monga/am, Syed/team_lead]
+  STILL BLANK (1): payment_gateways
+
+━━━ Finanshels ━━━
+  Status: onboarding | Industry: Financial Services & Fintech | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Munees  |  Email: munees@finanshels.com  |  Phone: -
+  Trade Licence: 123456  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=Yes | effective -
+  CT:  TRN - | reg=Yes | effective -
+  Banks: [WIO BANK]
+  Gateways: [Stripe, Tabby]
+  Accounting SW: Zoho Books  |  Revenue: -
+  Services: [Bookkeeping, VAT, Corporate Tax]
+  Revenue channels: [Selling accounting servcie, tax service]
+  Pain points: 5  |  Description: We provide accounting services primarily for clients in the financial ...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 2
+  Runs:
+    • micro-2 [in_progress s2 21%]  am=Jasmeet Singh Monga  team=[Prateeksha/senior, Mukesh/team_lead, Jasmeet Singh Monga/am]
+  STILL BLANK (2): phone, vat_trn
+
+━━━ FRESH DAILY BAKERY PRODUCTS MANUFACTURING L.L.C ━━━
+  Status: onboarding | Industry: Restaurant | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Ahmad  |  Email: ahmad@konnsultancy.com  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=Yes | effective -
+  CT:  TRN - | reg=Yes | effective -
+  Banks: [Abu Dhabi Commercial Bank (ADCB)]
+  Gateways: []
+  Accounting SW: ERP system  |  Revenue: 1-5M AED
+  Services: [Bookkeeping, VAT, Corporate Tax]
+  Revenue channels: [Retail sales to Bloomingbox]
+  Pain points: 2  |  Description: Fresh Daily Bakery Products Manufacturing L.L.C is a full-fledged bake...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 2
+  Runs:
+    • urgent-compliance [active s1 0%]  am=Jasmeet Singh Monga  team=[Jasmeet Singh Monga/am]
+    • micro-team [in_progress s3 70%]  am=Jasmeet Singh Monga  team=[Shahil/senior, Lamiya/associate, Jasmeet Singh Monga/am, Syed/team_lead]
+  STILL BLANK (4): phone, trade_licence_no, vat_trn, payment_gateways
+
+━━━ GLOBAL EQUIPMENT TRADING FZE ━━━
+  Status: onboarding | Industry: Wholesale & Distribution | Entity: free_zone | Group: yes
+  AM: Darshit Lodaya  |  Owner: PR-2026-1354  |  Email: accounts@plantandequipment.com  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: []
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs:
+    • micro-2 [in_progress s1 26%]  am=Darshit Lodaya  team=[Ankit Dey/senior, Darshit Lodaya/am]
+  STILL BLANK (11): phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, services, revenue_channels, business_description, pain_points, call_notes
+
+━━━ GLOBAL EQUIPMENT TRADING FZE , PANDE AUCTIONS L.L.C, MIDDLE EAST STRATEGIC ADVERTISING L.L.C ━━━
+  Status: onboarding | Industry: Other | Entity: free_zone | Group: no
+  AM: Darshit Lodaya  |  Owner: SALEH HAYDER KUBA  |  Email: accounts@plantandequipment.com  |  Phone: +971 55 431 4515
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: [Bookkeeping, VAT, Corporate Tax]
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs:
+    • micro-2 [in_progress s1 21%]  am=Darshit Lodaya  team=[Ankit Dey/senior, Darshit Lodaya/am]
+  STILL BLANK (9): trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, revenue_channels, business_description, pain_points, call_notes
+
+━━━ JP Capital LLC ━━━
+  Status: lead | Industry: - | Entity: - | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Mudai  |  Email: -  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: [Books Cleanup & Catch-Up Accounting, VAT Registration, VAT Filing, ⚠️ Engagement Letter Required]
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs: (none)
+  STILL BLANK (13): industry, entity_type, primary_contact_email, phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, revenue_channels, business_description, pain_points, call_notes
+
+━━━ MIDDLE EAST STRATEGIC ADVERTISING L.L.C ━━━
+  Status: onboarding | Industry: Media, Advertising & Creative | Entity: free_zone | Group: yes
+  AM: Darshit Lodaya  |  Owner: PR-2026-1354  |  Email: accounts@plantandequipment.com  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: []
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs:
+    • micro-2 [active s1 0%]  am=Darshit Lodaya  team=[Darshit Lodaya/am]
+  STILL BLANK (11): phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, services, revenue_channels, business_description, pain_points, call_notes
+
+━━━ Novamed Rescue Medical Treatment Facilitation Services ━━━
+  Status: onboarding | Industry: Healthcare & Medical | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: MOATAZ ALHADI MILOUD IGRESSA  |  Email: lgressa@myyahoo.com  |  Phone: -
+  Trade Licence: 815134  |  Expiry: 2024-10-27  |  Incorporated: 2017-10-29
+  Free zone / Jurisdiction: Dubai Economy and Tourism / Dubai
+  VAT: TRN 105240669900003 | reg=- | effective 2025-12-01
+  CT:  TRN 105240669900001 | reg=- | effective 2025-06-01
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: [Bookkeeping, VAT, Corporate Tax, Catch-up Accounting]
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs:
+    • micro-2 [in_progress s5 79%]  am=Jasmeet Singh Monga  team=[Mukesh/team_lead, Syed/team_lead, Lamiya/associate, Jasmeet Singh Monga/am, Shahil/senior]
+  STILL BLANK (8): phone, bank_names, payment_gateways, accounting_software, revenue_channels, business_description, pain_points, call_notes
+
+━━━ Olive Seed Consulting FZ- LLC ━━━
+  Status: lead | Industry: - | Entity: - | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Hassan Issa Jaffar  |  Email: -  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: [Accounting & Bookkeeping, Prior-Period Catch-Up & Books Cleanup, ⚠️ Engagement Letter Required]
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs: (none)
+  STILL BLANK (13): industry, entity_type, primary_contact_email, phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, revenue_channels, business_description, pain_points, call_notes
+
+━━━ OLIVE SEED REAL ESTATE L.L.C ━━━
+  Status: lead | Industry: - | Entity: - | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: HASSAN ISSA JAFFAR  |  Email: -  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: [Accounting & Bookkeeping, Prior-Period Catch-Up & Books Cleanup, ⚠️ Engagement Letter Required]
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs: (none)
+  STILL BLANK (13): industry, entity_type, primary_contact_email, phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, revenue_channels, business_description, pain_points, call_notes
+
+━━━ PANDE AUCTIONS L.L.C ━━━
+  Status: onboarding | Industry: Other | Entity: free_zone | Group: yes
+  AM: Darshit Lodaya  |  Owner: PR-2026-1354  |  Email: accounts@plantandequipment.com  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: []
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs:
+    • micro-2 [active s1 0%]  am=Darshit Lodaya  team=[Darshit Lodaya/am]
+  STILL BLANK (11): phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, services, revenue_channels, business_description, pain_points, call_notes
+
+━━━ Stream freight LLC FZ ━━━
+  Status: onboarding | Industry: Other | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Slavey  |  Email: S.djahov@stream-freight.com  |  Phone: +971 50 883 1893
+  Trade Licence: 2542907.01  |  Expiry: 2026-12-25  |  Incorporated: 2025-12-26
+  Free zone / Jurisdiction: Meydan / Dubai
+  VAT: TRN - | reg=No | effective -
+  CT:  TRN - | reg=Yes | effective -
+  Banks: [WIO Bank]
+  Gateways: []
+  Accounting SW: Basic template  |  Revenue: 1-5M AED
+  Services: [Bookkeeping, VAT, Corporate Tax]
+  Revenue channels: [freight services]
+  Pain points: 1  |  Description: Stream Freight LLC FZ is a freight forwarding company that specializes...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 3
+  Runs:
+    • micro-2 [in_progress s5 84%]  am=Jasmeet Singh Monga  team=[Mukesh/team_lead, Shahil/senior, Lamiya/associate, Jasmeet Singh Monga/am, Syed/team_lead]
+  STILL BLANK (2): vat_trn, payment_gateways
+
+━━━ TJG ━━━
+  Status: onboarding | Industry: Professional Services (Consulting, Legal, Marketing) | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: AJ Joshi  |  Email: aj@tsn.ae  |  Phone: +971 56 349 8888
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: [Bookkeeping, VAT, Corporate Tax]
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs:
+    • micro-2 [in_progress s1 20%]  am=Jasmeet Singh Monga  team=[Jasmeet Singh Monga/am]
+  STILL BLANK (9): trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, revenue_channels, business_description, pain_points, call_notes
+
+━━━ TRINOVATE TECHNOLOGIES - FZCO ━━━
+  Status: onboarding | Industry: SaaS | Entity: free_zone | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Marc and Nassib  |  Email: marc@trinovate.me  |  Phone: -
+  Trade Licence: 87882  |  Expiry: 2027-05-03  |  Incorporated: 2026-05-04
+  Free zone / Jurisdiction: Dubai Silicon Oasis / Dubai
+  VAT: TRN - | reg=No | effective -
+  CT:  TRN - | reg=No | effective -
+  Banks: [WIO]
+  Gateways: []
+  Accounting SW: Not mentioned  |  Revenue: under 1M
+  Services: [Accounting services]
+  Revenue channels: [device sales, SaaS, online services]
+  Pain points: 3  |  Description: TRINOVATE TECHNOLOGIES is a tech startup focused on building a solutio...
+  Fathom: yes  |  Notes: 28000 chars  |  Insights sections: 3
+  Runs:
+    • micro-team [in_progress s3 70%]  am=Jasmeet Singh Monga  team=[Mukesh/team_lead, Prateeksha/senior, Mubajjil/junior, Jasmeet Singh Monga/am]
+  STILL BLANK (3): phone, vat_trn, payment_gateways
+
+━━━ Z.G.G Business Reunion FZE ━━━
+  Status: lead | Industry: - | Entity: - | Group: no
+  AM: Jasmeet Singh Monga  |  Owner: Gyula Madi  |  Email: -  |  Phone: -
+  Trade Licence: -  |  Expiry: -  |  Incorporated: -
+  Free zone / Jurisdiction: - / -
+  VAT: TRN - | reg=- | effective -
+  CT:  TRN - | reg=- | effective -
+  Banks: []
+  Gateways: []
+  Accounting SW: -  |  Revenue: -
+  Services: [Accounting & Bookkeeping, ⚠️ Engagement Letter Required]
+  Revenue channels: []
+  Pain points: 0  |  Description: -
+  Fathom: no  |  Notes: 0 chars  |  Insights sections: 0
+  Runs: (none)
+  STILL BLANK (13): industry, entity_type, primary_contact_email, phone, trade_licence_no, vat_trn, bank_names, payment_gateways, accounting_software, revenue_channels, business_description, pain_points, call_notes
+
+
+═══ ORG SUMMARY (20 clients) ═══
+  industry               15/20
+  entity_type            16/20
+  owner_name             20/20
+  trade_licence_no       7/20
+  vat_trn                2/20
+  banks                  7/20
+  gateways               1/20
+  accounting_sw          8/20
+  services               17/20
+  description            9/20
+  call_notes             9/20
+  call_insights          9/20
+  reg_facts              5/20
+  has_run                16/20
+  has_am                 20/20

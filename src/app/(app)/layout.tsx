@@ -1,6 +1,7 @@
 import { requireSession } from "@/lib/auth";
 import { AppShell } from "@/components/app-shell";
-import type { Me } from "@/components/identity-context";
+import type { Me, AccessOverrides } from "@/components/identity-context";
+import { getAccessMatrix } from "@/lib/role-access";
 
 export default async function AppLayout({
   children,
@@ -18,5 +19,7 @@ export default async function AppLayout({
     email: s.email,
     memberId: s.teamMember?.id ?? null,
   };
-  return <AppShell me={me}>{children}</AppShell>;
+  const matrix = s.profile.org_id ? await getAccessMatrix(s.profile.org_id) : null;
+  const accessOverrides: AccessOverrides = matrix?.overrides ?? {};
+  return <AppShell me={me} accessOverrides={accessOverrides}>{children}</AppShell>;
 }
