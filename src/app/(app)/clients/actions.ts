@@ -1819,7 +1819,7 @@ export async function auditAllClients(): Promise<{
   const role = session.teamMember?.role ?? session.profile.role;
   if (!["admin", "ops_head", "am"].includes(role)) return { error: "Permission denied.", results: [] };
   const admin = createAdminClient();
-  const { data: clients } = await admin.from("clients").select("id,name").eq("org_id", session.profile.org_id).eq("status", "active");
+  const { data: clients } = await admin.from("clients").select("id,name").eq("org_id", session.profile.org_id).eq("status", "signed");
   const results: { clientId: string; clientName: string; found: string[]; missing: string[] }[] = [];
   for (const c of clients ?? []) {
     const res = await auditClientDocs(c.id);
@@ -1895,20 +1895,19 @@ export async function getAmlClients(): Promise<{
   const supabase = await createClient();
   const admin = createAdminClient();
 
-  // Only clients that have been explicitly assigned to AML (have an aml_record)
-  const { data: amlRows } = await supabase
-    .from("aml_records")
-    .select("*")
-    .eq("org_id", session.profile.org_id);
+  // Use admin client to bypass RLS — the page-level access check already gates who can call this
+  const [{ data: amlRows }, { data: allMembers }] = await Promise.all([
+    admin.from("aml_records").select("*").eq("org_id", session.profile.org_id),
+    admin.from("team_members").select("id,full_name,reports_to").eq("org_id", session.profile.org_id).eq("active", true),
+  ]);
   if (!amlRows?.length) return { clients: [], amlTeam: [] };
 
   const clientIds = amlRows.map((r) => r.client_id as string);
 
-  const [{ data: clientRows }, { data: driveFolders }, { data: runRows }, { data: allMembers }] = await Promise.all([
-    supabase.from("clients").select("id,name,status").in("id", clientIds),
-    supabase.from("drive_folders").select("client_id,tree").in("client_id", clientIds),
-    supabase.from("onboarding_runs").select("id,client_id").in("client_id", clientIds).not("status", "in", "(archived,closed)").order("created_at", { ascending: false }),
-    admin.from("team_members").select("id,full_name,reports_to").eq("org_id", session.profile.org_id).eq("active", true),
+  const [{ data: clientRows }, { data: driveFolders }, { data: runRows }] = await Promise.all([
+    admin.from("clients").select("id,name,status").in("id", clientIds),
+    admin.from("drive_folders").select("client_id,tree").in("client_id", clientIds),
+    admin.from("onboarding_runs").select("id,client_id").in("client_id", clientIds).not("status", "in", "(archived,closed)").order("created_at", { ascending: false }),
   ]);
 
   // Build AML team (Krishna's subtree)
