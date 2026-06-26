@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/components/icon";
-import { saveAmlRecord } from "../clients/actions";
+import { saveAmlRecord, deleteClientAction, setClientStatusAction, type ManualClientStatus } from "../clients/actions";
 
 type AmlClient = {
   clientId: string; clientName: string; status: string; notes: string | null;
@@ -19,13 +20,16 @@ const STATUS_COLOR: Record<string, string> = {
 };
 const ALL_STATUSES = ["pending", "in_review", "link_sent", "signed", "completed"] as const;
 
-export function AmlView({ clients, canEdit }: { clients: AmlClient[]; canEdit: boolean }) {
+export function AmlView({ clients, canEdit, isAdmin }: { clients: AmlClient[]; canEdit: boolean; isAdmin?: boolean }) {
+  const router = useRouter();
   const [filter, setFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
   const [forms, setForms] = useState<Record<string, Partial<AmlClient>>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [localClients, setLocalClients] = useState(clients);
+  const [adminPanel, setAdminPanel] = useState<string | null>(null);
+  const [adminBusy, setAdminBusy] = useState(false);
 
   const visible = localClients.filter((c) => {
     if (filter !== "all" && c.status !== filter) return false;
@@ -100,8 +104,47 @@ export function AmlView({ clients, canEdit }: { clients: AmlClient[]; canEdit: b
                 driveLink={c.driveLink}
                 runId={c.runId}
               />
+            ) : adminPanel === c.clientId ? (
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>{c.clientName} — Admin actions</div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                  {(["active", "hold", "paused", "lead"] as ManualClientStatus[]).map((s) => (
+                    <button key={s} className="btn-ghost" disabled={adminBusy} style={{ fontSize: 12 }}
+                      onClick={async () => {
+                        if (!confirm(`Set ${c.clientName} to "${s}"?`)) return;
+                        setAdminBusy(true);
+                        await setClientStatusAction(c.clientId, s);
+                        setAdminBusy(false);
+                        router.refresh();
+                      }}>
+                      Set {s}
+                    </button>
+                  ))}
+                  <button className="btn-ghost" disabled={adminBusy} style={{ fontSize: 12, color: "#dc2626", borderColor: "#fca5a5" }}
+                    onClick={async () => {
+                      if (!confirm(`PERMANENTLY DELETE ${c.clientName} and all their data? This cannot be undone.`)) return;
+                      if (!confirm("Are you absolutely sure?")) return;
+                      setAdminBusy(true);
+                      await deleteClientAction(c.clientId);
+                      setLocalClients((prev) => prev.filter((x) => x.clientId !== c.clientId));
+                      setAdminBusy(false);
+                      setAdminPanel(null);
+                    }}>
+                    {adminBusy ? "Working…" : "Delete client"}
+                  </button>
+                </div>
+                <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAdminPanel(null)}>Cancel</button>
+              </div>
             ) : (
-              <AmlClientRow c={c} onEdit={() => startEdit(c)} canEdit={canEdit} />
+              <div>
+                <AmlClientRow c={c} onEdit={() => startEdit(c)} canEdit={canEdit} />
+                {isAdmin && (
+                  <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
+                    onClick={() => setAdminPanel(c.clientId)}>
+                    Admin actions
+                  </button>
+                )}
+              </div>
             )}
           </div>
         ))}

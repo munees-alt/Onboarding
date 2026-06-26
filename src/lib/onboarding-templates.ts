@@ -665,7 +665,75 @@ const FTA_AMENDMENT: OnbTemplate = complianceTemplate({
   includeClientRequest: true,
 });
 
-export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, COMPLIANCE_RENEWAL, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT];
+const AML_REVIEW: OnbTemplate = {
+  id: "aml-review",
+  name: "AML / UBO Review",
+  tier: "Compliance",
+  teamLabel: "Compliance team",
+  desc: "Anti-Money Laundering review workflow — verify required documents are received, dispatch AML signing form to client, confirm return, mark completed.",
+  color: "blue",
+  live: true,
+  usedBy: 0,
+  category: "Compliance",
+  stages: [
+    {
+      id: "aml1",
+      name: "Document Verification",
+      desc: "Confirm all four AML-required documents are present in Drive or portal.",
+      assignRole: "am",
+      steps: [
+        { id: "aml1.1", title: "Confirm Trade Licence received", kind: "check", who: ["AM"] },
+        { id: "aml1.2", title: "Confirm MOA / Articles of Association received", kind: "check", who: ["AM"] },
+        { id: "aml1.3", title: "Confirm EID / Passport of owners received", kind: "check", who: ["AM"] },
+        { id: "aml1.4", title: "Confirm Incorporation Certificate received", kind: "check", who: ["AM"] },
+      ],
+    },
+    {
+      id: "aml2",
+      name: "AML Form Dispatch",
+      desc: "Send the AML signing form link to the client and record the link.",
+      assignRole: "am",
+      steps: [
+        { id: "aml2.1", title: "Generate AML signing form link", kind: "person", who: ["AM"], note: "Paste the signing link in the AML Compliance page for this client." },
+        { id: "aml2.2", title: "Send AML signing link to client", kind: "person", who: ["AM"] },
+        { id: "aml2.3", title: "Confirm client has received the form", kind: "check", who: ["AM"] },
+      ],
+    },
+    {
+      id: "aml3",
+      name: "Signed Form Receipt",
+      desc: "Confirm the signed AML form is returned and uploaded.",
+      assignRole: "am",
+      steps: [
+        { id: "aml3.1", title: "Signed form received from client", kind: "check", who: ["AM"] },
+        { id: "aml3.2", title: "Upload signed form to Drive", kind: "doc", who: ["AM"] },
+        { id: "aml3.3", title: "Record completed signing link in AML page", kind: "person", who: ["AM"] },
+      ],
+    },
+    {
+      id: "aml4",
+      name: "AML Sign-Off",
+      desc: "Compliance team reviews and marks AML as completed.",
+      assignRole: "am",
+      steps: [
+        { id: "aml4.1", title: "Compliance team reviews signed form", kind: "person", who: ["AM"] },
+        { id: "aml4.2", title: "Mark AML status as Completed in AML Compliance page", kind: "person", who: ["AM"] },
+        { id: "aml4.3", title: "Notify client — AML compliance completed", kind: "person", who: ["AM"] },
+      ],
+    },
+  ],
+  intake: [],
+  uploads: [
+    { id: "u1", label: "Trade Licence", who: "AM" },
+    { id: "u2", label: "MOA / Articles of Association", who: "AM" },
+    { id: "u3", label: "EID / Passport of owners", who: "AM" },
+    { id: "u4", label: "Incorporation Certificate", who: "AM" },
+    { id: "u5", label: "Signed AML form", who: "AM" },
+  ],
+  taskboard: [],
+};
+
+export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, COMPLIANCE_RENEWAL, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT, AML_REVIEW];
 export const templateById = (id: string) => ONB_TEMPLATES.find((t) => t.id === id);
 
 export function stepCount(t: OnbTemplate) {

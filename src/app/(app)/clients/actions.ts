@@ -1931,6 +1931,70 @@ export async function getAmlClients(): Promise<{
   };
 }
 
+// ─── AML run assignment ───────────────────────────────────────────────────────
+
+/** Creates an AML review run for a client and posts admin_tasks for the whole AML team. */
+export async function assignAmlRun(clientId: string): Promise<{ error?: string; runId?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!["am", "team_lead", "ops_head", "admin"].includes(role)) return { error: "AM or above required." };
+
+  const supabase = await createClient();
+  const admin = createAdminClient();
+
+  const { data: client } = await supabase.from("clients").select("name,am_id").eq("id", clientId).maybeSingle();
+  if (!client) return { error: "Client not found." };
+
+  // Create run from AML template
+  const runId = await createRunFromTemplate(supabase, {
+    clientId,
+    templateId: "aml-review",
+    amId: session.teamMember?.id ?? null,
+    orgId: session.profile.org_id,
+  });
+  if (!runId) return { error: "Failed to create AML run." };
+
+  // Find all AML team members (Krishna's subtree) to notify
+  const { data: allMembers } = await admin.from("team_members").select("id,full_name,reports_to").eq("org_id", session.profile.org_id).eq("active", true);
+  const members = (allMembers ?? []) as { id: string; full_name: string; reports_to: string | null }[];
+  const krishna = members.find((m) => m.full_name.toLowerCase().includes("krishna"));
+  let amlTeamIds: string[] = [];
+  if (krishna) {
+    const tree = new Set<string>([krishna.id]);
+    const queue = [krishna.id];
+    while (queue.length) {
+      const parentId = queue.shift()!;
+      for (const m of members) {
+        if (m.reports_to === parentId && !tree.has(m.id)) { tree.add(m.id); queue.push(m.id); }
+      }
+    }
+    amlTeamIds = [...tree];
+  }
+  // Also include the AM
+  if (client.am_id && !amlTeamIds.includes(client.am_id as string)) amlTeamIds.push(client.am_id as string);
+
+  // Create admin_tasks for each AML team member
+  if (amlTeamIds.length) {
+    await supabase.from("admin_tasks").insert(
+      amlTeamIds.map((memberId) => ({
+        org_id: session.profile.org_id,
+        owner_id: memberId,
+        kind: "aml_review",
+        client_id: clientId,
+        run_id: runId,
+        title: `AML Review assigned — ${client.name}`,
+        body: `An AML / UBO review has been assigned for ${client.name}. Check the run and ensure all 4 required documents are received before dispatching the signing form.`,
+      })),
+    );
+  }
+
+  revalidatePath("/my-work");
+  revalidatePath("/onboarding");
+  revalidatePath(`/clients/${clientId}`);
+  return { runId };
+}
+
 // ─── Client team members ─────────────────────────────────────────────────────
 
 export interface ClientTeamMember {

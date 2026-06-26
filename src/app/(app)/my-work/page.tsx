@@ -1,10 +1,12 @@
 import { requireSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getRunCards } from "@/lib/data/runs";
 import { type RunCardAction } from "@/components/run-card";
 import { MyWorkBoard } from "./my-work-board";
 import { MyTasksSection, type AdminTaskItem } from "./my-tasks-section";
 import { UrgentRunsSection } from "./urgent-runs-section";
+import { AmlWorkSection } from "./aml-work-section";
 import { templateById, type TemplateStep } from "@/lib/onboarding-templates";
 import { ROLE_LABEL } from "@/lib/roles";
 import type { Role } from "@/lib/types";
@@ -136,11 +138,53 @@ export default async function MyWorkPage() {
 
   const canScan = role === "admin" || role === "ops_head";
 
+  // AML section: check if the current user is in the AML team (Krishna's subtree) or is admin/ops_head
+  let amlClients: { clientId: string; clientName: string; status: string; runId: string | null; driveLink: string | null }[] = [];
+  let hasAmlAccess = role === "admin" || role === "ops_head";
+  if (!hasAmlAccess && memberId && session.profile.org_id) {
+    const adminDb = createAdminClient();
+    const { data: allM } = await adminDb.from("team_members").select("id,full_name,reports_to").eq("org_id", session.profile.org_id).eq("active", true);
+    const allMems = (allM ?? []) as { id: string; full_name: string; reports_to: string | null }[];
+    const krishna = allMems.find((m) => m.full_name.toLowerCase().includes("krishna"));
+    if (krishna) {
+      const tree = new Set<string>([krishna.id]);
+      const q2 = [krishna.id];
+      while (q2.length) { const p = q2.shift()!; for (const m of allMems) { if (m.reports_to === p && !tree.has(m.id)) { tree.add(m.id); q2.push(m.id); } } }
+      hasAmlAccess = tree.has(memberId);
+    }
+  }
+  if (hasAmlAccess && session.profile.org_id) {
+    const supabaseForAml = await createClient();
+    const { data: amlRecs } = await supabaseForAml.from("aml_records").select("client_id,status").eq("org_id", session.profile.org_id).not("status", "eq", "completed");
+    const pendingClientIds = (amlRecs ?? []).map((r) => r.client_id as string);
+    if (pendingClientIds.length) {
+      const [{ data: clientRows }, { data: driveRows }, { data: runRows }] = await Promise.all([
+        supabaseForAml.from("clients").select("id,name").in("id", pendingClientIds).in("status", ["active", "hold", "paused", "signed"]),
+        supabaseForAml.from("drive_folders").select("client_id,tree").in("client_id", pendingClientIds),
+        supabaseForAml.from("onboarding_runs").select("id,client_id,template_key").in("client_id", pendingClientIds).not("status", "in", "(archived,closed)").order("created_at", { ascending: false }),
+      ]);
+      const driveMap = new Map((driveRows ?? []).map((d) => [d.client_id as string, ((d.tree as { link?: string } | null)?.link) ?? null]));
+      const runMap = new Map<string, string>();
+      for (const r of (runRows ?? [])) { if (!runMap.has(r.client_id as string)) runMap.set(r.client_id as string, r.id as string); }
+      const amlStatusMap = new Map((amlRecs ?? []).map((r) => [r.client_id as string, r.status as string]));
+      amlClients = (clientRows ?? []).map((c) => ({
+        clientId: c.id as string, clientName: c.name as string,
+        status: amlStatusMap.get(c.id as string) ?? "pending",
+        runId: runMap.get(c.id as string) ?? null,
+        driveLink: driveMap.get(c.id as string) ?? null,
+      }));
+    }
+  }
+
   return (
     <div className="scroll">
       <div className="page">
         {(adminTasks.length > 0 || canScan) && (
           <MyTasksSection items={adminTasks} canScan={canScan} />
+        )}
+
+        {hasAmlAccess && amlClients.length > 0 && (
+          <AmlWorkSection clients={amlClients} />
         )}
 
         <UrgentRunsSection

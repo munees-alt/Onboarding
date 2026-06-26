@@ -65,15 +65,17 @@ export default async function AmlPage() {
   }
 
   const { clients, error } = await getAmlClients();
+  const isMasterAdmin = role === "admin";
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 24px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>AML Compliance</h1>
         <span className="pill orange" style={{ fontSize: 11 }}>Compliance team only</span>
+        {isMasterAdmin && <span className="pill" style={{ fontSize: 11, background: "#fef2f2", color: "#dc2626" }}>Admin panel active</span>}
       </div>
       {error && <div className="alert-red">{error}</div>}
-      <AmlView clients={clients ?? []} canEdit={hasAccess} />
+      <AmlView clients={clients ?? []} canEdit={hasAccess} isAdmin={isMasterAdmin} />
     </div>
   );
 }
