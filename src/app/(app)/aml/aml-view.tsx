@@ -4,12 +4,17 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/components/icon";
-import { saveAmlRecord, deleteClientAction, setClientStatusAction, type ManualClientStatus } from "../clients/actions";
+import {
+  saveAmlRecord, deleteClientAction, setClientStatusAction,
+  assignAmlMember,
+  type ManualClientStatus,
+} from "../clients/actions";
 
 type AmlClient = {
   clientId: string; clientName: string; status: string; notes: string | null;
   signingLink: string | null; signingCompletedLink: string | null;
   completedAt: string | null; driveLink: string | null; runId: string | null;
+  assignedTo: string | null; assignedToName: string | null;
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -20,7 +25,15 @@ const STATUS_COLOR: Record<string, string> = {
 };
 const ALL_STATUSES = ["pending", "in_review", "link_sent", "signed", "completed"] as const;
 
-export function AmlView({ clients, canEdit, isAdmin }: { clients: AmlClient[]; canEdit: boolean; isAdmin?: boolean }) {
+export function AmlView({
+  clients, canEdit, isAdmin, isHead, amlTeam,
+}: {
+  clients: AmlClient[];
+  canEdit: boolean;
+  isAdmin?: boolean;
+  isHead?: boolean;
+  amlTeam: { id: string; name: string }[];
+}) {
   const router = useRouter();
   const [filter, setFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -30,6 +43,8 @@ export function AmlView({ clients, canEdit, isAdmin }: { clients: AmlClient[]; c
   const [localClients, setLocalClients] = useState(clients);
   const [adminPanel, setAdminPanel] = useState<string | null>(null);
   const [adminBusy, setAdminBusy] = useState(false);
+  const [assignPanel, setAssignPanel] = useState<string | null>(null);
+  const [assignBusy, setAssignBusy] = useState(false);
 
   const visible = localClients.filter((c) => {
     if (filter !== "all" && c.status !== filter) return false;
@@ -63,6 +78,16 @@ export function AmlView({ clients, canEdit, isAdmin }: { clients: AmlClient[]; c
     setEditing(null);
   }
 
+  async function doAssign(clientId: string, memberId: string) {
+    setAssignBusy(true);
+    const memberName = amlTeam.find(m => m.id === memberId)?.name ?? memberId;
+    const res = await assignAmlMember(clientId, memberId);
+    setAssignBusy(false);
+    if (res.error) { alert(res.error); return; }
+    setLocalClients((prev) => prev.map((c) => c.clientId === clientId ? { ...c, assignedTo: memberId, assignedToName: memberName } : c));
+    setAssignPanel(null);
+  }
+
   const counts = localClients.reduce((acc, c) => { acc[c.status] = (acc[c.status] ?? 0) + 1; return acc; }, {} as Record<string, number>);
 
   return (
@@ -87,9 +112,14 @@ export function AmlView({ clients, canEdit, isAdmin }: { clients: AmlClient[]; c
         </div>
       </div>
 
+      {visible.length === 0 && (
+        <div style={{ padding: 48, textAlign: "center", color: "var(--ink-3)", fontSize: 13, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12 }}>
+          No clients assigned to AML yet. Use the <strong>AML</strong> button next to a client in the Clients list.
+        </div>
+      )}
+
       {/* Client cards */}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {visible.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>No clients match this filter.</div>}
         {visible.map((c) => (
           <div key={c.clientId} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "14px 18px" }}>
             {editing === c.clientId ? (
@@ -135,9 +165,33 @@ export function AmlView({ clients, canEdit, isAdmin }: { clients: AmlClient[]; c
                 </div>
                 <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAdminPanel(null)}>Cancel</button>
               </div>
+            ) : assignPanel === c.clientId ? (
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>{c.clientName} — Assign team member</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                  {amlTeam.map((m) => (
+                    <button
+                      key={m.id}
+                      className={c.assignedTo === m.id ? "btn-primary" : "btn-ghost"}
+                      disabled={assignBusy}
+                      style={{ fontSize: 13 }}
+                      onClick={() => doAssign(c.clientId, m.id)}
+                    >
+                      {m.name}
+                    </button>
+                  ))}
+                </div>
+                <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAssignPanel(null)}>Cancel</button>
+              </div>
             ) : (
               <div>
-                <AmlClientRow c={c} onEdit={() => startEdit(c)} canEdit={canEdit} />
+                <AmlClientRow
+                  c={c}
+                  onEdit={() => startEdit(c)}
+                  canEdit={canEdit}
+                  isHead={!!isHead}
+                  onAssign={amlTeam.length > 0 ? () => setAssignPanel(c.clientId) : undefined}
+                />
                 {isAdmin && (
                   <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
                     onClick={() => setAdminPanel(c.clientId)}>
@@ -153,12 +207,34 @@ export function AmlView({ clients, canEdit, isAdmin }: { clients: AmlClient[]; c
   );
 }
 
-function AmlClientRow({ c, onEdit, canEdit }: { c: AmlClient; onEdit: () => void; canEdit: boolean }) {
+function AmlClientRow({
+  c, onEdit, canEdit, isHead, onAssign,
+}: {
+  c: AmlClient; onEdit: () => void; canEdit: boolean; isHead: boolean; onAssign?: () => void;
+}) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
       <div style={{ flex: 1, minWidth: 200 }}>
-        <Link href={`/clients/${c.clientId}`} style={{ fontWeight: 700, fontSize: 14, color: "var(--ink-1)", textDecoration: "none" }}>{c.clientName}</Link>
+        <Link href={`/clients/${c.clientId}`} style={{ fontWeight: 700, fontSize: 14, color: "var(--ink-1)", textDecoration: "none" }}>
+          {c.clientName}
+        </Link>
         {c.notes && <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>{c.notes}</div>}
+        {/* Assigned team member — shown for head */}
+        {isHead && (
+          <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
+            <Icon name="user" size={11} style={{ color: "var(--ink-3)" }} />
+            {c.assignedToName ? (
+              <span style={{ fontSize: 12, color: "var(--ink-2)", fontWeight: 600 }}>{c.assignedToName}</span>
+            ) : (
+              <span style={{ fontSize: 12, color: "#f59e0b", fontWeight: 600 }}>Unassigned</span>
+            )}
+            {onAssign && (
+              <button onClick={onAssign} style={{ fontSize: 11, color: "#7c3aed", background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }}>
+                {c.assignedTo ? "Reassign" : "Assign"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: STATUS_COLOR[c.status] ?? "var(--ink-3)", background: `${STATUS_COLOR[c.status]}18`, padding: "3px 10px", borderRadius: 20 }}>
@@ -182,9 +258,12 @@ function AmlClientRow({ c, onEdit, canEdit }: { c: AmlClient; onEdit: () => void
             <Icon name="folder-open" size={11} /> Drive
           </a>
         )}
+        <Link href={`/clients/${c.clientId}`} style={{ fontSize: 12, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 4, textDecoration: "none" }}>
+          <Icon name="book-open" size={11} /> Playbook
+        </Link>
         {c.runId && (
-          <Link href={`/onboarding/${c.runId}`} style={{ fontSize: 12, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 4 }}>
-            <Icon name="file-text" size={11} /> Playbook
+          <Link href={`/onboarding/${c.runId}`} style={{ fontSize: 12, color: "var(--ink-2)", display: "flex", alignItems: "center", gap: 4, textDecoration: "none" }}>
+            <Icon name="file-text" size={11} /> Run
           </Link>
         )}
         {canEdit && (
@@ -210,7 +289,8 @@ function AmlEditForm({ clientId, clientName, form, onChange, onSave, onCancel, s
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <span style={{ fontWeight: 700, fontSize: 14 }}>{clientName}</span>
         {driveLink && <a href={driveLink} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--ink-2)" }}><Icon name="folder-open" size={12} /> Drive</a>}
-        {runId && <Link href={`/onboarding/${runId}`} style={{ fontSize: 12, color: "var(--ink-2)" }}><Icon name="file-text" size={12} /> Playbook</Link>}
+        {runId && <Link href={`/onboarding/${runId}`} style={{ fontSize: 12, color: "var(--ink-2)" }}><Icon name="file-text" size={12} /> Run</Link>}
+        <Link href={`/clients/${clientId}`} style={{ fontSize: 12, color: "var(--ink-2)", textDecoration: "none" }}><Icon name="book-open" size={12} /> Playbook</Link>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <label style={{ fontSize: 12 }}>Status

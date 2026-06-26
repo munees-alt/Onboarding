@@ -153,13 +153,19 @@ export default async function MyWorkPage() {
       hasAmlAccess = tree.has(memberId);
     }
   }
-  if (hasAmlAccess && session.profile.org_id) {
+  if (hasAmlAccess && session.profile.org_id && memberId) {
     const supabaseForAml = await createClient();
-    const { data: amlRecs } = await supabaseForAml.from("aml_records").select("client_id,status").eq("org_id", session.profile.org_id).not("status", "eq", "completed");
+    // Only show AML clients assigned specifically to this team member
+    const { data: amlRecs } = await supabaseForAml
+      .from("aml_records")
+      .select("client_id,status")
+      .eq("org_id", session.profile.org_id)
+      .eq("assigned_to", memberId)
+      .not("status", "eq", "completed");
     const pendingClientIds = (amlRecs ?? []).map((r) => r.client_id as string);
     if (pendingClientIds.length) {
       const [{ data: clientRows }, { data: driveRows }, { data: runRows }] = await Promise.all([
-        supabaseForAml.from("clients").select("id,name").in("id", pendingClientIds).in("status", ["active", "hold", "paused", "signed"]),
+        supabaseForAml.from("clients").select("id,name").in("id", pendingClientIds),
         supabaseForAml.from("drive_folders").select("client_id,tree").in("client_id", pendingClientIds),
         supabaseForAml.from("onboarding_runs").select("id,client_id,template_key").in("client_id", pendingClientIds).not("status", "in", "(archived,closed)").order("created_at", { ascending: false }),
       ]);

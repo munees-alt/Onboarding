@@ -1886,25 +1886,47 @@ export async function getAmlClients(): Promise<{
     clientId: string; clientName: string; status: string; notes: string | null;
     signingLink: string | null; signingCompletedLink: string | null;
     completedAt: string | null; driveLink: string | null; runId: string | null;
+    assignedTo: string | null; assignedToName: string | null;
   }[];
+  amlTeam: { id: string; name: string }[];
 }> {
   const session = await getSession();
-  if (!session?.profile.org_id) return { error: "Not signed in.", clients: [] };
+  if (!session?.profile.org_id) return { error: "Not signed in.", clients: [], amlTeam: [] };
   const supabase = await createClient();
-  // All active/onboarded clients (status: active, hold, paused, complete-ish)
-  const { data: clientRows } = await supabase
-    .from("clients")
-    .select("id,name,status")
-    .eq("org_id", session.profile.org_id)
-    .in("status", ["active", "hold", "paused", "signed"]);
-  if (!clientRows?.length) return { clients: [] };
-  const clientIds = clientRows.map((c) => c.id);
+  const admin = createAdminClient();
 
-  const [{ data: amlRows }, { data: driveFolders }, { data: runRows }] = await Promise.all([
-    supabase.from("aml_records").select("*").in("client_id", clientIds),
+  // Only clients that have been explicitly assigned to AML (have an aml_record)
+  const { data: amlRows } = await supabase
+    .from("aml_records")
+    .select("*")
+    .eq("org_id", session.profile.org_id);
+  if (!amlRows?.length) return { clients: [], amlTeam: [] };
+
+  const clientIds = amlRows.map((r) => r.client_id as string);
+
+  const [{ data: clientRows }, { data: driveFolders }, { data: runRows }, { data: allMembers }] = await Promise.all([
+    supabase.from("clients").select("id,name,status").in("id", clientIds),
     supabase.from("drive_folders").select("client_id,tree").in("client_id", clientIds),
     supabase.from("onboarding_runs").select("id,client_id").in("client_id", clientIds).not("status", "in", "(archived,closed)").order("created_at", { ascending: false }),
+    admin.from("team_members").select("id,full_name,reports_to").eq("org_id", session.profile.org_id).eq("active", true),
   ]);
+
+  // Build AML team (Krishna's subtree)
+  const members = (allMembers ?? []) as { id: string; full_name: string; reports_to: string | null }[];
+  const krishna = members.find((m) => m.full_name.toLowerCase().includes("krishna"));
+  let amlTeamIds = new Set<string>();
+  if (krishna) {
+    amlTeamIds.add(krishna.id);
+    const q = [krishna.id];
+    while (q.length) {
+      const p = q.shift()!;
+      for (const m of members) { if (m.reports_to === p && !amlTeamIds.has(m.id)) { amlTeamIds.add(m.id); q.push(m.id); } }
+    }
+  }
+  // Subordinates only (not head) for assignment picker
+  const subordinates = krishna ? [...amlTeamIds].filter(id => id !== krishna.id) : [...amlTeamIds];
+  const amlTeam = subordinates.map(id => ({ id, name: members.find(m => m.id === id)?.full_name ?? id }));
+  const memberNameById = new Map(members.map(m => [m.id as string, m.full_name as string]));
 
   const amlByClient = new Map((amlRows ?? []).map((r) => [r.client_id as string, r]));
   const driveByClient = new Map((driveFolders ?? []).map((d) => [d.client_id as string, ((d.tree as { link?: string } | null)?.link) ?? null]));
@@ -1914,8 +1936,10 @@ export async function getAmlClients(): Promise<{
   }
 
   return {
-    clients: clientRows.map((c) => {
+    amlTeam,
+    clients: (clientRows ?? []).map((c) => {
       const aml = amlByClient.get(c.id);
+      const assignedTo = (aml?.assigned_to as string | null) ?? null;
       return {
         clientId: c.id,
         clientName: c.name,
@@ -1926,6 +1950,8 @@ export async function getAmlClients(): Promise<{
         completedAt: (aml?.completed_at as string | null) ?? null,
         driveLink: driveByClient.get(c.id) ?? null,
         runId: runByClient.get(c.id) ?? null,
+        assignedTo,
+        assignedToName: assignedTo ? (memberNameById.get(assignedTo) ?? null) : null,
       };
     }),
   };
@@ -1993,6 +2019,116 @@ export async function assignAmlRun(clientId: string): Promise<{ error?: string; 
   revalidatePath("/onboarding");
   revalidatePath(`/clients/${clientId}`);
   return { runId };
+}
+
+/** Assigns a client to the AML queue. Auto-assigns if only 1 subordinate under the head. */
+export async function assignToAmlAction(clientId: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!["am", "team_lead", "ops_head", "admin"].includes(role)) return { error: "AM or above required." };
+
+  const supabase = await createClient();
+  const admin = createAdminClient();
+
+  const { data: client } = await supabase.from("clients").select("name").eq("id", clientId).maybeSingle();
+  if (!client) return { error: "Client not found." };
+
+  // Find AML team (Krishna's subtree)
+  const { data: allMembers } = await admin.from("team_members").select("id,full_name,reports_to").eq("org_id", session.profile.org_id).eq("active", true);
+  const members = (allMembers ?? []) as { id: string; full_name: string; reports_to: string | null }[];
+  const krishna = members.find((m) => m.full_name.toLowerCase().includes("krishna"));
+  const amlTeamIds = new Set<string>();
+  if (krishna) {
+    amlTeamIds.add(krishna.id);
+    const q = [krishna.id];
+    while (q.length) {
+      const p = q.shift()!;
+      for (const m of members) { if (m.reports_to === p && !amlTeamIds.has(m.id)) { amlTeamIds.add(m.id); q.push(m.id); } }
+    }
+  }
+  const subordinates = krishna ? [...amlTeamIds].filter(id => id !== krishna.id) : [...amlTeamIds];
+  const autoAssignTo = subordinates.length === 1 ? subordinates[0] : null;
+
+  // Upsert aml_record (don't overwrite existing status/notes if re-assigning)
+  await supabase.from("aml_records").upsert(
+    { org_id: session.profile.org_id, client_id: clientId, status: "pending", assigned_to: autoAssignTo },
+    { onConflict: "client_id", ignoreDuplicates: true },
+  );
+  // If re-assigning (record exists), just update assigned_to if it was null
+  await supabase.from("aml_records")
+    .update({ assigned_to: autoAssignTo })
+    .eq("org_id", session.profile.org_id)
+    .eq("client_id", clientId)
+    .is("assigned_to", null);
+
+  // Notify: auto-assigned person gets task; otherwise head gets task to assign
+  const notifyId = autoAssignTo ?? krishna?.id ?? null;
+  if (notifyId) {
+    const taskTitle = autoAssignTo
+      ? `AML Review assigned — ${client.name}`
+      : `AML Review pending assignment — ${client.name}`;
+    const taskBody = autoAssignTo
+      ? `AML / UBO review assigned to you for ${client.name}. Open the client playbook to access Drive documents.`
+      : `${client.name} has been flagged for AML review. Please assign a team member from the AML Compliance page.`;
+    await supabase.from("admin_tasks").insert({
+      org_id: session.profile.org_id,
+      owner_id: notifyId,
+      kind: "aml_review",
+      client_id: clientId,
+      title: taskTitle,
+      body: taskBody,
+    });
+  }
+
+  revalidatePath("/aml");
+  revalidatePath("/my-work");
+  return {};
+}
+
+/** AML head assigns a specific team member to handle a client's AML review. */
+export async function assignAmlMember(clientId: string, teamMemberId: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+
+  const supabase = await createClient();
+  const { data: client } = await supabase.from("clients").select("name").eq("id", clientId).maybeSingle();
+  if (!client) return { error: "Client not found." };
+
+  await supabase.from("aml_records")
+    .update({ assigned_to: teamMemberId })
+    .eq("org_id", session.profile.org_id)
+    .eq("client_id", clientId);
+
+  await supabase.from("admin_tasks").insert({
+    org_id: session.profile.org_id,
+    owner_id: teamMemberId,
+    kind: "aml_review",
+    client_id: clientId,
+    title: `AML Review assigned — ${client.name}`,
+    body: `AML / UBO review assigned to you for ${client.name}. Open the client playbook to access Drive documents.`,
+  });
+
+  revalidatePath("/aml");
+  revalidatePath("/my-work");
+  return {};
+}
+
+/** Team member updates AML status inline from My Work. */
+export async function updateAmlStatus(clientId: string, status: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  await supabase.from("aml_records")
+    .update({
+      status,
+      ...(status === "completed" ? { completed_at: new Date().toISOString(), completed_by: session.teamMember?.full_name ?? null } : {}),
+    })
+    .eq("org_id", session.profile.org_id)
+    .eq("client_id", clientId);
+  revalidatePath("/aml");
+  revalidatePath("/my-work");
+  return {};
 }
 
 // ─── Client team members ─────────────────────────────────────────────────────

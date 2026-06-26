@@ -64,8 +64,9 @@ export default async function AmlPage() {
     );
   }
 
-  const { clients, error } = await getAmlClients();
+  const { clients, error, amlTeam } = await getAmlClients();
   const isMasterAdmin = role === "admin";
+  const isHead = role === "admin" || role === "ops_head" || (krishnaRow != null && currentMemberId === krishnaRow.id);
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 24px" }}>
@@ -75,7 +76,7 @@ export default async function AmlPage() {
         {isMasterAdmin && <span className="pill" style={{ fontSize: 11, background: "#fef2f2", color: "#dc2626" }}>Admin panel active</span>}
       </div>
       {error && <div className="alert-red">{error}</div>}
-      <AmlView clients={clients ?? []} canEdit={hasAccess} isAdmin={isMasterAdmin} />
+      <AmlView clients={clients ?? []} canEdit={hasAccess} isAdmin={isMasterAdmin} isHead={isHead} amlTeam={amlTeam ?? []} />
     </div>
   );
 }

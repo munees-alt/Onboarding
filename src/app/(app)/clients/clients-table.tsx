@@ -17,6 +17,7 @@ import {
   setClientAm,
   deleteClientGroup,
   assignAmlRun,
+  assignToAmlAction,
   type NewClientInput,
   type StandaloneIntakePrep,
 } from "./actions";
@@ -644,9 +645,26 @@ export function ClientsTable({
                     <td onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
                         {run ? (
-                          <button className="btn-ghost" onClick={() => router.push(`/onboarding/${run.id}`)}>
-                            Open run <Icon name="arrow-right" size={13} />
-                          </button>
+                          <>
+                            <button className="btn-ghost" onClick={() => router.push(`/onboarding/${run.id}`)}>
+                              Open run <Icon name="arrow-right" size={13} />
+                            </button>
+                            {(c.status === "active" || c.status === "hold" || c.status === "paused" || c.status === "signed") && (
+                              <button
+                                className="btn-ghost"
+                                style={{ fontSize: 12, color: "#7c3aed", borderColor: "#c4b5fd", padding: "4px 10px" }}
+                                title="Assign to AML compliance team"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  const res = await assignToAmlAction(c.id);
+                                  if (res.error) showToast(res.error, "red");
+                                  else showToast(`${c.name} assigned to AML compliance`);
+                                }}
+                              >
+                                <Icon name="file-lock" size={12} /> AML
+                              </button>
+                            )}
+                          </>
                         ) : c.status === "lead" || c.status === "signed" ? (
                           <button className="btn-primary" onClick={() => setPicking({ clientId: c.id, name: c.name })}>
                             Mark as Signed
