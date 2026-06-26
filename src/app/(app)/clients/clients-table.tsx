@@ -16,6 +16,7 @@ import {
   copyClientAction,
   setClientAm,
   deleteClientGroup,
+  assignAmlRun,
   type NewClientInput,
   type StandaloneIntakePrep,
 } from "./actions";
@@ -680,6 +681,14 @@ export function ClientsTable({
                                         <MenuItem icon="play" label="Reactivate" onClick={() => changeStatus(c.id, "active", `${c.name} reactivated`)} />
                                       )}
                                     </>
+                                  )}
+                                  {canManageStatus && (
+                                    <MenuItem icon="file-lock" label="Assign AML review" onClick={async () => {
+                                      setMenuFor(null);
+                                      const res = await assignAmlRun(c.id);
+                                      if (res.error) showToast(res.error, "red");
+                                      else showToast(`AML run created for ${c.name} — team notified`);
+                                    }} />
                                   )}
                                   {canDelete && run && (
                                     <MenuItem icon="trash-2" danger label="Delete onboarding run" onClick={() => { setMenuFor(null); setConfirmDel({ kind: "run", id: run.id, name: c.name }); }} />
