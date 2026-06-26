@@ -15,7 +15,7 @@ export const WELCOME_EMAIL_TEMPLATE = `Dear {contactName},
 
 Greetings from Finanshels.com!
 
-We are on a mission to simplify financial life for founders, and we are thrilled to have {companyName} onboard. We look forward to serving you for the years to come. Thank you for taking the time to meet with us today.
+We are your complete finance function — accounting, compliance, and reporting — for a fixed monthly fee. Our goal is simple: help you know your numbers, stop worrying about compliance, and grow with confidence. We are delighted to welcome {companyName} to Finanshels and look forward to building a long-term partnership with you.
 
 YOUR ONBOARDING PORTAL
 Please find your secure onboarding portal link below:
@@ -35,19 +35,19 @@ Team Finanshels`;
 // WhatsApp group. Only the point of contact changes (the senior we select).
 export const WHATSAPP_WELCOME_TEMPLATE = `Greetings from Finanshels!
 
-Welcome onboard. I'm {contact}, and I will be your dedicated point of contact for all accounting-related matters.
+Welcome onboard. I'm {contact}, your dedicated point of contact. Finanshels is your complete finance function — accounting, compliance, and reporting — so you can focus on growing your business.
 
-This group has been created to ensure smooth and efficient communication for all accounting discussions.
+This group is our direct line for all finance-related matters.
 
-A detailed welcome email containing all the necessary information and requirements will be shared with you shortly.
+A welcome email with everything you need to get started will reach you shortly.
 
-If you have any questions or concerns, please feel free to reach out. We will be happy to assist you.
+Looking forward to helping {companyName} grow with confidence ☺️`;
 
-Looking forward to working with you ☺️`;
-
-/** Fills the WhatsApp welcome message with the chosen point of contact. */
-export function renderWhatsappWelcome(contact: string): string {
-  return WHATSAPP_WELCOME_TEMPLATE.replace(/\{contact\}/g, (contact || "").trim() || "your account manager");
+/** Fills the WhatsApp welcome message with the chosen point of contact and company name. */
+export function renderWhatsappWelcome(contact: string, companyName?: string): string {
+  return WHATSAPP_WELCOME_TEMPLATE
+    .replace(/\{contact\}/g, (contact || "").trim() || "your account manager")
+    .replace(/\{companyName\}/g, (companyName || "").trim() || "your business");
 }
 
 export interface WelcomeEmailFields {
@@ -105,23 +105,23 @@ export const INTAKE_EMAIL_SUBJECT = "Welcome to Finanshels — please complete y
 
 export const INTAKE_EMAIL_TEMPLATE = `Dear {contactName},
 
-Welcome to Finanshels! We're excited to start working with {companyName}.
+Welcome to Finanshels — your complete finance function for a fixed monthly fee.
 
-To begin, please complete your onboarding form using your secure onboarding portal:
+We are here to help {companyName} know its numbers, stay compliant, and grow with confidence. The next step is to complete your onboarding form through your secure portal:
 {portalUrl}
 
-Inside the portal you can fill in your business details, see which documents we'll need, and grant the access we require. The form takes about 10–15 minutes and you can save and come back to it any time. To log in, enter your email — we'll send you a login code.
+Inside you can fill in your business details, see which documents we need, and grant the access we require. The form takes about 10–15 minutes and you can save and return to it at any time. To log in, enter your email — we will send you a login code.
 
-If anything is unclear, just reply to this email and we'll help.
+If anything is unclear, just reply to this email and we will help.
 
 Best Regards,
 Team Finanshels`;
 
-export const INTAKE_WHATSAPP_TEMPLATE = `Hi {contactName} — welcome to Finanshels!
+export const INTAKE_WHATSAPP_TEMPLATE = `Hi {contactName} — welcome to Finanshels, your complete finance function!
 
 Please complete your onboarding form here: {portalUrl}
 
-Takes about 10 mins. To log in, enter your email and we'll send a code. Reply here if you have any questions.
+Takes about 10 mins. To log in, enter your email and we'll send you a code. Reply here if you have any questions.
 
 — Team Finanshels`;
 

@@ -959,6 +959,30 @@ export async function deleteClientAction(clientId: string): Promise<{ error?: st
   return {};
 }
 
+/** Delete a client group AND all companies (+ their runs) inside it. Admin / Ops Head only. */
+export async function deleteClientGroup(groupId: string): Promise<{ error?: string; deleted?: number }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!["ops_head", "admin"].includes(role)) return { error: "Only the Master Admin or Ops Head can delete a group." };
+  const admin = createAdminClient();
+  // Collect client IDs in the group first (for audit)
+  const { data: groupClients } = await admin.from("clients").select("id,name").eq("group_id", groupId).eq("org_id", session.profile.org_id);
+  const count = groupClients?.length ?? 0;
+  // Delete all clients in the group — cascade removes runs, tasks, documents, etc.
+  if (count > 0) {
+    const { error: clientErr } = await admin.from("clients").delete().eq("group_id", groupId).eq("org_id", session.profile.org_id);
+    if (clientErr) return { error: clientErr.message };
+  }
+  // Delete the group record itself
+  const { error: groupErr } = await admin.from("client_groups").delete().eq("id", groupId).eq("org_id", session.profile.org_id);
+  if (groupErr) return { error: groupErr.message };
+  await admin.from("audit_events").insert({ org_id: session.profile.org_id, actor_id: session.profile.id, action: "delete_group", target_kind: "client_group", target_id: groupId, details: { count } });
+  revalidatePath("/clients");
+  revalidatePath("/onboarding");
+  return { deleted: count };
+}
+
 /** Bulk status change across selected clients. AM and up. */
 export async function bulkSetClientStatus(ids: string[], status: ManualClientStatus): Promise<{ error?: string; count?: number }> {
   const session = await getSession();

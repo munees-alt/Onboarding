@@ -15,6 +15,7 @@ import {
   sendStandaloneIntakeEmail,
   copyClientAction,
   setClientAm,
+  deleteClientGroup,
   type NewClientInput,
   type StandaloneIntakePrep,
 } from "./actions";
@@ -160,6 +161,7 @@ export function ClientsTable({
   const [toast, setToast] = useState<{ msg: string; kind: string } | null>(null);
   const [menuFor, setMenuFor] = useState<{ id: string; x: number; y: number } | null>(null);
   const [confirmDel, setConfirmDel] = useState<{ kind: "client" | "run"; id: string; name: string } | null>(null);
+  const [confirmDelGroup, setConfirmDelGroup] = useState<{ id: string; name: string; count: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkConfirm, setBulkConfirm] = useState(false);
@@ -533,6 +535,14 @@ export function ClientsTable({
                           <span className="pill gray" style={{ fontSize: 10.5, padding: "1px 7px" }}>
                             {visibleCount} {visibleCount === 1 ? "company" : "companies"}
                           </span>
+                          {canDelete && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setConfirmDelGroup({ id: row.groupId, name: row.groupName, count: row.children.length }); }}
+                              style={{ marginLeft: "auto", fontSize: 11, padding: "2px 8px", borderRadius: 6, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", cursor: "pointer" }}
+                            >
+                              Delete group
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -780,6 +790,32 @@ export function ClientsTable({
               <button className="btn-ghost" onClick={() => setConfirmDel(null)} disabled={busy}>Cancel</button>
               <button className="btn-danger" onClick={doDelete} disabled={busy}>
                 {busy ? "Deleting…" : confirmDel.kind === "client" ? "Delete client" : "Delete run"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDelGroup && (
+        <div className="modal-overlay open" style={{ zIndex: 90 }} onClick={() => !busy && setConfirmDelGroup(null)}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd">
+              <h3>Delete group &ldquo;{confirmDelGroup.name}&rdquo;?</h3>
+              <div className="sub">
+                This permanently deletes the group and all {confirmDelGroup.count} {confirmDelGroup.count === 1 ? "company" : "companies"} inside it, along with ALL their onboarding runs, tasks, documents and messages. This cannot be undone.
+              </div>
+            </div>
+            <div className="ft">
+              <button className="btn-ghost" onClick={() => setConfirmDelGroup(null)} disabled={busy}>Cancel</button>
+              <button className="btn-danger" disabled={busy} onClick={async () => {
+                setBusy(true);
+                const res = await deleteClientGroup(confirmDelGroup.id);
+                setBusy(false);
+                setConfirmDelGroup(null);
+                if (res.error) showToast(res.error, "red");
+                else { showToast(`Group and ${res.deleted ?? confirmDelGroup.count} clients deleted`); router.refresh(); }
+              }}>
+                {busy ? "Deleting…" : "Delete group"}
               </button>
             </div>
           </div>
