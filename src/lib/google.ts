@@ -261,6 +261,17 @@ export async function createClientDriveFolder(
   return ensureDriveFolder(token, clientName, rootId);
 }
 
+/** Moves a Drive folder to trash (soft-delete). Best-effort — does not throw. */
+export async function trashDriveFolder(teamMemberId: string, folderId: string): Promise<void> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return;
+  await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ trashed: true }),
+  });
+}
+
 /** Creates the full client Drive tree under the configured shared Drive root. */
 export async function createClientDriveTree(
   teamMemberId: string,

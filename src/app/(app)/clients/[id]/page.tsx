@@ -49,7 +49,7 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
   // Client Drive folder link (created at client creation), saved meetings + the latest
   // contract analysis (whichever run had it analysed last — the playbook surfaces the
   // engagement scope / inclusions / exclusions / payment / deliverables in their own card).
-  const [{ data: driveRow }, { data: meetingRows }, { data: contractRow }, { data: paymentPlanRow }, { data: paymentEntryRows }] = await Promise.all([
+  const [{ data: driveRow }, { data: meetingRows }, { data: contractRow }, { data: paymentPlanRow }, { data: paymentEntryRows }, { data: clientTeamRows }] = await Promise.all([
     supabase.from("drive_folders").select("tree").eq("client_id", id).maybeSingle(),
     supabase.from("client_meetings").select("id,title,meeting_date,recording_link,notes,summary,source,created_at").eq("client_id", id).order("meeting_date", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false }),
     supabase.from("run_items")
@@ -61,6 +61,7 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
       .maybeSingle(),
     supabase.from("client_payment_plans").select("*").eq("client_id", id).maybeSingle(),
     supabase.from("client_payment_entries").select("*").eq("client_id", id).order("due_date"),
+    supabase.from("client_team_members").select("id,name,role_label,email,phone,notes,sort_order").eq("client_id", id).order("sort_order"),
   ]);
   const driveLink = ((driveRow?.tree as { link?: string } | null)?.link) ?? null;
   const meetings = (meetingRows ?? []) as PlaybookData["meetings"];
@@ -135,6 +136,9 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
     canEdit,
     paymentPlan: (paymentPlanRow as Record<string, unknown> | null) ?? null,
     paymentEntries: ((paymentEntryRows ?? []) as Record<string, unknown>[]),
+    clientTeam: ((clientTeamRows ?? []) as { id: string; name: string; role_label: string; email: string | null; phone: string | null; notes: string | null; sort_order: number }[]).map((r) => ({
+      id: r.id, name: r.name, roleLabel: r.role_label, email: r.email, phone: r.phone, notes: r.notes, sortOrder: r.sort_order,
+    })),
   };
 
   return <ClientPlaybook data={data} />;

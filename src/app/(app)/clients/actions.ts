@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSession } from "@/lib/auth";
 import { createRunFromTemplate } from "@/lib/runs";
-import { createClientDriveFolder, getDriveCapableMemberId } from "@/lib/google";
+import { createClientDriveFolder, getDriveCapableMemberId, trashDriveFolder } from "@/lib/google";
 import { runAi } from "@/lib/ai";
 import { fetchFathomNotes, listFathomMeetings, fathomMeetingNotes, fathomMeetingEmails } from "@/lib/fathom";
 import type { SessionInfo } from "@/lib/types";
@@ -518,7 +518,7 @@ export interface NewClientInput {
 }
 
 /** Lifecycle statuses a user can manually set from the Clients list. */
-export type ManualClientStatus = "lead" | "active" | "hold" | "paused" | "inactive";
+export type ManualClientStatus = "lead" | "signed" | "active" | "hold" | "paused" | "inactive";
 
 function slugify(name: string) {
   const base = name
@@ -897,12 +897,36 @@ export async function setClientStatusAction(
     return { error: "Only an AM or above can change a client's status." };
 
   const supabase = await createClient();
+  const { data: client } = await supabase.from("clients").select("name,status").eq("id", clientId).eq("org_id", session.profile.org_id).maybeSingle();
   const { error } = await supabase
     .from("clients")
     .update({ status })
     .eq("id", clientId)
     .eq("org_id", session.profile.org_id);
   if (error) return { error: error.message };
+
+  // Drive lifecycle: trash folder when reverting to lead; recreate when signing
+  if (status === "lead") {
+    const { data: df } = await supabase.from("drive_folders").select("tree").eq("client_id", clientId).maybeSingle();
+    const folderId = (df?.tree as { id?: string } | null)?.id;
+    if (folderId) {
+      const driveMember = await getDriveCapableMemberId(session.profile.org_id);
+      if (driveMember) await trashDriveFolder(driveMember, folderId);
+    }
+    await supabase.from("drive_folders").delete().eq("client_id", clientId);
+  } else if (status === "signed" && client?.status === "lead") {
+    // Recreate Drive folder for newly signed client
+    const driveMember = await getDriveCapableMemberId(session.profile.org_id);
+    if (driveMember && client?.name) {
+      const drive = await createClientDriveFolder(driveMember, client.name);
+      if (drive) {
+        await supabase.from("drive_folders").upsert(
+          { client_id: clientId, tree: { name: client.name, id: drive.id, link: drive.link } },
+          { onConflict: "client_id" },
+        );
+      }
+    }
+  }
 
   await supabase.from("audit_events").insert({
     org_id: session.profile.org_id,
@@ -1905,4 +1929,81 @@ export async function getAmlClients(): Promise<{
       };
     }),
   };
+}
+
+// ─── Client team members ─────────────────────────────────────────────────────
+
+export interface ClientTeamMember {
+  id: string;
+  name: string;
+  roleLabel: string;
+  email: string | null;
+  phone: string | null;
+  notes: string | null;
+  sortOrder: number;
+}
+
+export async function getClientTeamMembers(clientId: string): Promise<{ error?: string; members: ClientTeamMember[] }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in.", members: [] };
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("client_team_members")
+    .select("id,name,role_label,email,phone,notes,sort_order")
+    .eq("client_id", clientId)
+    .order("sort_order");
+  if (error) return { error: error.message, members: [] };
+  return {
+    members: (data ?? []).map((r) => ({
+      id: r.id as string,
+      name: r.name as string,
+      roleLabel: r.role_label as string,
+      email: (r.email as string | null) ?? null,
+      phone: (r.phone as string | null) ?? null,
+      notes: (r.notes as string | null) ?? null,
+      sortOrder: (r.sort_order as number) ?? 0,
+    })),
+  };
+}
+
+export async function upsertClientTeamMember(clientId: string, member: {
+  id?: string;
+  name: string;
+  roleLabel: string;
+  email?: string | null;
+  phone?: string | null;
+  notes?: string | null;
+  sortOrder?: number;
+}): Promise<{ error?: string; id?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!["am", "team_lead", "ops_head", "admin"].includes(role)) return { error: "AM or above required." };
+  const supabase = await createClient();
+  if (member.id) {
+    const { error } = await supabase.from("client_team_members")
+      .update({ name: member.name, role_label: member.roleLabel, email: member.email ?? null, phone: member.phone ?? null, notes: member.notes ?? null, sort_order: member.sortOrder ?? 0 })
+      .eq("id", member.id).eq("org_id", session.profile.org_id);
+    if (error) return { error: error.message };
+    revalidatePath(`/clients/${clientId}`);
+    return { id: member.id };
+  }
+  const { data, error } = await supabase.from("client_team_members")
+    .insert({ org_id: session.profile.org_id, client_id: clientId, name: member.name, role_label: member.roleLabel, email: member.email ?? null, phone: member.phone ?? null, notes: member.notes ?? null, sort_order: member.sortOrder ?? 0 })
+    .select("id").single();
+  if (error) return { error: error.message };
+  revalidatePath(`/clients/${clientId}`);
+  return { id: (data as { id: string }).id };
+}
+
+export async function deleteClientTeamMember(clientId: string, memberId: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const role = session.teamMember?.role ?? session.profile.role;
+  if (!["am", "team_lead", "ops_head", "admin"].includes(role)) return { error: "AM or above required." };
+  const supabase = await createClient();
+  const { error } = await supabase.from("client_team_members").delete().eq("id", memberId).eq("org_id", session.profile.org_id);
+  if (error) return { error: error.message };
+  revalidatePath(`/clients/${clientId}`);
+  return {};
 }

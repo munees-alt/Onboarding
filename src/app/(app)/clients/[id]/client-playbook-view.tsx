@@ -9,7 +9,7 @@ import { isMasterAdmin } from "@/lib/roles";
 import type { OnbTemplate } from "@/lib/onboarding-templates";
 import type { ContractAnalysis } from "@/app/(app)/onboarding/[runId]/ai-actions";
 import { formatEngagementPeriod } from "@/lib/contract-format";
-import { extractCallInsights, saveCallInsights, generateClientSummary, sendClientWeeklyDigest, addClientMeeting, deleteClientMeeting, syncFathomMeetingsForClient, addPlaybookAccess, setPlaybookAccessStatus, deletePlaybookAccess, setClientPortalAccess, rebuildClientCompliance, savePaymentPlan, generatePaymentSchedule, savePaymentEntry, deletePaymentEntry, type InsightSection } from "../actions";
+import { extractCallInsights, saveCallInsights, generateClientSummary, sendClientWeeklyDigest, addClientMeeting, deleteClientMeeting, syncFathomMeetingsForClient, addPlaybookAccess, setPlaybookAccessStatus, deletePlaybookAccess, setClientPortalAccess, rebuildClientCompliance, savePaymentPlan, generatePaymentSchedule, savePaymentEntry, deletePaymentEntry, upsertClientTeamMember, deleteClientTeamMember, type InsightSection, type ClientTeamMember } from "../actions";
 import { INDUSTRIES, ENTITIES } from "../clients-table";
 
 export interface PlaybookData {
@@ -52,14 +52,15 @@ export interface PlaybookData {
   canEdit: boolean;
   paymentPlan: Record<string, unknown> | null;
   paymentEntries: Record<string, unknown>[];
+  clientTeam: ClientTeamMember[];
 }
 
 const TABS = [
-  "Company Overview", "Engagement", "Runs", "Workflows", "Tasks & Projects", "Templates & SOPs",
+  "Company Overview", "Client Team", "Engagement", "Runs", "Workflows", "Tasks & Projects", "Templates & SOPs",
   "Compliance Calendar", "Meetings", "Communication", "COA", "Tools & Access", "Escalation History", "Payments",
 ] as const;
 const TAB_ICON: Record<string, string> = {
-  "Company Overview": "database", "Engagement": "file-text", "Runs": "activity", "Workflows": "workflow",
+  "Company Overview": "database", "Client Team": "users", "Engagement": "file-text", "Runs": "activity", "Workflows": "workflow",
   "Tasks & Projects": "folder-kanban", "Templates & SOPs": "layers",
   "Compliance Calendar": "calendar", "Meetings": "video", "Communication": "message-circle",
   "COA": "list-tree", "Tools & Access": "wrench", "Escalation History": "alert-triangle", "Payments": "credit-card",
@@ -148,6 +149,7 @@ export function ClientPlaybook({ data }: { data: PlaybookData }) {
           <div ref={setSectionRef("Communication")} data-section="Communication"><SectionHeading icon="message-circle" title="Communication" /><Communication data={data} /></div>
           <div ref={setSectionRef("COA")} data-section="COA"><SectionHeading icon="list-tree" title="COA" /><Coa data={data} /></div>
           <div ref={setSectionRef("Tools & Access")} data-section="Tools & Access"><SectionHeading icon="wrench" title="Tools & Access" /><Tools data={data} /></div>
+          <div ref={setSectionRef("Client Team")} data-section="Client Team"><SectionHeading icon="users" title="Client Team" /><ClientTeamSection data={data} /></div>
           <div ref={setSectionRef("Escalation History")} data-section="Escalation History"><SectionHeading icon="alert-triangle" title="Escalation History" /><Escalations data={data} /></div>
           <div ref={setSectionRef("Payments")} data-section="Payments"><SectionHeading icon="credit-card" title="Payments" /><PaymentsSection data={data} /></div>
         </div>
@@ -1066,6 +1068,102 @@ function Escalations({ data }: { data: PlaybookData }) {
 const STATUS_COLORS: Record<string, string> = {
   pending: "var(--ink-3)", invoiced: "var(--orange)", paid: "#16a34a", overdue: "#dc2626",
 };
+
+const ROLE_OPTIONS = ["Owner", "GM", "Director", "CFO", "POC", "Finance Manager", "Operations Manager", "Accountant", "Other"];
+
+function ClientTeamSection({ data }: { data: PlaybookData }) {
+  const router = useRouter();
+  const [members, setMembers] = useState<ClientTeamMember[]>(data.clientTeam ?? []);
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [busy, start] = useTransition();
+  const blank = (): Omit<ClientTeamMember, "id"> => ({ name: "", roleLabel: "Owner", email: null, phone: null, notes: null, sortOrder: members.length });
+  const [draft, setDraft] = useState(blank());
+
+  const save = (id?: string) => {
+    start(async () => {
+      const res = await upsertClientTeamMember(data.clientId, { ...draft, id });
+      if (res.error) { alert(res.error); return; }
+      router.refresh();
+      setAdding(false);
+      setEditing(null);
+    });
+  };
+
+  const remove = (memberId: string) => {
+    if (!confirm("Remove this contact?")) return;
+    start(async () => {
+      await deleteClientTeamMember(data.clientId, memberId);
+      setMembers((m) => m.filter((x) => x.id !== memberId));
+    });
+  };
+
+  const Form = () => (
+    <div style={{ background: "var(--bg-soft)", border: "1px solid var(--border)", borderRadius: 8, padding: 14, marginTop: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+        <label style={{ fontSize: 12 }}>Name *
+          <input value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} style={{ display: "block", width: "100%", marginTop: 3, padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }} />
+        </label>
+        <label style={{ fontSize: 12 }}>Role
+          <select value={draft.roleLabel} onChange={(e) => setDraft((d) => ({ ...d, roleLabel: e.target.value }))} style={{ display: "block", width: "100%", marginTop: 3, padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }}>
+            {ROLE_OPTIONS.map((r) => <option key={r}>{r}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 12 }}>Email
+          <input type="email" value={draft.email ?? ""} onChange={(e) => setDraft((d) => ({ ...d, email: e.target.value || null }))} style={{ display: "block", width: "100%", marginTop: 3, padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }} />
+        </label>
+        <label style={{ fontSize: 12 }}>Phone
+          <input value={draft.phone ?? ""} onChange={(e) => setDraft((d) => ({ ...d, phone: e.target.value || null }))} style={{ display: "block", width: "100%", marginTop: 3, padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }} />
+        </label>
+        <label style={{ fontSize: 12, gridColumn: "1 / -1" }}>Notes
+          <input value={draft.notes ?? ""} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value || null }))} style={{ display: "block", width: "100%", marginTop: 3, padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }} />
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="btn-primary" disabled={!draft.name.trim() || busy} onClick={() => save(editing ?? undefined)}>{busy ? "Saving…" : "Save"}</button>
+        <button className="btn-ghost" onClick={() => { setAdding(false); setEditing(null); }}>Cancel</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <Panel title="Client team" extra={data.canEdit ? (
+      <button className="btn-ghost" style={{ fontSize: 12.5 }} onClick={() => { setDraft(blank()); setAdding(true); setEditing(null); }}>
+        <Icon name="plus" size={13} /> Add contact
+      </button>
+    ) : undefined}>
+      {members.length === 0 && !adding && <div style={{ fontSize: 13, color: "var(--ink-3)", padding: "8px 0" }}>No team contacts added yet.</div>}
+      {members.map((m) => (
+        <div key={m.id}>
+          {editing === m.id ? (
+            <Form />
+          ) : (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontWeight: 700, fontSize: 13 }}>{m.name}</span>
+                  <span className="pill gray" style={{ fontSize: 11 }}>{m.roleLabel}</span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3, display: "flex", gap: 12 }}>
+                  {m.email && <a href={`mailto:${m.email}`} style={{ color: "var(--ink-3)" }}>{m.email}</a>}
+                  {m.phone && <span>{m.phone}</span>}
+                  {m.notes && <span>· {m.notes}</span>}
+                </div>
+              </div>
+              {data.canEdit && (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => { setDraft({ name: m.name, roleLabel: m.roleLabel, email: m.email, phone: m.phone, notes: m.notes, sortOrder: m.sortOrder }); setEditing(m.id); setAdding(false); }}>Edit</button>
+                  <button className="btn-ghost" style={{ fontSize: 12, color: "var(--red)" }} onClick={() => remove(m.id)}>×</button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+      {adding && <Form />}
+    </Panel>
+  );
+}
 
 function PaymentsSection({ data }: { data: PlaybookData }) {
   const [plan, setPlan] = useState<Record<string, unknown>>(data.paymentPlan ?? {});

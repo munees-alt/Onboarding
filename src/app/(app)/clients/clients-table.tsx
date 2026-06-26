@@ -288,7 +288,7 @@ export function ClientsTable({
     return result;
   }, [clients, tab, search, fIndustry, fEntity, fMonth, fAuthority, groupedClients, groupMap, expandedGroups]);
 
-  const bulkStatus = async (status: "active" | "hold" | "paused", label: string) => {
+  const bulkStatus = async (status: "lead" | "active" | "hold" | "paused", label: string) => {
     const ids = [...selected];
     const res = await bulkSetClientStatus(ids, status);
     if (res.error) showToast(res.error, "red");
@@ -469,6 +469,7 @@ export function ClientsTable({
                 <button className="btn-ghost" onClick={() => bulkStatus("active", "reactivated")}><Icon name="play" size={13} /> Reactivate</button>
                 <button className="btn-ghost" onClick={() => bulkStatus("hold", "put on hold")}><Icon name="pause" size={13} /> Hold</button>
                 <button className="btn-ghost" onClick={() => bulkStatus("paused", "paused")}><Icon name="pause-circle" size={13} /> Pause</button>
+                <button className="btn-ghost" style={{ color: "#d97706" }} onClick={() => bulkStatus("lead", "reverted to lead")}><Icon name="undo-2" size={13} /> Revert to lead</button>
               </>}
               {canDelete && <button className="btn-ghost" style={{ color: "var(--red)" }} onClick={() => setBulkConfirm(true)}><Icon name="trash-2" size={13} /> Delete</button>}
               <button className="btn-ghost" style={{ marginLeft: "auto" }} onClick={clearSel}>Clear</button>
