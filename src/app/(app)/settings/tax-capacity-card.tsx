@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { Icon } from "@/components/icon";
-import { saveAmCapacity, addTaxTeamMember, removeTaxTeamMember, listTaxAddCandidates, setAllTaxCapacity, saveTaxCapacityDefault } from "./actions";
+import { saveAmCapacity, addTaxTeamMember, removeTaxTeamMember, listTaxAddCandidates, setAllTaxCapacity, saveTaxCapacityDefault, saveLoadOverride } from "./actions";
 
 export interface CapacityRow {
   id: string;
@@ -14,6 +14,8 @@ export interface CapacityRow {
   isExtra: boolean;
   maxTasks: number | null;
   currentLoad: number;
+  autoLoad: number;
+  loadOverride: number | null;
 }
 
 type Candidate = { id: string; name: string; role: string; title: string | null };
@@ -178,7 +180,7 @@ export function TaxCapacityCard({ rows: initialRows, headName, leadName, taxCapa
                 onClick={() => startSave(async () => {
                   const res = await addTaxTeamMember(c.id);
                   if (!res.error) {
-                    setRows((r) => [...r, { id: c.id, name: c.name, role: c.role, title: c.title, isHead: false, isLead: false, isExtra: true, maxTasks: DEFAULT_MAX, currentLoad: 0 }]);
+                    setRows((r) => [...r, { id: c.id, name: c.name, role: c.role, title: c.title, isHead: false, isLead: false, isExtra: true, maxTasks: DEFAULT_MAX, currentLoad: 0, autoLoad: 0, loadOverride: null }]);
                     setAdding(false);
                     setQuery("");
                   }
@@ -201,10 +203,11 @@ export function TaxCapacityCard({ rows: initialRows, headName, leadName, taxCapa
 
       {rows.length > 0 && (
         <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1.2fr 1fr 1fr 110px 38px", padding: "8px 12px", background: "var(--bg-soft)", fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr 110px 38px", padding: "8px 12px", background: "var(--bg-soft)", fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)" }}>
             <div>Member</div>
             <div>Role / Title</div>
-            <div>Current load</div>
+            <div>Auto load</div>
+            <div>Manual override</div>
             <div>Max tasks</div>
             <div></div>
             <div></div>
@@ -215,7 +218,7 @@ export function TaxCapacityCard({ rows: initialRows, headName, leadName, taxCapa
             const warn = ratio != null && ratio >= 0.8 && !full;
             const loadColor = full ? "#dc2626" : warn ? "#d97706" : "#475569";
             return (
-              <div key={row.id} style={{ display: "grid", gridTemplateColumns: "1.6fr 1.2fr 1fr 1fr 110px 38px", padding: "10px 12px", borderTop: "1px solid var(--border)", alignItems: "center", fontSize: 13 }}>
+              <div key={row.id} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr 110px 38px", padding: "10px 12px", borderTop: "1px solid var(--border)", alignItems: "center", fontSize: 13 }}>
                 <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
                   {row.name}
                   {row.isHead && <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "var(--orange-soft)", color: "var(--orange)" }}>HEAD</span>}
@@ -226,6 +229,32 @@ export function TaxCapacityCard({ rows: initialRows, headName, leadName, taxCapa
                   <span style={{ textTransform: "capitalize" }}>{row.role.replace("_", " ")}</span>
                   {row.title && <span> · {row.title}</span>}
                 </div>
+                {/* Auto load — read only, shows system-calculated value */}
+                <div style={{ color: "var(--ink-3)", fontSize: 12.5 }}>
+                  {row.autoLoad}
+                  {row.loadOverride != null && <span style={{ marginLeft: 5, fontSize: 10, color: "#8b5cf6" }}>overridden</span>}
+                </div>
+                {/* Manual override — editable; blank = use auto */}
+                <div>
+                  <input
+                    type="number"
+                    min={0}
+                    value={row.loadOverride ?? ""}
+                    placeholder="auto"
+                    title="Leave blank to use auto-calculated load"
+                    onChange={(e) => {
+                      const val = e.target.value.trim() === "" ? null : Math.max(0, Math.floor(Number(e.target.value) || 0));
+                      setRows((r) => r.map((x) => x.id === row.id ? { ...x, loadOverride: val, currentLoad: val ?? x.autoLoad } : x));
+                    }}
+                    onBlur={() => startSave(async () => {
+                      await saveLoadOverride(row.id, row.loadOverride);
+                      setSavedId(row.id);
+                      setTimeout(() => setSavedId(null), 1500);
+                    })}
+                    style={{ width: 72, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 13, color: row.loadOverride != null ? "#8b5cf6" : "inherit" }}
+                  />
+                </div>
+                {/* Effective load indicator */}
                 <div style={{ color: loadColor, fontWeight: 600 }}>
                   {row.currentLoad}{row.maxTasks != null ? ` / ${row.maxTasks}` : ""}
                   {full && <span style={{ marginLeft: 6, fontSize: 11, background: "#fef2f2", color: "#dc2626", padding: "1px 6px", borderRadius: 4 }}>FULL</span>}
@@ -241,10 +270,8 @@ export function TaxCapacityCard({ rows: initialRows, headName, leadName, taxCapa
                     style={{ width: 80, border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 13 }}
                   />
                 </div>
-                <div style={{ textAlign: "right", fontSize: 11.5, color: savedId === row.id ? "#10b981" : "var(--ink-3)" }}>
-                  {savedId === row.id ? "Saved" : ""}
-                </div>
                 <div style={{ textAlign: "center" }}>
+                  {savedId === row.id && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
                   {row.isExtra && !row.isHead && (
                     <button
                       type="button"

@@ -29,6 +29,8 @@ export interface CapacityRow {
   isExtra: boolean;
   maxTasks: number | null;
   currentLoad: number;
+  autoLoad: number;
+  loadOverride: number | null;
   /** Lower = better. -1 means no ceiling configured. */
   ratio: number;
 }
@@ -191,19 +193,26 @@ export async function getAmCapacityList(orgId: string): Promise<CapacityRow[]> {
 
   const { data: caps } = await admin
     .from("am_capacity")
-    .select("team_member_id,max_tasks")
+    .select("team_member_id,max_tasks,load_override")
     .eq("org_id", orgId)
     .in("team_member_id", memberIds);
   const maxBy: Record<string, number | null> = {};
-  for (const r of caps ?? []) maxBy[r.team_member_id] = r.max_tasks ?? null;
+  const overrideBy: Record<string, number | null> = {};
+  for (const r of caps ?? []) {
+    maxBy[r.team_member_id] = r.max_tasks ?? null;
+    overrideBy[r.team_member_id] = r.load_override ?? null;
+  }
 
   const { data: openRuns } = await admin
     .from("onboarding_runs")
     .select("am_id,status")
     .in("am_id", memberIds)
     .not("status", "in", "(archived,closed,complete)");
+  const autoLoadBy: Record<string, number> = {};
+  for (const r of openRuns ?? []) if (r.am_id) autoLoadBy[r.am_id] = (autoLoadBy[r.am_id] ?? 0) + 1;
+  // Use manual override when set; fall back to auto-calculated.
   const loadBy: Record<string, number> = {};
-  for (const r of openRuns ?? []) if (r.am_id) loadBy[r.am_id] = (loadBy[r.am_id] ?? 0) + 1;
+  for (const id of memberIds) loadBy[id] = overrideBy[id] ?? autoLoadBy[id] ?? 0;
 
   const extrasSet = new Set(extraIds);
   const leadId = lead?.id ?? null;
@@ -223,6 +232,8 @@ export async function getAmCapacityList(orgId: string): Promise<CapacityRow[]> {
       isExtra: extrasSet.has(id),
       maxTasks: max,
       currentLoad: load,
+      autoLoad: autoLoadBy[id] ?? 0,
+      loadOverride: overrideBy[id] ?? null,
       ratio,
     };
   }).filter(Boolean);
@@ -396,19 +407,23 @@ export async function getOrgCapacityList(orgId: string): Promise<CapacityRow[]> 
 
   const { data: caps } = await admin
     .from("am_capacity")
-    .select("team_member_id,max_tasks")
+    .select("team_member_id,max_tasks,load_override")
     .eq("org_id", orgId)
     .in("team_member_id", ids);
   const maxBy: Record<string, number | null> = {};
-  for (const r of caps ?? []) maxBy[r.team_member_id] = r.max_tasks ?? null;
+  const overrideBy2: Record<string, number | null> = {};
+  for (const r of caps ?? []) {
+    maxBy[r.team_member_id] = r.max_tasks ?? null;
+    overrideBy2[r.team_member_id] = r.load_override ?? null;
+  }
 
   const { data: openRuns } = await admin
     .from("onboarding_runs")
     .select("am_id,status")
     .in("am_id", ids)
     .not("status", "in", "(archived,closed,complete)");
-  const loadBy: Record<string, number> = {};
-  for (const r of openRuns ?? []) if (r.am_id) loadBy[r.am_id] = (loadBy[r.am_id] ?? 0) + 1;
+  const autoLoadBy2: Record<string, number> = {};
+  for (const r of openRuns ?? []) if (r.am_id) autoLoadBy2[r.am_id] = (autoLoadBy2[r.am_id] ?? 0) + 1;
 
   const { data: extras } = await admin
     .from("tax_team_extras")
@@ -418,7 +433,9 @@ export async function getOrgCapacityList(orgId: string): Promise<CapacityRow[]> 
 
   const rows: CapacityRow[] = memberRows.map((m) => {
     const max = maxBy[m.id] ?? null;
-    const load = loadBy[m.id] ?? 0;
+    const autoLoad = autoLoadBy2[m.id] ?? 0;
+    const loadOverride = overrideBy2[m.id] ?? null;
+    const load = loadOverride ?? autoLoad;
     const ratio = max && max > 0 ? load / max : -1;
     return {
       id: m.id,
@@ -430,6 +447,8 @@ export async function getOrgCapacityList(orgId: string): Promise<CapacityRow[]> 
       isExtra: extrasSet.has(m.id),
       maxTasks: max,
       currentLoad: load,
+      autoLoad,
+      loadOverride,
       ratio,
     };
   });

@@ -68,6 +68,22 @@ export async function saveTaxCapacityDefault(defaultMax: number): Promise<{ erro
   return { ok: true };
 }
 
+/** Master Admin: manually override the current load for a tax-team member (null = revert to auto). */
+export async function saveLoadOverride(teamMemberId: string, override: number | null): Promise<{ error?: string; ok?: boolean }> {
+  const orgId = await orgGuard();
+  if (!orgId) return { error: "Only the Master Admin or Ops Head can change capacity." };
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("am_capacity")
+    .upsert(
+      { org_id: orgId, team_member_id: teamMemberId, load_override: override, updated_at: new Date().toISOString() },
+      { onConflict: "org_id,team_member_id" },
+    );
+  if (error) return { error: error.message };
+  revalidatePath("/settings");
+  return { ok: true };
+}
+
 /** Master Admin: add a team member to the tax-team capacity list manually
  *  (for people not in the Tax Head's org-chart subtree). */
 export async function addTaxTeamMember(teamMemberId: string): Promise<{ error?: string; ok?: boolean }> {

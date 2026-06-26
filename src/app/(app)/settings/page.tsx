@@ -89,7 +89,7 @@ export default async function SettingsPage() {
           headName={taxHead?.name ?? null}
           leadName={taxLead?.name ?? null}
           taxCapacityDefault={(orgRow?.tax_capacity_default as number | null) ?? 60}
-          rows={capacityRows.map((r) => ({ id: r.id, name: r.name, role: r.role, title: r.title, isHead: r.isHead, isLead: r.isLead, isExtra: r.isExtra, maxTasks: r.maxTasks, currentLoad: r.currentLoad }))}
+          rows={capacityRows.map((r) => ({ id: r.id, name: r.name, role: r.role, title: r.title, isHead: r.isHead, isLead: r.isLead, isExtra: r.isExtra, maxTasks: r.maxTasks, currentLoad: r.currentLoad, autoLoad: r.autoLoad, loadOverride: r.loadOverride }))}
         />
         <SettingsForm
           keysSet={{ openai: !!ai?.openai_key_enc, anthropic: !!ai?.anthropic_key_enc, google: !!ai?.google_key_enc }}
