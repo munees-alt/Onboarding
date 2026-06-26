@@ -1,7 +1,7 @@
 // Client-safe AI config constants + types (no server-only imports).
 export type Provider = "openai" | "anthropic" | "google";
 export type AiFeature =
-  | "brief" | "coa" | "agenda" | "mom" | "welcome_email" | "handover_summary";
+  | "brief" | "coa" | "coa_suggestions" | "agenda" | "mom" | "welcome_email" | "handover_summary";
 
 export interface FeatureModel { provider: Provider; model: string; }
 

@@ -47,7 +47,7 @@ function canEditStep(myRole: string, step: TemplateStep): boolean {
 const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior", junior: "Junior", team_lead: "Team Lead", ops_head: "Ops", intern: "Intern" };
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
-import { generateCoa, saveCoa, generateTaxCodes, saveTaxCodes, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, generateOnePager, saveOnePagerNotes, regenerateOnePager, generateTaskBoardEmailDraft, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
+import { generateCoa, saveCoa, getCallSuggestedAccounts, generateTaxCodes, saveTaxCodes, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, generateOnePager, saveOnePagerNotes, regenerateOnePager, generateTaskBoardEmailDraft, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
 import { formatEngagementPeriod } from "@/lib/contract-format";
 import { archiveUrgentRun } from "../../my-work/actions";
 import { cleanDocLabels } from "@/lib/doc-labels";
@@ -947,7 +947,11 @@ function CoaBuilderModal({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [phase, setPhase] = useState<"intro" | "loading" | "review">("intro");
+  const [phase, setPhase] = useState<"preflight" | "fetching" | "loading" | "review">("preflight");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [customInput, setCustomInput] = useState("");
+  const [customAccounts, setCustomAccounts] = useState<string[]>([]);
   const [lines, setLines] = useState<CoaLine[]>([]);
   const [rationale, setRationale] = useState("");
   const [industry, setIndustry] = useState("");
@@ -958,13 +962,37 @@ function CoaBuilderModal({
   const SEC_ORDER = ["Income", "Revenue", "Cost of Goods", "COGS", "Expenses", "Assets", "Liabilities", "Equity"];
   const secOpen = (sec: string) => openSec[sec] ?? !SEC_SECONDARY.includes(sec);
 
+  // Fetch Fathom-based suggestions when the preflight phase mounts
+  useEffect(() => {
+    setPhase("fetching");
+    getCallSuggestedAccounts(runId).then((res) => {
+      if (res.suggestions.length) {
+        setSuggestions(res.suggestions);
+        setChecked(Object.fromEntries(res.suggestions.map((s) => [s, true])));
+      }
+      setPhase("preflight");
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const addCustom = () => {
+    const trimmed = customInput.trim();
+    if (!trimmed) return;
+    setCustomAccounts((prev) => [...prev, trimmed]);
+    setCustomInput("");
+  };
+
   const generate = async () => {
+    const selected = [
+      ...suggestions.filter((s) => checked[s]),
+      ...customAccounts,
+    ];
     setPhase("loading");
     setError(null);
-    const res = await generateCoa(runId);
+    const res = await generateCoa(runId, selected.length ? selected : undefined);
     if (res.error && !res.accounts) {
       setError(res.error);
-      setPhase("intro");
+      setPhase("preflight");
       return;
     }
     setLines(res.accounts ?? []);
@@ -984,23 +1012,90 @@ function CoaBuilderModal({
       <div className="modal" style={{ width: 640 }} onClick={(e) => e.stopPropagation()}>
         <div className="hd">
           <h3>Build chart of accounts</h3>
-          <div className="sub">AI tailors the industry template to this client. Review, toggle accounts, then send to the AM.</div>
+          <div className="sub">
+            {phase === "preflight" || phase === "fetching"
+              ? "Confirm any additional accounts before AI generates the COA."
+              : "AI tailors the industry template to this client. Review, toggle accounts, then send to the AM."}
+          </div>
         </div>
         <div className="bd" style={{ maxHeight: "62vh" }}>
-          {phase === "intro" && (
-            <div className="ai-flag" style={{ marginTop: 0 }}>
-              <div className="top"><span className="icon-glow"><Icon name="sparkles" size={16} /></span><h4>Generate the COA with AI</h4></div>
-              <div className="body">Loads the matching industry chart from the Finanshels workbook, then tailors it to this client&apos;s revenue channels, gateways and VAT status.</div>
-              <div className="actions"><button className="btn-ai" onClick={generate}><Icon name="sparkles" size={14} /> Generate with AI</button></div>
-              {error && <div style={{ fontSize: 12.5, color: "var(--red)", marginTop: 10 }}>{error}</div>}
+
+          {/* ── Preflight: accounts from call + manual input ── */}
+          {(phase === "preflight" || phase === "fetching") && (
+            <div>
+              {phase === "fetching" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, color: "var(--ink-3)", fontSize: 13 }}>
+                  <div className="ai-loading" style={{ display: "inline-flex" }}><span className="d" /><span className="d" /><span className="d" /></div>
+                  Pulling accounts from kickoff call notes…
+                </div>
+              )}
+
+              {phase === "preflight" && suggestions.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                    <Icon name="sparkles" size={13} style={{ color: "var(--purple)" }} />
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>From your kickoff call — check the ones to include</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    {suggestions.map((s) => (
+                      <label key={s} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", padding: "4px 0" }}>
+                        <input
+                          type="checkbox"
+                          checked={checked[s] ?? true}
+                          onChange={(e) => setChecked((c) => ({ ...c, [s]: e.target.checked }))}
+                          style={{ accentColor: "var(--orange)", width: 15, height: 15 }}
+                        />
+                        {s}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {phase === "preflight" && suggestions.length === 0 && (
+                <div style={{ fontSize: 13, color: "var(--ink-3)", marginBottom: 16, padding: "10px 14px", background: "var(--surface)", borderRadius: 8 }}>
+                  No specific accounts were found in the kickoff call notes. You can add any below.
+                </div>
+              )}
+
+              {/* Manual additional accounts */}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)", marginBottom: 8 }}>Any other accounts to add?</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    value={customInput}
+                    onChange={(e) => setCustomInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustom(); } }}
+                    placeholder="e.g. Salary — Sales Team, ADCB Account, Stripe Clearing…"
+                    style={{ flex: 1, fontSize: 13, border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}
+                  />
+                  <button className="btn-ghost" onClick={addCustom} style={{ fontSize: 12 }}>Add</button>
+                </div>
+                {customAccounts.length > 0 && (
+                  <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {customAccounts.map((a) => (
+                      <span key={a} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 20, background: "var(--orange)18", border: "1px solid var(--orange)40", color: "var(--ink-1)", display: "flex", alignItems: "center", gap: 5 }}>
+                        {a}
+                        <button onClick={() => setCustomAccounts((prev) => prev.filter((x) => x !== a))} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "var(--ink-3)", lineHeight: 1 }}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {error && <div style={{ fontSize: 12.5, color: "var(--red)", marginTop: 8 }}>{error}</div>}
             </div>
           )}
+
+          {/* ── Generating ── */}
           {phase === "loading" && (
             <div style={{ padding: 30, textAlign: "center", color: "var(--purple)" }}>
               <div className="ai-loading"><span className="d" /><span className="d" /><span className="d" /></div>
               <div style={{ fontSize: 13, marginTop: 10, color: "var(--ink-3)" }}>Tailoring the {industry || "industry"} chart of accounts…</div>
             </div>
           )}
+
+          {/* ── Review ── */}
           {phase === "review" && (
             <>
               {rationale && <div className="ai-response"><div className="hdr"><Icon name="sparkles" size={13} /> AI rationale</div>{rationale}</div>}
@@ -1035,6 +1130,11 @@ function CoaBuilderModal({
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           {phase === "review" && (
             <button className="btn-ghost" onClick={() => exportCoaCsv(`coa-${industry || "client"}.csv`, lines)}><Icon name="download" size={13} /> Export to Excel</button>
+          )}
+          {(phase === "preflight") && (
+            <button className="btn-ai" onClick={generate}>
+              <Icon name="sparkles" size={14} /> Generate COA with AI
+            </button>
           )}
           {phase === "review" && (
             <button className="btn-primary" disabled={saving || !lines.some((l) => l.include)} onClick={() => startSave(async () => { const r = await saveCoa(runId, stepId, lines, rationale, industry); if (!r.error) onDone(); })}>

@@ -1039,8 +1039,49 @@ export async function saveStepText(runId: string, stepId: string, text: string):
 }
 
 /** AI-tailors the industry chart of accounts to this client. */
+/** Extracts account / revenue / expense suggestions from the kickoff-call Fathom transcript for pre-population in the COA dialog. */
+export async function getCallSuggestedAccounts(runId: string): Promise<{ suggestions: string[]; error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { suggestions: [], error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { suggestions: [] };
+  const { data: client } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+
+  // Find the kickoff call step (has a recording payload)
+  const { data: callStep } = await supabase
+    .from("run_steps")
+    .select("payload")
+    .eq("run_id", runId)
+    .not("payload->>recording", "is", null)
+    .order("completed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const p = (callStep?.payload ?? {}) as { recording?: string; notes?: string };
+  let notes = p.notes?.trim() ?? "";
+  if (!notes && (p.recording?.trim() || client?.name)) {
+    const f = await fetchFathomNotes(session.profile.org_id, { shareUrl: p.recording, clientName: client?.name });
+    if (f?.text) notes = f.text;
+  }
+  if (!notes) return { suggestions: [] };
+
+  try {
+    const aiText = await runAi(session.profile.org_id, "coa_suggestions", {
+      runId,
+      system: "You are a UAE accounting expert extracting chart-of-accounts items from a client kickoff call transcript.",
+      prompt: `From this kickoff call transcript, extract all specific financial items mentioned that should become accounts in a chart of accounts. Include: revenue streams, expense categories, specific banks named, payment gateways mentioned, specific suppliers or cost types, asset categories, and any other financially relevant named items. Return ONLY a JSON array of short, clean strings — each is an account name or category. Maximum 20 items. No duplicates. Example: ["Sales - Online", "Bank - ADCB", "Stripe Gateway Clearing", "Salary Expense", "Office Rent"]\n\nTranscript:\n${notes.slice(0, 4000)}`,
+    });
+    const parsed = JSON.parse(aiText.match(/\[[\s\S]*\]/)?.[0] ?? "[]");
+    if (Array.isArray(parsed)) return { suggestions: parsed.filter((s: unknown) => typeof s === "string").slice(0, 20) as string[] };
+  } catch {
+    // ignore AI failure — just return empty
+  }
+  return { suggestions: [] };
+}
+
 export async function generateCoa(
   runId: string,
+  extraAccounts?: string[],
 ): Promise<{ error?: string; accounts?: CoaLine[]; rationale?: string; industry?: string }> {
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in." };
@@ -1066,6 +1107,10 @@ export async function generateCoa(
     .filter((a) => /mandatory/i.test(a.tag))
     .map((a) => ({ code: a.code, account: a.account, section: sectionOf(a), include: true }));
 
+  const extraNote = extraAccounts?.length
+    ? `\n\nADDITIONAL accounts confirmed by the team from the kickoff call — include a dedicated account for EACH of these (they were explicitly discussed and confirmed): [${extraAccounts.join(", ")}].`
+    : "";
+
   const prompt =
     `Client: ${client.name}; industry ${client.industry}; entity ${client.entity_type}; ` +
     `VAT ${client.vat_registered}; CT ${client.ct_registered}; ` +
@@ -1077,6 +1122,7 @@ export async function generateCoa(
     `\n\nMUST-HAVE accounts from the client's intake form — create a dedicated account for EACH of these (they are confirmed by the client, so they must appear): ` +
     `revenue channels [${intakeRevenue.join(", ") || "none given"}]; expense channels [${intakeExpense.join(", ") || "none given"}]; ` +
     `banks [${intakeBanks.join(", ") || "none given"}] (each = a bank/cash account under Assets); payment gateways [${intakeGateways.join(", ") || "none given"}] (each = a gateway clearing account). ` +
+    extraNote +
     `\n\nIMPORTANT — classify by the CLIENT'S OWN primary business activity, NOT the industry of their customers. ` +
     `Example: a marketing agency serving F&B clients is a marketing / professional-services business (service revenue, no inventory/COGS) — it is NOT an F&B business. ` +
     `If the client spans multiple activities, choose the broader fit and add accounts for each material revenue line. The base template above is only a starting point — adapt it to what this client actually does. ` +
