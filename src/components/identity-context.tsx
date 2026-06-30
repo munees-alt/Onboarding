@@ -23,6 +23,10 @@ export interface OrgMember {
 
 /** Master-Admin role-overrides for nav visibility. Shape: { [role]: { [navId]: allow } }. */
 export type AccessOverrides = Partial<Record<Role, Partial<Record<string, boolean>>>>;
+/** dept-level overrides. Shape: { [dept]: { [navId]: allow } }. */
+export type DeptOverrides = Partial<Record<string, Partial<Record<string, boolean>>>>;
+/** user-level overrides. Shape: { [memberId]: { [navId]: allow } }. */
+export type UserOverrides = Partial<Record<string, Partial<Record<string, boolean>>>>;
 
 interface IdentityCtx {
   me: Me;
@@ -30,6 +34,9 @@ interface IdentityCtx {
   setEffectiveRole: (r: Role) => void;
   isAdmin: boolean;
   accessOverrides: AccessOverrides;
+  deptOverrides: DeptOverrides;
+  userOverrides: UserOverrides;
+  currentUserDept: string | null;
   orgMembers: OrgMember[];
 }
 
@@ -38,11 +45,17 @@ const Ctx = createContext<IdentityCtx | null>(null);
 export function IdentityProvider({
   me,
   accessOverrides = {},
+  deptOverrides = {},
+  userOverrides = {},
+  currentUserDept = null,
   orgMembers = [],
   children,
 }: {
   me: Me;
   accessOverrides?: AccessOverrides;
+  deptOverrides?: DeptOverrides;
+  userOverrides?: UserOverrides;
+  currentUserDept?: string | null;
   orgMembers?: OrgMember[];
   children: React.ReactNode;
 }) {
@@ -68,6 +81,9 @@ export function IdentityProvider({
         setEffectiveRole,
         isAdmin,
         accessOverrides,
+        deptOverrides,
+        userOverrides,
+        currentUserDept,
         orgMembers,
       }}
     >

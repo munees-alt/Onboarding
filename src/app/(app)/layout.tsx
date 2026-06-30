@@ -23,6 +23,11 @@ export default async function AppLayout({
   };
   const matrix = s.profile.org_id ? await getAccessMatrix(s.profile.org_id) : null;
   const accessOverrides: AccessOverrides = matrix?.overrides ?? {};
+  const deptOverrides = matrix?.deptOverrides ?? {};
+  const userOverrides = matrix?.userOverrides ?? {};
+  // Resolve the current user's department for dept-level access gating.
+  const currentUserDept: string | null =
+    matrix?.members.find((m) => m.id === me.memberId)?.dept ?? null;
 
   // For master admin: fetch the org's team members so the "View as" selector has names.
   let orgMembers: OrgMember[] = [];
@@ -43,5 +48,16 @@ export default async function AppLayout({
     }));
   }
 
-  return <AppShell me={me} accessOverrides={accessOverrides} orgMembers={orgMembers}>{children}</AppShell>;
+  return (
+    <AppShell
+      me={me}
+      accessOverrides={accessOverrides}
+      deptOverrides={deptOverrides}
+      userOverrides={userOverrides}
+      currentUserDept={currentUserDept}
+      orgMembers={orgMembers}
+    >
+      {children}
+    </AppShell>
+  );
 }

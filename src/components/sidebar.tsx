@@ -15,20 +15,45 @@ const GROUP_LABEL: Record<NavItem["group"], string | null> = {
 
 export function Sidebar({ expanded }: { expanded: boolean }) {
   const pathname = usePathname();
-  const { me, effectiveRole, accessOverrides } = useIdentity();
+  const { me, effectiveRole, accessOverrides, deptOverrides, userOverrides, currentUserDept } = useIdentity();
+
+  // Three-tier resolution: user override → dept override → role override → visibleNav default.
+  const resolveAccess = (navId: string): boolean | null => {
+    const memberId = me.memberId;
+    // 1. User-specific override (highest priority)
+    if (memberId) {
+      const u = userOverrides[memberId]?.[navId];
+      if (typeof u === "boolean") return u;
+    }
+    // 2. Department override
+    if (currentUserDept) {
+      const d = deptOverrides[currentUserDept]?.[navId];
+      if (typeof d === "boolean") return d;
+    }
+    // 3. Role override
+    const r = accessOverrides[effectiveRole]?.[navId];
+    if (typeof r === "boolean") return r;
+    // 4. Default (let visibleNav decide)
+    return null;
+  };
+
   const items = visibleNav(effectiveRole).filter((n) => {
-    const o = accessOverrides[effectiveRole]?.[n.id];
-    if (typeof o === "boolean") return o;
+    const resolved = resolveAccess(n.id);
+    if (typeof resolved === "boolean") return resolved;
     return true; // visibleNav already applied defaults
   }).concat(
     // Also restore items the default would hide but an override explicitly allows.
-    Object.entries(accessOverrides[effectiveRole] ?? {})
-      .filter(([, allow]) => allow === true)
-      .map(([navId]) => {
-        const base = visibleNav("admin").find((n) => n.id === navId);
-        return base;
-      })
-      .filter((n): n is NonNullable<typeof n> => !!n && !visibleNav(effectiveRole).some((v) => v.id === n.id)),
+    (() => {
+      const allNavIds = new Set([
+        ...Object.keys(accessOverrides[effectiveRole] ?? {}),
+        ...Object.keys(currentUserDept ? (deptOverrides[currentUserDept] ?? {}) : {}),
+        ...Object.keys(me.memberId ? (userOverrides[me.memberId] ?? {}) : {}),
+      ]);
+      return [...allNavIds]
+        .filter((navId) => resolveAccess(navId) === true)
+        .map((navId) => visibleNav("admin").find((n) => n.id === navId))
+        .filter((n): n is NonNullable<typeof n> => !!n && !visibleNav(effectiveRole).some((v) => v.id === n.id));
+    })(),
   );
 
   const isActive = (href: string) =>
