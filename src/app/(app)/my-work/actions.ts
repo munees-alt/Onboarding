@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 // Close an auto-generated admin task with the admin's follow-up notes. Saved
 // notes are carried into the next auto-recreation by the cron so context
@@ -13,7 +14,7 @@ export async function closeAdminTask(id: string, notes: string) {
   const trimmed = (notes ?? "").trim();
   const { data: row } = await supabase
     .from("admin_tasks")
-    .select("history,owner_id")
+    .select("history,owner_id,run_id,kind")
     .eq("id", id)
     .maybeSingle();
   if (!row) return { ok: false as const, error: "not_found" };
@@ -26,6 +27,20 @@ export async function closeAdminTask(id: string, notes: string) {
     .from("admin_tasks")
     .update({ status: "closed", notes: trimmed, closed_at: new Date().toISOString(), history: nextHistory })
     .eq("id", id);
+
+  // Auto-close all escalated copies of the same task (same run + kind) so the
+  // chain collapses across all levels when anyone marks it done.
+  if (row.run_id && row.kind) {
+    const adminDb = createAdminClient();
+    await adminDb
+      .from("admin_tasks")
+      .update({ status: "closed", closed_at: new Date().toISOString(), notes: `Auto-closed: resolved by ${session.teamMember?.id ?? "team"}` })
+      .eq("run_id", row.run_id)
+      .eq("kind", row.kind)
+      .eq("status", "open")
+      .neq("id", id);
+  }
+
   revalidatePath("/my-work");
   return { ok: true as const };
 }
@@ -68,6 +83,18 @@ export async function bulkCloseAdminTasks(ids: string[], notes: string): Promise
       .eq("id", id);
   }
   revalidatePath("/my-work");
+  return { ok: true };
+}
+
+// Hard-delete an admin task — master admin only.
+export async function deleteAdminTask(id: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await requireSession();
+  if (session.profile.role !== "admin") return { ok: false, error: "Master admin only." };
+  const supabase = await createClient();
+  const { error } = await supabase.from("admin_tasks").delete().eq("id", id);
+  if (error) return { ok: false, error: error.message };
+  revalidatePath("/my-work");
+  revalidatePath("/", "layout");
   return { ok: true };
 }
 

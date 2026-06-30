@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/icon";
-import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks } from "./actions";
+import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks, deleteAdminTask } from "./actions";
 
 export type AdminTaskItem = {
   id: string;
@@ -11,7 +11,6 @@ export type AdminTaskItem = {
   title: string;
   body: string | null;
   runId: string | null;
-  // step_id holds the weekly_client_updates.id when kind === "weekly_update".
   stepId: string | null;
   clientName: string | null;
   createdAt: string;
@@ -21,14 +20,14 @@ export type AdminTaskItem = {
 };
 
 const KIND_LABEL: Record<string, string> = {
-  zoho_followup: "Zoho setup",
-  ct_reg_followup: "CT registration",
-  vat_reg_followup: "VAT registration",
+  zoho_followup: "Zoho",
+  ct_reg_followup: "CT reg",
+  vat_reg_followup: "VAT reg",
   docs_overdue: "Documents",
   access_overdue: "Access",
   task_overdue: "Task overdue",
   weekly_update: "Weekly update",
-  compliance_alert: "Compliance alert",
+  compliance_alert: "Compliance",
 };
 
 const KIND_COLOR: Record<string, string> = {
@@ -42,53 +41,58 @@ const KIND_COLOR: Record<string, string> = {
   compliance_alert: "#dc2626",
 };
 
+const DAY_MS = 86_400_000;
+
+function ageMs(iso: string) {
+  return Date.now() - new Date(iso).getTime();
+}
+
 function ageLabel(iso: string) {
-  const ms = Date.now() - new Date(iso).getTime();
+  const ms = ageMs(iso);
   const h = Math.floor(ms / 3_600_000);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  if (h < 1) return "just now";
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }
 
-function fmtUtc(iso: string | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
-}
-
-export function MyTasksSection({ items, canScan }: { items: AdminTaskItem[]; canScan: boolean }) {
-  const [filter, setFilter] = useState<"open" | "closed">("open");
+export function MyTasksSection({
+  items,
+  canScan,
+  canDelete,
+}: {
+  items: AdminTaskItem[];
+  canScan: boolean;
+  canDelete?: boolean;
+}) {
+  const [showClosed, setShowClosed] = useState(false);
   const [pending, start] = useTransition();
   const [scanning, setScanning] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
-
-  // Multi-select state
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkNotes, setBulkNotes] = useState("");
   const [bulkSaving, startBulk] = useTransition();
 
-  const shown = items.filter((t) => (filter === "open" ? t.status === "open" : t.status === "closed"));
-  const openCount = items.filter((t) => t.status === "open").length;
-  const shownOpen = shown.filter((t) => t.status === "open");
-  const allOpenSelected = shownOpen.length > 0 && shownOpen.every((t) => selected.has(t.id));
+  const openItems = items.filter((t) => t.status === "open");
+  const closedItems = items.filter((t) => t.status === "closed");
+  const overdue = openItems.filter((t) => ageMs(t.createdAt) >= DAY_MS);
+  const today = openItems.filter((t) => ageMs(t.createdAt) < DAY_MS);
 
-  const toggleItem = (id: string) => {
+  const selectedOpen = [...selected].filter((id) => openItems.some((t) => t.id === id));
+
+  const toggleItem = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
-  };
 
-  const toggleAll = () => {
-    if (allOpenSelected) {
-      setSelected((prev) => { const next = new Set(prev); shownOpen.forEach((t) => next.delete(t.id)); return next; });
-    } else {
-      setSelected((prev) => { const next = new Set(prev); shownOpen.forEach((t) => next.add(t.id)); return next; });
-    }
-  };
-
-  const selectedOpen = [...selected].filter((id) => shownOpen.some((t) => t.id === id));
+  const selectGroup = (group: AdminTaskItem[]) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      group.forEach((t) => next.add(t.id));
+      return next;
+    });
 
   const doBulkClose = () => {
     if (!selectedOpen.length) return;
@@ -105,21 +109,31 @@ export function MyTasksSection({ items, canScan }: { items: AdminTaskItem[]; can
 
   return (
     <div style={{ marginBottom: 28 }}>
+      {/* Header */}
       <div className="section-head" style={{ marginBottom: 12 }}>
         <div>
           <h2 style={{ display: "flex", alignItems: "center", gap: 10 }}>
             Action Items
-            {openCount > 0 && (
-              <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "var(--orange)", color: "#fff" }}>{openCount}</span>
+            {openItems.length > 0 && (
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: overdue.length > 0 ? "#dc2626" : "var(--orange)",
+                  color: "#fff",
+                }}
+              >
+                {openItems.length}
+              </span>
             )}
           </h2>
-          <div className="sub">Auto-created follow-ups and weekly client updates that need your attention. Close with notes to silence the cycle; re-fires if still unresolved.</div>
+          <div className="sub">
+            Only your assigned tasks. Escalates to next level after 2 days unresolved. Close to remove from chain.
+          </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div className="tabs-row" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 3, gap: 2, display: "inline-flex" }}>
-            <button className={"tab-pill" + (filter === "open" ? " active" : "")} onClick={() => setFilter("open")}>Open</button>
-            <button className={"tab-pill" + (filter === "closed" ? " active" : "")} onClick={() => setFilter("closed")}>Closed</button>
-          </div>
           {canScan && (
             <button
               className="btn ghost"
@@ -128,193 +142,564 @@ export function MyTasksSection({ items, canScan }: { items: AdminTaskItem[]; can
                 setScanning(true);
                 runAutoAdminTaskScan().then((res) => {
                   setScanning(false);
-                  if (res.ok) setFlash(`${res.created} new task(s) generated.`);
-                  else setFlash("Scan failed.");
+                  setFlash(res.ok ? `${res.created} new task(s) generated.` : "Scan failed.");
                   setTimeout(() => setFlash(null), 4000);
                 });
               }}
             >
-              <Icon name="refresh-cw" size={13} /> {scanning ? "Scanning…" : "Run scan now"}
+              <Icon name="refresh-cw" size={13} /> {scanning ? "Scanning…" : "Run scan"}
             </button>
           )}
         </div>
       </div>
 
       {flash && (
-        <div style={{ background: "#ecfdf5", border: "1px solid #34d399", color: "#065f46", padding: "8px 12px", borderRadius: 8, fontSize: 12.5, marginBottom: 10 }}>
+        <div
+          style={{
+            background: "#ecfdf5",
+            border: "1px solid #34d399",
+            color: "#065f46",
+            padding: "8px 12px",
+            borderRadius: 8,
+            fontSize: 12.5,
+            marginBottom: 10,
+          }}
+        >
           {flash}
         </div>
       )}
 
-      {/* Bulk action bar — appears when ≥1 open item is checked */}
-      {filter === "open" && selectedOpen.length > 0 && (
-        <div style={{ background: "#fff7ed", border: "1px solid var(--orange)", borderRadius: 10, padding: "12px 14px", marginBottom: 12, display: "grid", gap: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      {/* Bulk action bar */}
+      {selectedOpen.length > 0 && (
+        <div
+          style={{
+            background: "#fff7ed",
+            border: "1px solid var(--orange)",
+            borderRadius: 10,
+            padding: "12px 14px",
+            marginBottom: 12,
+            display: "grid",
+            gap: 10,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Icon name="check-square" size={15} style={{ color: "var(--orange)" }} />
-            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--orange)" }}>{selectedOpen.length} item{selectedOpen.length === 1 ? "" : "s"} selected</span>
-            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Add a shared note and close all selected at once — same note applies to each.</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--orange)" }}>
+              {selectedOpen.length} selected
+            </span>
+            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+              Add a shared note and close all at once.
+            </span>
           </div>
           <textarea
-            placeholder="Shared note (e.g. 'Discussed on Thursday call — all resolved') — applies to every selected item…"
+            placeholder="Shared note (optional) — applies to all selected…"
             value={bulkNotes}
             onChange={(e) => setBulkNotes(e.target.value)}
-            style={{ width: "100%", minHeight: 56, padding: 10, border: "1px solid var(--border)", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }}
+            style={{
+              width: "100%",
+              minHeight: 48,
+              padding: 10,
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              fontSize: 12.5,
+              fontFamily: "inherit",
+              resize: "vertical",
+            }}
           />
           <div style={{ display: "flex", gap: 8 }}>
-            <button
-              className="btn primary"
-              disabled={bulkSaving}
-              onClick={doBulkClose}
-            >
-              {bulkSaving ? "Closing…" : `Close selected (${selectedOpen.length})`}
+            <button className="btn primary" disabled={bulkSaving} onClick={doBulkClose}>
+              {bulkSaving ? "Closing…" : `Close ${selectedOpen.length} items`}
             </button>
-            <button className="btn ghost" onClick={() => { setSelected(new Set()); setBulkNotes(""); }}>
-              Clear selection
+            <button
+              className="btn ghost"
+              onClick={() => {
+                setSelected(new Set());
+                setBulkNotes("");
+              }}
+            >
+              Cancel
             </button>
           </div>
         </div>
       )}
 
-      {shown.length === 0 ? (
-        <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 10, padding: "32px 20px", textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
-          {filter === "open" ? "Nothing for you to chase right now." : "No closed tasks in your history."}
+      {openItems.length === 0 ? (
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: "32px 20px",
+            textAlign: "center",
+            color: "var(--ink-3)",
+            fontSize: 13,
+          }}
+        >
+          Nothing assigned to you right now.
         </div>
       ) : (
         <>
-          {/* Select-all row — only for open items */}
-          {filter === "open" && shownOpen.length > 1 && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", marginBottom: 6, fontSize: 12, color: "var(--ink-3)" }}>
-              <input
-                type="checkbox"
-                checked={allOpenSelected}
-                onChange={toggleAll}
-                style={{ accentColor: "var(--orange)", cursor: "pointer" }}
-              />
-              <span style={{ cursor: "pointer" }} onClick={toggleAll}>
-                {allOpenSelected ? "Deselect all" : `Select all ${shownOpen.length}`}
-              </span>
+          {/* OVERDUE — 1+ day old */}
+          {overdue.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  marginBottom: 8,
+                  padding: "6px 10px",
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  borderRadius: 8,
+                }}
+              >
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: "#dc2626",
+                    flexShrink: 0,
+                    display: "inline-block",
+                  }}
+                />
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "#dc2626",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    flex: 1,
+                  }}
+                >
+                  Overdue — {overdue.length} item{overdue.length !== 1 ? "s" : ""}
+                </span>
+                <button
+                  style={{
+                    fontSize: 11,
+                    color: "#dc2626",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                    textDecoration: "underline",
+                  }}
+                  onClick={() => selectGroup(overdue)}
+                >
+                  Select all
+                </button>
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {overdue.map((t) => (
+                  <TaskCard
+                    key={t.id}
+                    t={t}
+                    pending={pending}
+                    start={start}
+                    selected={selected.has(t.id)}
+                    onToggle={() => toggleItem(t.id)}
+                    canDelete={canDelete}
+                    isOverdue
+                  />
+                ))}
+              </div>
             </div>
           )}
-          <div style={{ display: "grid", gap: 10 }}>
-            {shown.map((t) => (
-              <AdminTaskCard
-                key={t.id}
-                t={t}
-                pending={pending}
-                start={start}
-                selected={selected.has(t.id)}
-                onToggle={filter === "open" ? () => toggleItem(t.id) : undefined}
-              />
-            ))}
-          </div>
+
+          {/* TODAY — less than 1 day old */}
+          {today.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  marginBottom: 8,
+                  padding: "6px 10px",
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  borderRadius: 8,
+                }}
+              >
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: "#f59e0b",
+                    flexShrink: 0,
+                    display: "inline-block",
+                  }}
+                />
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "#b45309",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    flex: 1,
+                  }}
+                >
+                  Today — {today.length} item{today.length !== 1 ? "s" : ""}
+                </span>
+                <button
+                  style={{
+                    fontSize: 11,
+                    color: "#b45309",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                    textDecoration: "underline",
+                  }}
+                  onClick={() => selectGroup(today)}
+                >
+                  Select all
+                </button>
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {today.map((t) => (
+                  <TaskCard
+                    key={t.id}
+                    t={t}
+                    pending={pending}
+                    start={start}
+                    selected={selected.has(t.id)}
+                    onToggle={() => toggleItem(t.id)}
+                    canDelete={canDelete}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </>
+      )}
+
+      {/* RESOLVED — collapsed by default */}
+      {closedItems.length > 0 && (
+        <div>
+          <button
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              color: "var(--ink-3)",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "4px 0",
+              marginBottom: showClosed ? 8 : 0,
+            }}
+            onClick={() => setShowClosed((v) => !v)}
+          >
+            <Icon name={showClosed ? "chevron-down" : "chevron-right"} size={13} />
+            Resolved — {closedItems.length} item{closedItems.length !== 1 ? "s" : ""}
+          </button>
+          {showClosed && (
+            <div style={{ display: "grid", gap: 6 }}>
+              {closedItems.slice(0, 30).map((t) => (
+                <TaskCard key={t.id} t={t} pending={pending} start={start} canDelete={canDelete} />
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-function AdminTaskCard({
-  t, pending, start, selected, onToggle,
+function TaskCard({
+  t,
+  pending,
+  start,
+  selected,
+  onToggle,
+  canDelete,
+  isOverdue,
 }: {
   t: AdminTaskItem;
   pending: boolean;
   start: (cb: () => void) => void;
   selected?: boolean;
   onToggle?: () => void;
+  canDelete?: boolean;
+  isOverdue?: boolean;
 }) {
-  const [open, setOpen] = useState(t.status === "open");
+  const [expanded, setExpanded] = useState(false);
   const [notes, setNotes] = useState("");
+  const [deleting, startDelete] = useTransition();
+  const [confirmDel, setConfirmDel] = useState(false);
+
   const color = KIND_COLOR[t.kind] ?? "#475569";
   const label = KIND_LABEL[t.kind] ?? t.kind;
+  const age = ageLabel(t.createdAt);
+  const isOpen = t.status === "open";
+  const borderColor = isOverdue ? "#dc2626" : color;
   const priorNotes = t.history.filter((h) => h.notes);
 
+  // Extract escalation prefix if present
+  const isEscalated = t.title.startsWith("[Escalated]") || t.title.startsWith("[1 week");
+  const displayTitle = t.title
+    .replace(/^\[Escalated\]\s*/, "")
+    .replace(/^\[1 week unresolved\]\s*/, "");
+
   return (
-    <div style={{ background: "#fff", border: "1px solid var(--border)", borderLeft: `3px solid ${color}`, borderRadius: 10, padding: "14px 16px", outline: selected ? `2px solid var(--orange)` : undefined }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flex: 1, minWidth: 0 }}>
-          {/* Checkbox for open items */}
-          {t.status === "open" && onToggle && (
-            <input
-              type="checkbox"
-              checked={!!selected}
-              onChange={onToggle}
-              style={{ accentColor: "var(--orange)", cursor: "pointer", marginTop: 3, flexShrink: 0 }}
-            />
-          )}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-              <span style={{ fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: color, color: "#fff", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
-              <span style={{ fontSize: 11, color: "var(--ink-3)" }}>{ageLabel(t.createdAt)}</span>
-              {t.kind === "weekly_update" && t.stepId ? (
-                <Link href={`/weekly-updates/${t.stepId}`} style={{ fontSize: 11.5, color: "var(--orange)", textDecoration: "none" }}>
-                  Open draft →
-                </Link>
-              ) : t.runId && (
-                <Link href={`/onboarding/${t.runId}`} style={{ fontSize: 11.5, color: "var(--orange)", textDecoration: "none" }}>
-                  Open run →
-                </Link>
-              )}
-            </div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ink-1)", marginBottom: 4 }}>{t.title}</div>
-            {t.body && (
-              <div style={{ fontSize: 12.5, color: "var(--ink-2)", whiteSpace: "pre-wrap" }}>{t.body}</div>
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid var(--border)",
+        borderLeft: `3px solid ${borderColor}`,
+        borderRadius: 10,
+        padding: "10px 14px",
+        outline: selected ? "2px solid var(--orange)" : undefined,
+      }}
+    >
+      {/* Main row */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        {isOpen && onToggle && (
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onChange={onToggle}
+            style={{ accentColor: "var(--orange)", cursor: "pointer", flexShrink: 0 }}
+          />
+        )}
+
+        {/* Escalation badge */}
+        {isEscalated && (
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              padding: "1px 6px",
+              borderRadius: 999,
+              background: "#dc2626",
+              color: "#fff",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              flexShrink: 0,
+            }}
+          >
+            ↑ Escalated
+          </span>
+        )}
+
+        {/* Type badge */}
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "2px 7px",
+            borderRadius: 999,
+            background: color,
+            color: "#fff",
+            textTransform: "uppercase",
+            letterSpacing: "0.05em",
+            flexShrink: 0,
+          }}
+        >
+          {label}
+        </span>
+
+        {/* Client name — most important */}
+        <span
+          style={{
+            fontSize: 13.5,
+            fontWeight: 700,
+            color: "var(--ink-1)",
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={displayTitle}
+        >
+          {t.clientName ?? displayTitle}
+        </span>
+
+        {/* Age */}
+        <span
+          style={{
+            fontSize: 11,
+            color: isOverdue ? "#dc2626" : "var(--ink-3)",
+            fontWeight: isOverdue ? 700 : 400,
+            flexShrink: 0,
+          }}
+        >
+          {age}
+        </span>
+
+        {/* Action buttons */}
+        {isOpen ? (
+          <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+            <button
+              className="btn ghost"
+              style={{ fontSize: 11.5, padding: "3px 10px" }}
+              disabled={pending}
+              onClick={() => start(() => { closeAdminTask(t.id, ""); })}
+            >
+              Close
+            </button>
+            <button
+              className="btn ghost"
+              style={{ fontSize: 11.5, padding: "3px 10px" }}
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {expanded ? "Hide" : "Note"}
+            </button>
+            {(t.runId || t.stepId) && (
+              <Link
+                href={
+                  t.kind === "weekly_update" && t.stepId
+                    ? `/weekly-updates/${t.stepId}`
+                    : `/onboarding/${t.runId}`
+                }
+                style={{
+                  fontSize: 11.5,
+                  padding: "3px 10px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  color: "var(--orange)",
+                  textDecoration: "none",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Open →
+              </Link>
             )}
           </div>
-        </div>
-        {t.status === "open" ? (
-          <button className="btn ghost" onClick={() => setOpen((v) => !v)} style={{ flexShrink: 0 }}>
-            {open ? "Hide" : "Add notes & close"}
-          </button>
         ) : (
           <button
             className="btn ghost"
+            style={{ fontSize: 11.5, padding: "3px 10px" }}
             disabled={pending}
             onClick={() => start(() => { reopenAdminTask(t.id); })}
-            style={{ flexShrink: 0 }}
           >
             Re-open
           </button>
         )}
+
+        {canDelete &&
+          (confirmDel ? (
+            <>
+              <button
+                className="btn ghost"
+                style={{ color: "#dc2626", borderColor: "#fca5a5", fontSize: 11 }}
+                disabled={deleting}
+                onClick={() => startDelete(async () => { await deleteAdminTask(t.id); })}
+              >
+                {deleting ? "…" : "Confirm"}
+              </button>
+              <button className="btn ghost" style={{ fontSize: 11 }} onClick={() => setConfirmDel(false)}>
+                ×
+              </button>
+            </>
+          ) : (
+            <button
+              className="icon-btn"
+              style={{ color: "#dc2626" }}
+              title="Delete"
+              onClick={() => setConfirmDel(true)}
+            >
+              <Icon name="trash-2" size={13} />
+            </button>
+          ))}
       </div>
 
-      {priorNotes.length > 0 && (
-        <details style={{ marginTop: 10, fontSize: 12 }}>
-          <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>Prior notes ({priorNotes.length})</summary>
-          <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
-            {priorNotes.map((h, i) => (
-              <div key={i} style={{ background: "var(--bg-soft)", padding: "8px 10px", borderRadius: 6 }}>
-                <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 3 }}>{fmtUtc(h.at)} · {h.action}</div>
-                <div style={{ whiteSpace: "pre-wrap" }}>{h.notes}</div>
-              </div>
-            ))}
-          </div>
-        </details>
+      {/* Sub-title (task title when client name is shown separately) */}
+      {t.clientName && (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--ink-2)",
+            marginTop: 3,
+            paddingLeft: isOpen && onToggle ? 20 : 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {displayTitle}
+        </div>
       )}
 
-      {t.status === "open" && open && (
-        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-          <textarea
-            placeholder="What did you find / who did you ping / what's next? These notes carry into the next auto re-fire."
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            style={{ width: "100%", minHeight: 64, padding: 10, border: "1px solid var(--border)", borderRadius: 8, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }}
-          />
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            <button
-              className="btn ghost"
-              disabled={pending}
-              onClick={() => start(() => { closeAdminTask(t.id, ""); })}
+      {/* Expanded: body + notes + close form */}
+      {expanded && (
+        <div style={{ marginTop: 10, paddingLeft: isOpen && onToggle ? 20 : 0 }}>
+          {t.body && (
+            <div
+              style={{
+                fontSize: 12.5,
+                color: "var(--ink-2)",
+                whiteSpace: "pre-wrap",
+                marginBottom: 8,
+                background: "var(--bg-soft)",
+                padding: "8px 10px",
+                borderRadius: 6,
+              }}
             >
-              Close (no notes)
-            </button>
-            <button
-              className="btn primary"
-              disabled={pending || !notes.trim()}
-              onClick={() => start(() => { closeAdminTask(t.id, notes); })}
-            >
-              Save notes & close
-            </button>
-          </div>
+              {t.body}
+            </div>
+          )}
+
+          {priorNotes.length > 0 && (
+            <details style={{ fontSize: 12, marginBottom: 8 }}>
+              <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>
+                Prior notes ({priorNotes.length})
+              </summary>
+              <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
+                {priorNotes.map((h, i) => (
+                  <div key={i} style={{ background: "var(--bg-soft)", padding: "6px 8px", borderRadius: 6 }}>
+                    <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 2 }}>
+                      {h.at ? new Date(h.at).toLocaleDateString() : ""}
+                    </div>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{h.notes}</div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
+          {isOpen && (
+            <>
+              <textarea
+                placeholder="Notes (carry into next re-fire)…"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                style={{
+                  width: "100%",
+                  minHeight: 56,
+                  padding: 10,
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  fontSize: 12.5,
+                  fontFamily: "inherit",
+                  resize: "vertical",
+                }}
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                <button
+                  className="btn ghost"
+                  disabled={pending}
+                  onClick={() => start(() => { closeAdminTask(t.id, ""); })}
+                >
+                  Close (no notes)
+                </button>
+                <button
+                  className="btn primary"
+                  disabled={pending || !notes.trim()}
+                  onClick={() => start(() => { closeAdminTask(t.id, notes); })}
+                >
+                  Save & close
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

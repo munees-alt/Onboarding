@@ -9,10 +9,11 @@ import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboard
 import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, CREDENTIALS_SOP, accessTypeById, clientEmailSlug, type AccessItem, type AccessMode } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, dispatchIntakeLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateUrgentComplianceServices, escalateCatchup, suggestCatchupAssignee, getCatchupGautham, setRunBlocked, suggestAssignee, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveAccess, saveContractAnalysis, saveAccountingSoftware, createComplianceRenewalRun, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, listTemplatesLite, saveLinkedSops, createSalesUploadLink, revealAccessCredentials, suggestTaxAssignee, pushCoaToZoho, markDocReceivedOutside, markAccessReceivedOutside, addDocFollowupNote, addAccessFollowupNote, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, dispatchIntakeLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateUrgentComplianceServices, escalateCatchup, suggestCatchupAssignee, getCatchupGautham, setRunBlocked, suggestAssignee, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveExistingDriveLink, saveAccess, saveContractAnalysis, saveAccountingSoftware, createComplianceRenewalRun, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, listTemplatesLite, saveLinkedSops, createSalesUploadLink, revealAccessCredentials, suggestTaxAssignee, pushCoaToZoho, markDocReceivedOutside, markAccessReceivedOutside, addDocFollowupNote, addAccessFollowupNote, deleteRun, forceCompleteRun, getTaxAssignDefaults, saveTaxAssign, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
 import { loadSlackComposerOptions, listRunAttachableDocs, sendSlackSetupRequest } from "./slack-actions";
+import { runBankReconForCatchup, getBankReconResult, confirmBankReconReady, type BankReconResult } from "./bank-recon-actions";
 import { getPortalAccessCode } from "@/app/portal/[token]/actions";
-import { canManageCoa, canRevealAccessCredentials } from "@/lib/roles";
+import { canManageCoa, canRevealAccessCredentials, isMasterAdmin } from "@/lib/roles";
 
 const DEFAULT_BOARD_COLUMNS = ["To do", "In progress", "Review", "Done"];
 
@@ -47,7 +48,7 @@ function canEditStep(myRole: string, step: TemplateStep): boolean {
 const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior", junior: "Junior", team_lead: "Team Lead", ops_head: "Ops", intern: "Intern" };
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
-import { generateCoa, saveCoa, getCallSuggestedAccounts, generateTaxCodes, saveTaxCodes, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, generateOnePager, saveOnePagerNotes, regenerateOnePager, generateTaskBoardEmailDraft, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
+import { generateCoa, saveCoa, getCallSuggestedAccounts, getCallSuggestedAccountsFromNotes, generateTaxCodes, saveTaxCodes, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, generateOnePager, saveOnePagerNotes, regenerateOnePager, generateTaskBoardEmailDraft, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
 import { formatEngagementPeriod } from "@/lib/contract-format";
 import { archiveUrgentRun } from "../../my-work/actions";
 import { cleanDocLabels } from "@/lib/doc-labels";
@@ -77,6 +78,14 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
   const [toast, setToast] = useState<string | null>(null);
   const [actStep, setActStep] = useState<TemplateStep | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [taxAssignOpen, setTaxAssignOpen] = useState(false);
+  const [taxAssignStep, setTaxAssignStep] = useState<TemplateStep | null>(null);
+  const [taxAssignDefaults, setTaxAssignDefaults] = useState<{
+    am: { id: string; name: string } | null;
+    lead: { id: string; name: string } | null;
+    member: { id: string; name: string } | null;
+    allPeople: { id: string; name: string; role: string }[];
+  } | null>(null);
   const [taskStepPending, setTaskStepPending] = useState<string | null>(null);
   const [chatUnread, setChatUnread] = useState(false);
   const { effectiveRole } = useIdentity();
@@ -145,6 +154,12 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
     if (step.act?.type === "taskboard") {
       setTaskStepPending(step.id);
       setTab("tasks");
+    } else if (step.act?.type === "tax_assign") {
+      getTaxAssignDefaults(detail.runId).then((defaults) => {
+        setTaxAssignDefaults(defaults);
+        setTaxAssignStep(step);
+        setTaxAssignOpen(true);
+      });
     } else {
       setActStep(step);
     }
@@ -211,6 +226,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
             <BlockControls runId={detail.runId} currentReason={null} compact={false} onChange={() => router.refresh()} />
           )}
           <DeleteRunButton runId={detail.runId} />
+          <MasterAdminRunControls runId={detail.runId} />
         </div>
         <div className="tabs-row" style={{ marginTop: 10, marginBottom: -12, borderBottom: "none" }}>
           {TABS.map((t) => (
@@ -429,6 +445,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         <DriveBuilderModal
           runId={detail.runId}
           stepId={actStep.id}
+          clientDriveLink={detail.clientDriveLink}
           onClose={() => setActStep(null)}
           onDone={() => { setActStep(null); showToast("Drive folders created & link shared"); router.refresh(); }}
         />
@@ -452,6 +469,16 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
+      {actStep && actStep.act?.type === "bankrecon" && (
+        <BankReconModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          clientName={detail.clientName ?? "Client"}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Bank reconciliation marked ready for review"); router.refresh(); }}
+        />
+      )}
+
       {actStep && actStep.act?.type === "deck" && (
         <DeckModal
           runId={detail.runId}
@@ -460,7 +487,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      {actStep && ["agenda", "ai", "mom", "datareq", "report"].includes(actStep.act?.type ?? "") && (
+      {actStep && ["agenda", "ai", "mom", "datareq", "report", "catchup_query", "catchup_followup", "catchup_review"].includes(actStep.act?.type ?? "") && (
         <AiTextModal
           runId={detail.runId}
           stepId={actStep.id}
@@ -472,6 +499,26 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
           ].filter((v, i, a) => v && a.indexOf(v) === i)}
           onClose={() => setActStep(null)}
           onDone={() => { setActStep(null); showToast(`${actStep.title} — done`); router.refresh(); }}
+        />
+      )}
+
+      {actStep && actStep.act?.type === "catchup_missing" && (
+        <CatchupMissingModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          title={actStep.title}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Missing-items message saved"); router.refresh(); }}
+        />
+      )}
+
+      {actStep && actStep.act?.type === "zoho_account" && (
+        <ZohoAccountMessageModal
+          runId={detail.runId}
+          stepId={actStep.id}
+          title={actStep.title}
+          onClose={() => setActStep(null)}
+          onDone={() => { setActStep(null); showToast("Zoho account request message saved"); router.refresh(); }}
         />
       )}
 
@@ -548,7 +595,17 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      {actStep && !["coa", "diagram", "catchup", "project", "calendar", "triage", "agenda", "ai", "mom", "datareq", "report", "deck", "uploads", "intake", "drivelink", "access", "contract", "accountingsoftware", "zoho", "onepager", "catchup_config", "urgent_config"].includes(actStep.act?.type ?? "") && (
+      {taxAssignOpen && taxAssignStep && taxAssignDefaults && (
+        <TaxAssignModal
+          runId={detail.runId}
+          step={taxAssignStep}
+          defaults={taxAssignDefaults}
+          onClose={() => { setTaxAssignOpen(false); setTaxAssignStep(null); setTaxAssignDefaults(null); }}
+          onDone={() => { setTaxAssignOpen(false); setTaxAssignStep(null); setTaxAssignDefaults(null); showToast("Tax team assigned"); router.refresh(); }}
+        />
+      )}
+
+      {actStep && !["coa", "taxcodes", "diagram", "catchup", "project", "calendar", "triage", "agenda", "ai", "mom", "datareq", "report", "deck", "uploads", "intake", "drivelink", "access", "contract", "accountingsoftware", "zoho", "onepager", "catchup_config", "urgent_config", "tax_assign", "catchup_missing", "zoho_account", "catchup_query", "catchup_followup", "catchup_review", "bankrecon"].includes(actStep.act?.type ?? "") && (
         <RunStepModal
           runId={detail.runId}
           step={actStep}
@@ -933,9 +990,54 @@ function downloadCsvRows(filename: string, rows: (string | number)[][]) {
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
+function coaAccountType(section: string, account: string): string {
+  const sec = section.toLowerCase();
+  const acc = account.toLowerCase();
+
+  if (sec.includes("asset")) {
+    if (acc.includes("deferred tax")) return "Deferred Tax Asset";
+    if (acc.includes("clearing") || acc.includes("suspense")) return "Payment Clearing Account";
+    if (acc.includes("intangible") || acc.includes("goodwill") || acc.includes("patent") || acc.includes("trademark") || acc.includes("software licence") || acc.includes("software license")) return "Intangible Asset";
+    if (acc.includes("fixed asset") || acc.includes("property") || acc.includes("equipment") || acc.includes("vehicle") || acc.includes("furniture") || acc.includes("machinery") || acc.includes("land") || acc.includes("building") || acc.includes("leasehold")) return "Fixed Asset";
+    if (acc.includes("non-current") || acc.includes("non current") || acc.includes("noncurrent") || acc.includes("long-term") || acc.includes("long term")) return "Non Current Asset";
+    if (acc.includes("receivable") || acc.includes("debtor")) return "Accounts Receivable";
+    if (acc.includes("inventory") || acc.includes("stock") || acc.includes("goods")) return "Stock";
+    if (acc.includes("cash")) return "Cash";
+    if (acc.includes("bank") || acc.includes("current account") || acc.includes("savings account") || acc.includes("adcb") || acc.includes("fab ") || acc.includes("enbd") || acc.includes("hsbc") || acc.includes("stripe") || acc.includes("payoneer") || acc.includes("wise")) return "Bank";
+    if (sec.includes("current") || acc.includes("prepaid") || acc.includes("advance") || acc.includes("deposit")) return "Other Current Asset";
+    return "Other Asset";
+  }
+
+  if (sec.includes("liabilit")) {
+    if (acc.includes("deferred tax")) return "Deferred Tax Liability";
+    if (acc.includes("credit card")) return "Credit Card";
+    if (acc.includes("non-current") || acc.includes("non current") || acc.includes("noncurrent") || acc.includes("long-term") || acc.includes("long term") || acc.includes("loan") || acc.includes("mortgage")) return "Non Current Liability";
+    if (acc.includes("accounts payable") || acc.includes("trade payable") || acc.includes("creditor") || acc.includes("supplier")) return "Accounts Payable";
+    if (sec.includes("current") || acc.includes("vat") || acc.includes("tax payable") || acc.includes("accrued") || acc.includes("payroll") || acc.includes("salary") || acc.includes("advance received") || acc.includes("customer deposit")) return "Other Current Liability";
+    return "Other Liability";
+  }
+
+  if (sec.includes("equity") || sec.includes("capital") || sec.includes("retained") || sec.includes("owner")) return "Equity";
+
+  if (sec.includes("income") || sec.includes("revenue") || sec.includes("sales")) {
+    if (acc.includes("other income") || acc.includes("interest income") || acc.includes("gain on") || acc.includes("miscellaneous income") || acc.includes("exchange gain") || acc.includes("dividend")) return "Other Income";
+    return "Income";
+  }
+
+  if (sec.includes("expense") || sec.includes("cost") || sec.includes("cogs")) {
+    if (acc.includes("cost of goods") || acc.includes("cost of sales") || acc.includes("direct cost") || acc.includes("cogs") || acc.includes("purchase") || acc.includes("raw material")) return "Cost Of Goods Sold";
+    if (acc.includes("depreciation") || acc.includes("amortis") || acc.includes("interest expense") || acc.includes("loss on") || acc.includes("exchange loss") || acc.includes("other expense")) return "Other Expense";
+    return "Expense";
+  }
+
+  return section;
+}
+
 function exportCoaCsv(filename: string, lines: CoaLine[]) {
-  const rows: (string | number)[][] = [["Section", "Code", "Account", "Included"]];
-  lines.forEach((l) => rows.push([l.section, l.code, l.account, l.include ? "Yes" : "No"]));
+  const rows: (string | number)[][] = [["Account Type", "Account Name", "Account Code", "Section"]];
+  lines
+    .filter((l) => l.include)
+    .forEach((l) => rows.push([coaAccountType(l.section, l.account), l.account, l.code, l.section]));
   downloadCsvRows(filename, rows);
 }
 
@@ -952,6 +1054,9 @@ function CoaBuilderModal({
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [customInput, setCustomInput] = useState("");
   const [customAccounts, setCustomAccounts] = useState<string[]>([]);
+  // Manual Fathom notes input — used when the auto-fetch found no call recording
+  const [fathomNotes, setFathomNotes] = useState("");
+  const [fathomParseLoading, setFathomParseLoading] = useState(false);
   const [lines, setLines] = useState<CoaLine[]>([]);
   const [rationale, setRationale] = useState("");
   const [industry, setIndustry] = useState("");
@@ -1035,6 +1140,20 @@ function CoaBuilderModal({
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                     <Icon name="sparkles" size={13} style={{ color: "var(--purple)" }} />
                     <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>From your kickoff call — check the ones to include</span>
+                    <span style={{ flex: 1 }} />
+                    <button
+                      style={{ fontSize: 11, color: "var(--orange)", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}
+                      onClick={() => setChecked(Object.fromEntries(suggestions.map((s) => [s, true])))}
+                    >
+                      Select all
+                    </button>
+                    <span style={{ color: "var(--ink-3)", fontSize: 11 }}>·</span>
+                    <button
+                      style={{ fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}
+                      onClick={() => setChecked(Object.fromEntries(suggestions.map((s) => [s, false])))}
+                    >
+                      Deselect all
+                    </button>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                     {suggestions.map((s) => (
@@ -1053,8 +1172,32 @@ function CoaBuilderModal({
               )}
 
               {phase === "preflight" && suggestions.length === 0 && (
-                <div style={{ fontSize: 13, color: "var(--ink-3)", marginBottom: 16, padding: "10px 14px", background: "var(--surface)", borderRadius: 8 }}>
-                  No specific accounts were found in the kickoff call notes. You can add any below.
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, color: "var(--ink-3)", marginBottom: 12, padding: "10px 14px", background: "var(--surface)", borderRadius: 8 }}>
+                    No accounts auto-fetched from the kickoff call. Paste the Fathom call notes below so the AI can extract the accounts discussed on the call — then click &ldquo;Extract from notes&rdquo;.
+                  </div>
+                  <div className="field" style={{ marginBottom: 8 }}>
+                    <label>Fathom call notes (paste here)</label>
+                    <textarea
+                      value={fathomNotes}
+                      onChange={(e) => setFathomNotes(e.target.value)}
+                      placeholder="Paste the Fathom transcript or meeting notes here…"
+                      style={{ minHeight: 100, width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13, lineHeight: 1.5, fontFamily: "inherit", resize: "vertical" }}
+                    />
+                  </div>
+                  {fathomNotes.trim() && (
+                    <button className="btn-soft" disabled={fathomParseLoading} onClick={async () => {
+                      setFathomParseLoading(true);
+                      const r = await getCallSuggestedAccountsFromNotes(runId, fathomNotes);
+                      if (r.suggestions.length) {
+                        setSuggestions(r.suggestions);
+                        setChecked(Object.fromEntries(r.suggestions.map((s) => [s, true])));
+                      }
+                      setFathomParseLoading(false);
+                    }}>
+                      {fathomParseLoading ? "Extracting…" : <><Icon name="sparkles" size={13} /> Extract accounts from notes</>}
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -1100,6 +1243,23 @@ function CoaBuilderModal({
             <>
               {rationale && <div className="ai-response"><div className="hdr"><Icon name="sparkles" size={13} /> AI rationale</div>{rationale}</div>}
               {error && <div style={{ fontSize: 12, color: "var(--amber)", margin: "8px 0" }}>{error}</div>}
+              {lines.length > 0 && (
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginBottom: 6 }}>
+                  <button
+                    style={{ fontSize: 11, color: "var(--orange)", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}
+                    onClick={() => setLines((arr) => arr.map((l) => ({ ...l, include: true })))}
+                  >
+                    Select all
+                  </button>
+                  <span style={{ color: "var(--ink-3)", fontSize: 11 }}>·</span>
+                  <button
+                    style={{ fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}
+                    onClick={() => setLines((arr) => arr.map((l) => ({ ...l, include: false })))}
+                  >
+                    Deselect all
+                  </button>
+                </div>
+              )}
               {sections.map((sec) => {
                 const count = lines.filter((l) => l.section === sec).length;
                 const on = lines.filter((l) => l.section === sec && l.include).length;
@@ -3650,7 +3810,7 @@ async function downloadDeckPptxLegacy(deck: DeckData) {
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 type OnePagerSection = { heading: string; items: string[] };
-type OnePagerData = { generated?: string; sections?: OnePagerSection[]; generatedAt?: string; notes?: string };
+type OnePagerData = { generated?: string; sections?: OnePagerSection[]; generatedAt?: string; notes?: string; whatsappMsg?: string };
 
 function OnePagerModal({ runId, stepId, onClose, onDone }: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
   const supabase = createClient();
@@ -3661,6 +3821,8 @@ function OnePagerModal({ runId, stepId, onClose, onDone }: { runId: string; step
   const [notes, setNotes] = useState("");
   const [clientName, setClientName] = useState("Client");
   const [generatedText, setGeneratedText] = useState("");
+  const [whatsappMsg, setWhatsappMsg] = useState("");
+  const [waCopied, setWaCopied] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -3674,6 +3836,7 @@ function OnePagerModal({ runId, stepId, onClose, onDone }: { runId: string; step
         setData(d);
         setNotes(d.notes ?? "");
         setGeneratedText(d.generated ?? "");
+        setWhatsappMsg(d.whatsappMsg ?? "");
       }
       const cl = (r as { clients?: { name?: string } | { name?: string }[] } | null)?.clients;
       const name = Array.isArray(cl) ? cl[0]?.name : cl?.name;
@@ -3691,6 +3854,7 @@ function OnePagerModal({ runId, stepId, onClose, onDone }: { runId: string; step
       if (r.error || !r.data) { setError(r.error ?? "Failed to generate."); return; }
       setData({ ...r.data, notes });
       setGeneratedText(r.data.generated);
+      if (r.data.whatsappMsg) setWhatsappMsg(r.data.whatsappMsg);
     });
   };
 
@@ -3778,6 +3942,41 @@ function OnePagerModal({ runId, stepId, onClose, onDone }: { runId: string; step
                     style={{ width: "100%", fontSize: 13, fontFamily: "inherit" }}
                   />
                 </div>
+
+                {whatsappMsg && (
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 14, background: "#F0FDF4" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <Icon name="message-square" size={13} />
+                        <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-2)" }}>WhatsApp message — copy &amp; paste when sharing</span>
+                      </div>
+                      <button
+                        className="btn-ghost"
+                        style={{ padding: "2px 10px", fontSize: 12 }}
+                        onClick={() => { navigator.clipboard?.writeText(whatsappMsg); setWaCopied(true); setTimeout(() => setWaCopied(false), 2000); }}
+                      >
+                        {waCopied ? "Copied!" : "Copy"}
+                      </button>
+                    </div>
+                    <textarea
+                      value={whatsappMsg}
+                      onChange={(e) => setWhatsappMsg(e.target.value)}
+                      rows={8}
+                      style={{ width: "100%", fontSize: 13, fontFamily: "inherit", lineHeight: 1.55, border: "1px solid var(--border)", borderRadius: 6, padding: "8px 10px", background: "#fff", resize: "vertical" }}
+                    />
+                    <div style={{ marginTop: 8 }}>
+                      <a
+                        href={`https://wa.me/?text=${encodeURIComponent(whatsappMsg)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="btn-ghost"
+                        style={{ fontSize: 12, padding: "3px 10px" }}
+                      >
+                        <Icon name="external-link" size={12} /> Open in WhatsApp
+                      </a>
+                    </div>
+                  </div>
+                )}
               </div>
               {data.generatedAt && (
                 <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8 }}>
@@ -3947,7 +4146,10 @@ function DeckEdit({ n, label, pill, children }: { n: string; label: string; pill
 function AiTextModal({
   runId, stepId, actType, title, contacts = [], onClose, onDone,
 }: { runId: string; stepId: string; actType: string; title: string; contacts?: string[]; onClose: () => void; onDone: () => void }) {
-  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  // catchup_query and catchup_followup show a notes input before generating
+  const needsNotesPreflight = actType === "catchup_query" || actType === "catchup_followup";
+  const [phase, setPhase] = useState<"preflight" | "loading" | "ready" | "error">(needsNotesPreflight ? "preflight" : "loading");
+  const [notes, setNotes] = useState("");
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
@@ -3957,21 +4159,43 @@ function AiTextModal({
   const [waCopied, setWaCopied] = useState(false);
   const waText = renderWhatsappWelcome(waContact);
 
-  const generate = () => {
+  const generate = (extraCtx?: string) => {
     setPhase("loading"); setError(null);
-    generateStepText(runId, actType).then((r) => {
+    generateStepText(runId, actType, extraCtx).then((r) => {
       if (r.error) { setError(r.error); setPhase("error"); }
       else { setText(r.text ?? ""); setPhase("ready"); }
     });
   };
-  // generate on first open
-  useEffect(() => { generate(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // generate on first open only when no preflight needed
+  useEffect(() => {
+    if (!needsNotesPreflight) generate();
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
 
   return (
     <div className="modal-overlay open" onClick={onClose}>
       <div className="modal" style={{ width: 640 }} onClick={(e) => e.stopPropagation()}>
         <div className="hd"><h3>{title}</h3><div className="sub">{actType === "mom" ? "Welcome email — the saved template with your client's name, company, portal link and the meeting minutes filled in. Review and edit before sending." : "AI draft — review and edit before saving. Powered by your configured model."}</div></div>
         <div className="bd" style={{ maxHeight: "62vh" }}>
+          {phase === "preflight" && needsNotesPreflight && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6 }}>
+                {actType === "catchup_query"
+                  ? "Add any notes to include in the query-sheet message before generating (e.g. specific items to highlight, the Google Sheet link, or a deadline). Leave blank to generate from context only."
+                  : "Add any notes or updates to include in the follow-up message before generating (e.g. which items are still open, urgency). Leave blank to generate from context only."}
+              </div>
+              <div className="field">
+                <label>Notes to include {actType === "catchup_query" ? "(Google Sheet link, specific queries, deadline, etc.)" : "(open items, urgency, etc.)"} — optional</label>
+                <textarea
+                  className="notes"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder={actType === "catchup_query" ? "e.g. Sheet link: https://docs.google.com/…  — please respond by 5 Jan" : "e.g. Items still open: transactions on 12 Dec, vendor ABC"}
+                  style={{ minHeight: 100, fontFamily: "inherit" }}
+                />
+              </div>
+            </div>
+          )}
           {phase === "loading" && (
             <div style={{ padding: 30, textAlign: "center", color: "var(--purple)" }}>
               <div className="ai-loading"><span className="d" /><span className="d" /><span className="d" /></div>
@@ -3982,14 +4206,14 @@ function AiTextModal({
             <div className="ai-flag" style={{ marginTop: 0 }}>
               <div className="top"><span className="icon-glow" style={{ background: "var(--red)" }}><Icon name="alert-triangle" size={16} /></span><h4>Couldn&apos;t generate</h4></div>
               <div className="body" style={{ color: "var(--red)" }}>{error}</div>
-              <div className="actions"><button className="btn-soft" onClick={generate}>Try again</button></div>
+              <div className="actions"><button className="btn-soft" onClick={() => generate(notes || undefined)}>Try again</button></div>
             </div>
           )}
           {phase === "ready" && (
             <>
               <div className="ai-response" style={{ marginTop: 0 }}><div className="hdr"><Icon name="sparkles" size={13} /> AI draft — editable</div></div>
               <textarea className="notes" value={text} onChange={(e) => setText(e.target.value)} style={{ minHeight: 240, marginTop: 8, fontFamily: "inherit" }} />
-              <button className="btn-soft" onClick={generate} style={{ marginTop: 8 }}><Icon name="rotate-ccw" size={13} /> Regenerate</button>
+              <button className="btn-soft" onClick={() => generate(notes || undefined)} style={{ marginTop: 8 }}><Icon name="rotate-ccw" size={13} /> Regenerate</button>
             </>
           )}
 
@@ -4022,8 +4246,13 @@ function AiTextModal({
         </div>
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          {phase === "preflight" && needsNotesPreflight && (
+            <button className="btn-ai" onClick={() => generate(notes || undefined)}>
+              <Icon name="sparkles" size={13} /> Generate with AI
+            </button>
+          )}
           {/* Agenda step → WhatsApp ONLY (no email). Confirmation required: team copies the drafted message + opens WhatsApp, then marks the step Save & confirm. */}
-          {actType === "agenda" && (
+          {actType === "agenda" && phase !== "preflight" && (
             <>
               <button className="btn-soft" disabled={!text.trim()} onClick={() => { navigator.clipboard?.writeText(text); setWaCopied(true); setTimeout(() => setWaCopied(false), 1800); }}>
                 <Icon name={waCopied ? "check" : "copy"} size={13} /> {waCopied ? "Copied — paste into WhatsApp" : "Copy message"}
@@ -4033,7 +4262,7 @@ function AiTextModal({
               </a>
             </>
           )}
-          {["mom", "ai", "welcome_email", "deck", "datareq", "report"].includes(actType) && (
+          {["mom", "ai", "welcome_email", "deck", "datareq", "report"].includes(actType) && phase !== "preflight" && (
             <button className="btn-ai" disabled={saving || phase !== "ready" || !text.trim()} onClick={() => startSave(async () => {
               const s = await sendClientEmail(runId, actType === "mom" ? WELCOME_EMAIL_SUBJECT : title, text);
               if (s.error) { setError(s.error); setPhase("ready"); return; }
@@ -4041,7 +4270,9 @@ function AiTextModal({
               onDone();
             })}><Icon name="send" size={13} /> Send to client</button>
           )}
-          <button className="btn-primary" disabled={saving || phase !== "ready" || !text.trim()} onClick={() => startSave(async () => { const r = await saveStepText(runId, stepId, text); if (!r.error) onDone(); })}>{saving ? "Saving…" : "Save & confirm"}</button>
+          {phase !== "preflight" && (
+            <button className="btn-primary" disabled={saving || phase !== "ready" || !text.trim()} onClick={() => startSave(async () => { const r = await saveStepText(runId, stepId, text); if (!r.error) onDone(); })}>{saving ? "Saving…" : "Save & confirm"}</button>
+          )}
         </div>
       </div>
     </div>
@@ -4904,10 +5135,13 @@ function IntakeBuilderModal({
 }
 
 function DriveBuilderModal({
-  runId, stepId, onClose, onDone,
-}: { runId: string; stepId: string; onClose: () => void; onDone: () => void }) {
+  runId, stepId, clientDriveLink, onClose, onDone,
+}: { runId: string; stepId: string; clientDriveLink?: string | null; onClose: () => void; onDone: () => void }) {
+  const [mode, setMode] = useState<"create" | "existing">("create");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
+  const [existingLink, setExistingLink] = useState("");
+  const [err, setErr] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
 
   const months = (() => {
@@ -4919,28 +5153,114 @@ function DriveBuilderModal({
     return out;
   })();
 
+  // If a drive link already exists for this client (from a prior onboarding run),
+  // show a simplified view: just open Drive and confirm. No need to re-enter the link.
+  if (clientDriveLink) {
+    return (
+      <div className="modal-overlay open" onClick={onClose}>
+        <div className="modal" style={{ width: 520 }} onClick={(e) => e.stopPropagation()}>
+          <div className="hd">
+            <h3>Open client Drive folder</h3>
+            <div className="sub">Drive folder already linked from the onboarding run. Click to open it in a new tab, then confirm.</div>
+          </div>
+          <div className="bd">
+            <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+              <Icon name="folder" size={20} style={{ color: "#16a34a", flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#166534", marginBottom: 2 }}>Drive folder linked</div>
+                <div style={{ fontSize: 12, color: "#166534", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{clientDriveLink}</div>
+              </div>
+              <a href={clientDriveLink} target="_blank" rel="noreferrer" className="btn-soft" style={{ whiteSpace: "nowrap" }}>
+                <Icon name="external-link" size={13} /> Open Drive
+              </a>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 10 }}>Once you&apos;ve confirmed access, click &ldquo;Confirm &amp; continue&rdquo; to mark this step done.</div>
+            {err && <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--red)" }}>{err}</div>}
+          </div>
+          <div className="ft">
+            <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+            <button className="btn-primary" disabled={saving} onClick={() => startSave(async () => {
+              const r = await saveExistingDriveLink(runId, stepId, clientDriveLink);
+              if (r.error) setErr(r.error); else onDone();
+            })}>{saving ? "Saving…" : "Confirm & continue"}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-overlay open" onClick={onClose}>
       <div className="modal" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
-        <div className="hd"><h3>Create & share Drive folders</h3><div className="sub">Set the service period — we build the Books folders for those months and share the Drive link.</div></div>
-        <div className="bd" style={{ maxHeight: "60vh" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div className="field"><label>Service period — start</label><input type="month" value={start} onChange={(e) => setStart(e.target.value)} /></div>
-            <div className="field"><label>Service period — end</label><input type="month" value={end} onChange={(e) => setEnd(e.target.value)} /></div>
-          </div>
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 6 }}>Folders to create</div>
-            <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7 }}>
-              📁 Company Documents · 📁 Books{months.length ? ` (${months.length} months: ${months[0]} → ${months[months.length - 1]})` : ""} · 📁 Financial Documents · 📁 Cleanup · 📁 Others
-            </div>
-          </div>
+        <div className="hd">
+          <h3>Drive folder setup</h3>
+          <div className="sub">Create a new folder structure or save an existing Drive link the client already shared.</div>
         </div>
+        <div className="bd" style={{ maxHeight: "60vh" }}>
+
+          {/* Mode toggle */}
+          <div style={{ display: "flex", gap: 0, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 18 }}>
+            {(["create", "existing"] as const).map((m) => (
+              <button key={m} onClick={() => { setMode(m); setErr(null); }}
+                style={{ flex: 1, padding: "10px 0", fontSize: 13, fontWeight: mode === m ? 700 : 400, border: "none", cursor: "pointer",
+                  background: mode === m ? "var(--orange)" : "#fff", color: mode === m ? "#fff" : "var(--ink-2)", transition: "background 0.15s" }}>
+                {m === "create" ? "Create new folders" : "Client already has a Drive"}
+              </button>
+            ))}
+          </div>
+
+          {mode === "create" ? (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div className="field"><label>Service period — start</label><input type="month" value={start} onChange={(e) => setStart(e.target.value)} /></div>
+                <div className="field"><label>Service period — end</label><input type="month" value={end} onChange={(e) => setEnd(e.target.value)} /></div>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 6 }}>Folders to create</div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7 }}>
+                  📁 Company Documents · 📁 Books{months.length ? ` (${months.length} months: ${months[0]} → ${months[months.length - 1]})` : ""} · 📁 Financial Documents · 📁 Cleanup · 📁 Others
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, color: "var(--ink-2)", marginBottom: 14, lineHeight: 1.6 }}>
+                Paste the Google Drive folder link the client already shared. It will be saved against this client and used in compliance calendar, audit docs, and all future steps.
+              </div>
+              <div className="field">
+                <label>Google Drive folder link</label>
+                <input
+                  type="url"
+                  value={existingLink}
+                  onChange={(e) => { setExistingLink(e.target.value); setErr(null); }}
+                  placeholder="https://drive.google.com/drive/folders/…"
+                  style={{ width: "100%" }}
+                />
+              </div>
+              {existingLink.trim() && (
+                <div style={{ marginTop: 8, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, color: "#166534", display: "flex", alignItems: "center", gap: 6 }}>
+                  <Icon name="check-circle" size={13} /> Link saved — no new folders will be created. The step will be marked complete.
+                </div>
+              )}
+            </>
+          )}
+
+          {err && <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--red)" }}>{err}</div>}
+        </div>
+
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className="btn-primary" disabled={saving} onClick={() => startSave(async () => {
-            const r = await saveDrive(runId, stepId, { periodStart: start || undefined, periodEnd: end || undefined, contract: null });
-            if (!r.error) onDone();
-          })}>{saving ? "Creating…" : "Create folders & share link"}</button>
+          {mode === "create" ? (
+            <button className="btn-primary" disabled={saving} onClick={() => startSave(async () => {
+              const r = await saveDrive(runId, stepId, { periodStart: start || undefined, periodEnd: end || undefined, contract: null });
+              if (r.error) setErr(r.error); else onDone();
+            })}>{saving ? "Creating…" : "Create folders & share link"}</button>
+          ) : (
+            <button className="btn-primary" disabled={saving || !existingLink.trim()} onClick={() => startSave(async () => {
+              const r = await saveExistingDriveLink(runId, stepId, existingLink);
+              if (r.error) setErr(r.error); else onDone();
+            })}>{saving ? "Saving…" : "Save link & complete step"}</button>
+          )}
         </div>
       </div>
     </div>
@@ -4953,6 +5273,7 @@ function ZohoPushModal({
   const supabase = createClient();
   const [coaCount, setCoaCount] = useState<number | null>(null);
   const [pushing, startPush] = useTransition();
+  const [markingDone, startMarkDone] = useTransition();
   const [result, setResult] = useState<{ created: number; skipped: number; failed: number; errors: Array<{ code: string; account: string; reason: string }> } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -5015,8 +5336,20 @@ function ZohoPushModal({
             </div>
           )}
         </div>
-        <div className="modal-foot">
+        <div className="modal-foot" style={{ flexWrap: "wrap", gap: 8 }}>
           <button className="btn-ghost" onClick={close}>{result ? "Close" : "Cancel"}</button>
+          <button
+            className="btn-ghost"
+            style={{ color: "#15803d", borderColor: "#86efac" }}
+            disabled={markingDone || pushing}
+            onClick={() => startMarkDone(async () => {
+              const r = await completeStep(runId, stepId);
+              if ((r as { error?: string })?.error) setError((r as { error?: string }).error ?? "Failed");
+              else onDone();
+            })}
+          >
+            <Icon name="file-spreadsheet" size={13} /> {markingDone ? "Saving…" : "Exported to Excel & imported"}
+          </button>
           {!result && (
             <button className="btn-primary" onClick={push} disabled={pushing || coaCount === 0}>
               {pushing ? "Pushing…" : `Push ${coaCount ?? 0} accounts to Zoho`}
@@ -5123,6 +5456,198 @@ function CatchupConfigModal({
   );
 }
 
+// ── Catch-up: draft missing-items message with AI ─────────────────────────
+// Pre-flight: team checks off which Documents and Access items are MISSING.
+// The checked items feed the AI prompt so the drafted message lists them specifically.
+const CATCHUP_DOC_ITEMS = ["Trade Licence", "MOA / AOA", "Bank statements (catch-up period)", "Sales invoices", "Vendor bills", "Contracts (if any)", "Salary sheet (if any)", "Tracker (if any)"];
+const CATCHUP_ACCESS_ITEMS = ["FTA portal access", "Bank access", "Payment gateway access (if any)", "Other (specify)"];
+
+function CatchupMissingModal({ runId, stepId, title, onClose, onDone }: { runId: string; stepId: string; title: string; onClose: () => void; onDone: () => void }) {
+  const [phase, setPhase] = useState<"preflight" | "loading" | "ready" | "error">("preflight");
+  const [missingDocs, setMissingDocs] = useState<Record<number, boolean>>({});
+  const [missingAccess, setMissingAccess] = useState<Record<number, boolean>>({});
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, startSave] = useTransition();
+
+  const generate = () => {
+    const docs = CATCHUP_DOC_ITEMS.filter((_, i) => missingDocs[i]);
+    const access = CATCHUP_ACCESS_ITEMS.filter((_, i) => missingAccess[i]);
+    const extraCtx = [
+      docs.length ? `Missing documents: ${docs.join(", ")}` : "No document items marked missing.",
+      access.length ? `Missing access (Zoho Vault): ${access.join(", ")}` : "No access items marked missing.",
+    ].join("\n");
+    setPhase("loading"); setError(null);
+    generateStepText(runId, "catchup_missing", extraCtx).then((r) => {
+      if (r.error) { setError(r.error); setPhase("error"); }
+      else { setText(r.text ?? ""); setPhase("ready"); }
+    });
+  };
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>{title}</h3><div className="sub">Tick what is MISSING — the AI will draft a message listing only those items.</div></div>
+        <div className="bd" style={{ maxHeight: "65vh" }}>
+          {phase === "preflight" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 8 }}>Documents — tick what is MISSING</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {CATCHUP_DOC_ITEMS.map((item, i) => (
+                    <label key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", padding: "4px 0" }}>
+                      <input type="checkbox" checked={!!missingDocs[i]} onChange={(e) => setMissingDocs((p) => ({ ...p, [i]: e.target.checked }))} style={{ width: 14, height: 14 }} />
+                      <span style={{ color: missingDocs[i] ? "var(--red)" : "var(--ink-2)" }}>{item}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 8 }}>Access (Zoho Vault) — tick what is MISSING</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {CATCHUP_ACCESS_ITEMS.map((item, i) => (
+                    <label key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", padding: "4px 0" }}>
+                      <input type="checkbox" checked={!!missingAccess[i]} onChange={(e) => setMissingAccess((p) => ({ ...p, [i]: e.target.checked }))} style={{ width: 14, height: 14 }} />
+                      <span style={{ color: missingAccess[i] ? "var(--red)" : "var(--ink-2)" }}>{item}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              {!Object.values(missingDocs).some(Boolean) && !Object.values(missingAccess).some(Boolean) && (
+                <div style={{ fontSize: 12, color: "var(--ink-3)", fontStyle: "italic" }}>Tick at least one missing item, or click Generate to draft a general request.</div>
+              )}
+            </div>
+          )}
+          {phase === "loading" && (
+            <div style={{ padding: 30, textAlign: "center", color: "var(--purple)" }}>
+              <div className="ai-loading"><span className="d" /><span className="d" /><span className="d" /></div>
+              <div style={{ fontSize: 13, marginTop: 10, color: "var(--ink-3)" }}>Generating missing-items message…</div>
+            </div>
+          )}
+          {phase === "error" && (
+            <div className="ai-flag" style={{ marginTop: 0 }}>
+              <div className="top"><span className="icon-glow" style={{ background: "var(--red)" }}><Icon name="alert-triangle" size={16} /></span><h4>Couldn&apos;t generate</h4></div>
+              <div className="body" style={{ color: "var(--red)" }}>{error}</div>
+              <div className="actions"><button className="btn-soft" onClick={generate}>Try again</button></div>
+            </div>
+          )}
+          {phase === "ready" && (
+            <>
+              <div className="ai-response" style={{ marginTop: 0 }}><div className="hdr"><Icon name="sparkles" size={13} /> AI draft — editable</div></div>
+              <textarea className="notes" value={text} onChange={(e) => setText(e.target.value)} style={{ minHeight: 260, marginTop: 8, fontFamily: "inherit" }} />
+              <button className="btn-soft" onClick={() => setPhase("preflight")} style={{ marginTop: 8 }}><Icon name="arrow-left" size={13} /> Back to checklist</button>
+            </>
+          )}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          {phase === "preflight" && (
+            <button className="btn-ai" onClick={generate}><Icon name="sparkles" size={13} /> Generate with AI</button>
+          )}
+          {phase === "ready" && (
+            <button className="btn-primary" disabled={saving || !text.trim()} onClick={() => startSave(async () => { const r = await saveStepText(runId, stepId, text); if (!r.error) onDone(); })}>{saving ? "Saving…" : "Save & confirm"}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Catch-up: draft Zoho account-creation message to Lohith ──────────────
+// Pre-flight: collect software, VAT status, multi-currency before generating.
+function ZohoAccountMessageModal({ runId, stepId, title, onClose, onDone }: { runId: string; stepId: string; title: string; onClose: () => void; onDone: () => void }) {
+  const [phase, setPhase] = useState<"preflight" | "loading" | "ready" | "error">("preflight");
+  const [software, setSoftware] = useState("");
+  const [vatReg, setVatReg] = useState<"yes" | "no" | "">("");
+  const [multiCurrency, setMultiCurrency] = useState<"yes" | "no" | "">("");
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, startSave] = useTransition();
+
+  const generate = () => {
+    if (!software.trim()) { setError("Enter the accounting software name first."); return; }
+    if (!vatReg) { setError("Select whether the client is VAT registered."); return; }
+    if (!multiCurrency) { setError("Select whether multi-currency is required."); return; }
+    setError(null);
+    const extraCtx = `Accounting software: ${software.trim()}. VAT registered: ${vatReg}. Multi-currency required: ${multiCurrency}.`;
+    setPhase("loading");
+    generateStepText(runId, "zoho_account", extraCtx).then((r) => {
+      if (r.error) { setError(r.error); setPhase("error"); }
+      else { setText(r.text ?? ""); setPhase("ready"); }
+    });
+  };
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd"><h3>{title}</h3><div className="sub">Fill in the details below — the AI will draft the message to Lohith to create the Zoho account.</div></div>
+        <div className="bd" style={{ maxHeight: "62vh" }}>
+          {phase === "preflight" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div className="field">
+                <label>Accounting software</label>
+                <input value={software} onChange={(e) => { setSoftware(e.target.value); setError(null); }} placeholder="e.g. Zoho Books, QuickBooks, Xero" />
+              </div>
+              <div className="field">
+                <label>VAT registered?</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {(["yes", "no"] as const).map((v) => (
+                    <button key={v} type="button" onClick={() => setVatReg(v)}
+                      style={{ flex: 1, padding: "9px 14px", border: vatReg === v ? "1px solid var(--orange)" : "1px solid var(--border)", background: vatReg === v ? "var(--orange-soft)" : "transparent", fontWeight: 600, borderRadius: 8, cursor: "pointer", fontSize: 13 }}>
+                      {v === "yes" ? "Yes — VAT registered" : "No — not registered"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="field">
+                <label>Multi-currency required?</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {(["yes", "no"] as const).map((v) => (
+                    <button key={v} type="button" onClick={() => setMultiCurrency(v)}
+                      style={{ flex: 1, padding: "9px 14px", border: multiCurrency === v ? "1px solid var(--orange)" : "1px solid var(--border)", background: multiCurrency === v ? "var(--orange-soft)" : "transparent", fontWeight: 600, borderRadius: 8, cursor: "pointer", fontSize: 13 }}>
+                      {v === "yes" ? "Yes" : "No"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {error && <div style={{ fontSize: 12.5, color: "var(--red)" }}>{error}</div>}
+            </div>
+          )}
+          {phase === "loading" && (
+            <div style={{ padding: 30, textAlign: "center", color: "var(--purple)" }}>
+              <div className="ai-loading"><span className="d" /><span className="d" /><span className="d" /></div>
+              <div style={{ fontSize: 13, marginTop: 10, color: "var(--ink-3)" }}>Drafting message to Lohith…</div>
+            </div>
+          )}
+          {phase === "error" && (
+            <div className="ai-flag" style={{ marginTop: 0 }}>
+              <div className="top"><span className="icon-glow" style={{ background: "var(--red)" }}><Icon name="alert-triangle" size={16} /></span><h4>Couldn&apos;t generate</h4></div>
+              <div className="body" style={{ color: "var(--red)" }}>{error}</div>
+              <div className="actions"><button className="btn-soft" onClick={() => setPhase("preflight")}>Go back</button></div>
+            </div>
+          )}
+          {phase === "ready" && (
+            <>
+              <div className="ai-response" style={{ marginTop: 0 }}><div className="hdr"><Icon name="sparkles" size={13} /> AI draft — editable</div></div>
+              <textarea className="notes" value={text} onChange={(e) => setText(e.target.value)} style={{ minHeight: 200, marginTop: 8, fontFamily: "inherit" }} />
+              <button className="btn-soft" onClick={() => setPhase("preflight")} style={{ marginTop: 8 }}><Icon name="arrow-left" size={13} /> Back to details</button>
+            </>
+          )}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          {phase === "preflight" && (
+            <button className="btn-ai" onClick={generate}><Icon name="sparkles" size={13} /> Generate with AI</button>
+          )}
+          {phase === "ready" && (
+            <button className="btn-primary" disabled={saving || !text.trim()} onClick={() => startSave(async () => { const r = await saveStepText(runId, stepId, text); if (!r.error) onDone(); })}>{saving ? "Saving…" : "Save & confirm"}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UrgentConfigModal({
   runId, stepId, onClose, onDone,
 }: { runId: string; stepId: string; people: { id: string; name: string }[]; onClose: () => void; onDone: () => void }) {
@@ -5204,6 +5729,100 @@ function UrgentConfigModal({
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn-primary" disabled={saving || needed === null} onClick={save}>
             {saving ? "Saving…" : needed === "yes" ? `Spin up ${picked.size || ""} run${picked.size === 1 ? "" : "s"} for Tax team` : "Mark — no urgent compliance"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaxAssignModal({
+  runId, step, defaults, onClose, onDone,
+}: {
+  runId: string;
+  step: TemplateStep;
+  defaults: { am: { id: string; name: string } | null; lead: { id: string; name: string } | null; member: { id: string; name: string } | null; allPeople: { id: string; name: string; role: string }[] };
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [amId, setAmId] = useState(defaults.am?.id ?? "");
+  const [leadId, setLeadId] = useState(defaults.lead?.id ?? "");
+  const [memberId, setMemberId] = useState(defaults.member?.id ?? "");
+  const [saving, start] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
+
+  const nameById = (id: string) => defaults.allPeople.find((p) => p.id === id)?.name ?? id;
+
+  const save = () => {
+    if (!amId) { setErr("Please select an Account Manager."); return; }
+    setErr(null);
+    start(async () => {
+      const r = await saveTaxAssign(runId, step.id, {
+        amId,
+        amName: nameById(amId),
+        leadId,
+        leadName: leadId ? nameById(leadId) : "",
+        memberId,
+        memberName: memberId ? nameById(memberId) : "",
+      });
+      if (r.error) { setErr(r.error); return; }
+      onDone();
+    });
+  };
+
+  return (
+    <div className="modal-overlay open" onClick={onClose}>
+      <div className="modal" style={{ width: 500, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="hd">
+          <h3>Assign Tax Team</h3>
+          <div className="sub">Set the Account Manager, Team Lead, and Team Member for this compliance run. Pre-filled with defaults — change if needed.</div>
+        </div>
+        <div className="bd" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div className="field">
+            <label style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink-2)" }}>Account Manager (AM)</label>
+            <select
+              value={amId}
+              onChange={(e) => setAmId(e.target.value)}
+              style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}
+            >
+              <option value="">— Select AM —</option>
+              {defaults.allPeople.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.role.replace(/_/g, " ")})</option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink-2)" }}>Team Lead</label>
+            <select
+              value={leadId}
+              onChange={(e) => setLeadId(e.target.value)}
+              style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}
+            >
+              <option value="">— Select Team Lead —</option>
+              {defaults.allPeople.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.role.replace(/_/g, " ")})</option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink-2)" }}>Team Member</label>
+            <select
+              value={memberId}
+              onChange={(e) => setMemberId(e.target.value)}
+              style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13, width: "100%" }}
+            >
+              <option value="">— Select Team Member —</option>
+              {defaults.allPeople.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.role.replace(/_/g, " ")})</option>
+              ))}
+            </select>
+          </div>
+          {err && <div style={{ fontSize: 12.5, color: "var(--red)" }}>{err}</div>}
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn-primary" disabled={saving || !amId} onClick={save}>
+            {saving ? "Saving…" : "Assign team"}
           </button>
         </div>
       </div>
@@ -5387,5 +6006,283 @@ function DeleteRunButton({ runId }: { runId: string }) {
     <button className="btn-ghost" style={{ color: "var(--red)" }} onClick={() => setConfirm(true)}>
       <Icon name="trash-2" size={13} /> Delete run
     </button>
+  );
+}
+
+function MasterAdminRunControls({ runId }: { runId: string }) {
+  const router = useRouter();
+  const { effectiveRole } = useIdentity();
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [completeConfirm, setCompleteConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (!isMasterAdmin(effectiveRole as any)) return null;
+
+  async function doDelete() {
+    setBusy(true);
+    const res = await deleteRun(runId);
+    setBusy(false);
+    if (res.error) { alert(res.error); return; }
+    router.push("/onboarding");
+  }
+
+  async function doForceComplete() {
+    setBusy(true);
+    const res = await forceCompleteRun(runId);
+    setBusy(false);
+    if (res.error) { alert(res.error); return; }
+    setCompleteConfirm(false);
+    router.refresh();
+  }
+
+  return (
+    <span style={{ display: "inline-flex", gap: 6, alignItems: "center", padding: "2px 8px", borderRadius: 6, border: "1px solid var(--red)", background: "var(--red-soft, #fdecec)" }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", letterSpacing: "0.04em", textTransform: "uppercase" }}>Master Admin</span>
+      {deleteConfirm ? (
+        <>
+          <span style={{ fontSize: 12, color: "var(--red)" }}>Delete permanently?</span>
+          <button className="btn-ghost" style={{ fontSize: 12, color: "var(--red)", padding: "2px 6px" }} onClick={doDelete} disabled={busy}>{busy ? "…" : "Confirm"}</button>
+          <button className="btn-ghost" style={{ fontSize: 12, padding: "2px 6px" }} onClick={() => setDeleteConfirm(false)}>Cancel</button>
+        </>
+      ) : completeConfirm ? (
+        <>
+          <span style={{ fontSize: 12, color: "var(--red)" }}>Force complete all steps?</span>
+          <button className="btn-ghost" style={{ fontSize: 12, color: "var(--red)", padding: "2px 6px" }} onClick={doForceComplete} disabled={busy}>{busy ? "…" : "Confirm"}</button>
+          <button className="btn-ghost" style={{ fontSize: 12, padding: "2px 6px" }} onClick={() => setCompleteConfirm(false)}>Cancel</button>
+        </>
+      ) : (
+        <>
+          <button className="btn-ghost" style={{ fontSize: 12, color: "var(--red)", padding: "2px 6px" }} onClick={() => setDeleteConfirm(true)}>
+            <Icon name="trash-2" size={12} /> Delete
+          </button>
+          <button className="btn-ghost" style={{ fontSize: 12, color: "var(--ink-2)", padding: "2px 6px" }} onClick={() => setCompleteConfirm(true)}>
+            <Icon name="check-circle" size={12} /> Mark Complete
+          </button>
+        </>
+      )}
+    </span>
+  );
+}
+
+// ── Bank Reconciliation modal ────────────────────────────────────────────────
+// Catch-up template step cu4.1. Pulls bank statements from the client's Drive
+// "Catch-up" / "Bank Statements" folder, extracts via Klippa (or stub), loads
+// the live COA from the canonical Google Sheet, runs the rule-based categoriser,
+// and persists the result into run_items kind='bankrecon'. The team reviews the
+// preview, downloads the styled XLSX (SheetJS via CDN — no npm dep needed),
+// then explicitly marks the step ready. Step is NEVER auto-completed.
+
+interface LoadedSheetJs { utils: { book_new: () => unknown; aoa_to_sheet: (rows: unknown[][]) => unknown; book_append_sheet: (wb: unknown, ws: unknown, name: string) => void; }; writeFile: (wb: unknown, filename: string) => void; }
+declare global { interface Window { XLSX?: LoadedSheetJs; } }
+
+async function loadSheetJs(): Promise<LoadedSheetJs> {
+  if (typeof window !== "undefined" && window.XLSX) return window.XLSX;
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
+    s.onload = () => window.XLSX ? resolve(window.XLSX) : reject(new Error("SheetJS failed to load"));
+    s.onerror = () => reject(new Error("Could not fetch SheetJS from CDN"));
+    document.head.appendChild(s);
+  });
+}
+
+function BankReconModal({ runId, stepId, clientName, onClose, onDone }: { runId: string; stepId: string; clientName: string; onClose: () => void; onDone: () => void }) {
+  const [result, setResult] = useState<BankReconResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [running, startRun] = useTransition();
+  const [marking, startMark] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  // Drive folder confirmation before running extraction
+  const [catchupFolderLink, setCatchupFolderLink] = useState("");
+  const [folderConfirmed, setFolderConfirmed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    getBankReconResult(runId).then((r) => { if (alive) { setResult(r); setLoading(false); if (r?.rows?.length) setFolderConfirmed(true); } });
+    return () => { alive = false; };
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const runIt = () => {
+    setError(null);
+    startRun(async () => {
+      const r = await runBankReconForCatchup(runId, stepId);
+      if (r.error) { setError(r.error); setResult(r); return; }
+      setResult(r);
+    });
+  };
+
+  const markReady = () => {
+    startMark(async () => {
+      const r = await confirmBankReconReady(runId, stepId);
+      if (r.error) { setError(r.error); return; }
+      onDone();
+    });
+  };
+
+  const downloadXlsx = async () => {
+    if (!result?.rows || !result.summary) return;
+    setError(null);
+    try {
+      const XLSX = await loadSheetJs();
+      const wb = XLSX.utils.book_new();
+      // 1. Summary
+      const sum: (string | number)[][] = [["Catch-up Bank Reconciliation"], [`Client: ${clientName}`], [`Generated: ${result.generated_at ?? ""}`], [`Vendor: ${result.vendor ?? "—"}`], [`Industry overlay: ${result.industry ?? "—"}`], [], ["Code", "Account", "Count", "Net (AED)"]];
+      Object.entries(result.summary.by_code).sort((a, b) => a[0].localeCompare(b[0])).forEach(([code, v]) => sum.push([code, v.account_name, v.count, +v.net.toFixed(2)]));
+      sum.push([], ["Total lines", result.summary.total_lines], ["Total debit", +result.summary.total_debit.toFixed(2)], ["Total credit", +result.summary.total_credit.toFixed(2)], ["Needs review", result.summary.needs_review]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sum), "Summary");
+      // 2. Raw Transactions
+      const raw: (string | number)[][] = [["Date", "Value Date", "Description", "Debit", "Credit", "Balance", "Currency", "Source File", "Source Row"]];
+      result.rows.forEach((r) => raw.push([r.txn.txn_date, r.txn.value_date ?? "", r.txn.description, r.txn.debit, r.txn.credit, r.txn.balance ?? "", r.txn.currency, r.txn.source_file, r.txn.source_row]));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(raw), "Raw Transactions");
+      // 3. Categorised
+      const cat: (string | number)[][] = [["Date", "Description", "Debit", "Credit", "COA Code", "Account", "Confidence", "Matched Keyword", "Rule Source"]];
+      result.rows.forEach((r) => cat.push([r.txn.txn_date, r.txn.description, r.txn.debit, r.txn.credit, r.category.code, r.category.account_name, +r.category.confidence.toFixed(2), r.category.matched_keyword, r.category.rule_source]));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cat), "Categorised");
+      // 4. Needs Review
+      const review: (string | number)[][] = [["Date", "Description", "Debit", "Credit", "Confidence", "Why"]];
+      result.rows.filter((r) => r.category.code === "6900" || r.category.confidence < 0.75).forEach((r) => review.push([r.txn.txn_date, r.txn.description, r.txn.debit, r.txn.credit, +r.category.confidence.toFixed(2), r.category.rule_source === "Fallback" ? "No rule matched" : `Low confidence (${r.category.rule_source})`]));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(review), "Needs Review");
+      // 5. COA Used
+      const used: (string | number)[][] = [["Code", "Account", "Count", "Net (AED)"]];
+      Object.entries(result.summary.by_code).sort((a, b) => a[0].localeCompare(b[0])).forEach(([code, v]) => used.push([code, v.account_name, v.count, +v.net.toFixed(2)]));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(used), "COA Used");
+      XLSX.writeFile(wb, `bank-recon-${clientName.replace(/[^\w]+/g, "_")}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (e: unknown) {
+      setError(`Could not build Excel: ${(e as Error)?.message || "unknown"}`);
+    }
+  };
+
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 980, width: "92vw", maxHeight: "88vh", overflow: "auto" }}>
+        <div className="hd"><div><strong>Bank extraction & first-pass reconciliation</strong><div className="muted" style={{ fontSize: 12 }}>{clientName} · pulls bank statements from Drive · COA from canonical Google Sheet · output is ready-for-review, never auto-posted</div></div><button className="btn-ghost" onClick={onClose}>✕</button></div>
+
+        <div className="bd" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {loading && <div className="muted">Loading any previous result…</div>}
+
+          {!loading && !result?.rows?.length && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* Step 1 — confirm the catchup folder */}
+              <div style={{ padding: 14, background: "var(--surface-alt, #fafafa)", borderRadius: 8, border: folderConfirmed ? "1px solid #bbf7d0" : "1px solid var(--border-1, #eee)" }}>
+                <div style={{ fontWeight: 600, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ background: folderConfirmed ? "#16a34a" : "var(--ink-3)", color: "#fff", borderRadius: "50%", width: 20, height: 20, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>1</span>
+                  Confirm the client&apos;s Catch-up folder
+                </div>
+                <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>Paste the Google Drive link for the client&apos;s Catch-up folder (the folder containing bank statements). The extractor will use this as the source.</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <input
+                    type="url"
+                    value={catchupFolderLink}
+                    onChange={(e) => { setCatchupFolderLink(e.target.value); if (folderConfirmed) setFolderConfirmed(false); }}
+                    placeholder="https://drive.google.com/drive/folders/… (Catch-up folder)"
+                    style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 7, padding: "7px 10px", fontSize: 13 }}
+                  />
+                  {catchupFolderLink.trim() && !folderConfirmed && (
+                    <button className="btn-soft" onClick={() => setFolderConfirmed(true)} style={{ whiteSpace: "nowrap" }}>
+                      <Icon name="check" size={13} /> Confirm folder
+                    </button>
+                  )}
+                  {catchupFolderLink.trim() && (
+                    <a href={catchupFolderLink} target="_blank" rel="noreferrer" className="btn-ghost" style={{ whiteSpace: "nowrap" }}>
+                      <Icon name="external-link" size={13} /> Open
+                    </a>
+                  )}
+                </div>
+                {folderConfirmed && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#16a34a", display: "flex", alignItems: "center", gap: 4 }}>
+                    <Icon name="check-circle" size={13} /> Folder confirmed — ready to extract
+                  </div>
+                )}
+              </div>
+
+              {/* Step 2 — run extraction */}
+              <div style={{ padding: 14, background: "var(--surface-alt, #fafafa)", borderRadius: 8, opacity: folderConfirmed ? 1 : 0.5 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ background: "var(--ink-3)", color: "#fff", borderRadius: "50%", width: 20, height: 20, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>2</span>
+                  Extract &amp; reconcile
+                </div>
+                <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>Scans the confirmed Catch-up folder for bank statements, extracts every line via Klippa, and applies COA categorisation rules. Results shown below with account codes next to each line item.</div>
+                <button className="btn-primary" disabled={running || !folderConfirmed} onClick={runIt}>{running ? "Extracting & categorising…" : "Run extraction & reconciliation"}</button>
+              </div>
+            </div>
+          )}
+
+          {error && <div style={{ padding: 10, background: "#fff5f5", border: "1px solid #ffd4d4", borderRadius: 6, color: "#a00", fontSize: 13 }}>{error}</div>}
+
+          {result?.rows?.length && result.summary && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+                <div style={{ padding: 10, background: "var(--surface-alt, #fafafa)", borderRadius: 6 }}><div className="muted" style={{ fontSize: 11 }}>Lines</div><div style={{ fontSize: 20, fontWeight: 700 }}>{result.summary.total_lines}</div></div>
+                <div style={{ padding: 10, background: "var(--surface-alt, #fafafa)", borderRadius: 6 }}><div className="muted" style={{ fontSize: 11 }}>Total debit</div><div style={{ fontSize: 18, fontWeight: 700 }}>{result.summary.total_debit.toLocaleString("en-AE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></div>
+                <div style={{ padding: 10, background: "var(--surface-alt, #fafafa)", borderRadius: 6 }}><div className="muted" style={{ fontSize: 11 }}>Total credit</div><div style={{ fontSize: 18, fontWeight: 700 }}>{result.summary.total_credit.toLocaleString("en-AE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></div>
+                <div style={{ padding: 10, background: result.summary.needs_review ? "#fffaf0" : "var(--surface-alt, #fafafa)", borderRadius: 6, border: result.summary.needs_review ? "1px solid #ffd9a8" : undefined }}><div className="muted" style={{ fontSize: 11 }}>Needs review</div><div style={{ fontSize: 20, fontWeight: 700, color: result.summary.needs_review ? "#b54900" : undefined }}>{result.summary.needs_review}</div></div>
+              </div>
+
+              {result.source_files?.length && (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Source files</div>
+                  <div style={{ fontSize: 12 }}>
+                    {result.source_files.map((s) => (
+                      <div key={s.id} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid var(--border-1, #eee)" }}>
+                        <span>{s.name}</span><span className="muted">{s.error ? `error: ${s.error}` : `${s.rowCount} rows`}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Preview (first 20 of {result.rows.length})</div>
+                <div style={{ overflowX: "auto", maxHeight: 280, border: "1px solid var(--border-1, #eee)", borderRadius: 6 }}>
+                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                    <thead style={{ background: "#0A2B3B", color: "white", position: "sticky", top: 0 }}>
+                      <tr><th style={{ padding: "6px 8px", textAlign: "left" }}>Date</th><th style={{ padding: "6px 8px", textAlign: "left" }}>Description</th><th style={{ padding: "6px 8px", textAlign: "right" }}>Debit</th><th style={{ padding: "6px 8px", textAlign: "right" }}>Credit</th><th style={{ padding: "6px 8px", textAlign: "left" }}>COA</th><th style={{ padding: "6px 8px", textAlign: "left" }}>Account</th><th style={{ padding: "6px 8px", textAlign: "right" }}>Conf</th></tr>
+                    </thead>
+                    <tbody>
+                      {result.rows.slice(0, 20).map((r, i) => (
+                        <tr key={i} style={{ borderTop: "1px solid var(--border-1, #f0f0f0)", background: r.category.code === "6900" ? "#fffaf0" : undefined }}>
+                          <td style={{ padding: "5px 8px" }}>{r.txn.txn_date}</td>
+                          <td style={{ padding: "5px 8px" }}>{r.txn.description}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "right" }}>{r.txn.debit ? r.txn.debit.toFixed(2) : ""}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "right" }}>{r.txn.credit ? r.txn.credit.toFixed(2) : ""}</td>
+                          <td style={{ padding: "5px 8px" }}>{r.category.code}</td>
+                          <td style={{ padding: "5px 8px" }}>{r.category.account_name}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "right", color: r.category.confidence >= 0.85 ? "#0a7f3f" : r.category.confidence >= 0.6 ? "#b54900" : "#c33" }}>{r.category.confidence.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Drive folder link input for re-run (shown after extraction too) */}
+              {catchupFolderLink && (
+                <div style={{ fontSize: 12, color: "var(--ink-3)", display: "flex", alignItems: "center", gap: 6 }}>
+                  <Icon name="folder" size={13} style={{ color: "var(--ink-3)" }} />
+                  Extracted from: <a href={catchupFolderLink} target="_blank" rel="noreferrer" style={{ color: "var(--orange)" }}>{catchupFolderLink.length > 60 ? catchupFolderLink.slice(0, 60) + "…" : catchupFolderLink}</a>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn-secondary" disabled={running} onClick={runIt}>{running ? "Re-running…" : "Re-run extraction"}</button>
+                <button className="btn-secondary" onClick={downloadXlsx}><Icon name="download" size={14} /> Download XLSX (5 sheets)</button>
+                <span style={{ flex: 1 }} />
+                <button className="btn-primary" disabled={marking} onClick={markReady}>{marking ? "Marking…" : "Mark ready for review"}</button>
+              </div>
+              <div style={{ padding: 10, background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 6, fontSize: 12, color: "#0369a1" }}>
+                <strong>Google Sheet:</strong> Download the XLSX above and import it into Google Sheets for team sharing — or ask the team to create a shared Catch-up reconciliation Sheet and paste the link in the run chat.
+              </div>
+
+              {result.vendor === "stub" && (
+                <div style={{ padding: 8, background: "#fffaf0", border: "1px solid #ffd9a8", borderRadius: 6, fontSize: 12, color: "#7a4400" }}>
+                  Stub data — set <code>KLIPPA_API_KEY</code> in <code>.env.local</code> and re-run to extract real bank statements.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

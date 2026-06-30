@@ -55,31 +55,15 @@ export default async function MyWorkPage() {
   const urgentRuns = allRuns.filter((r) => URGENT_TEMPLATES.has(r.templateKey));
   const runs = allRuns.filter((r) => !URGENT_TEMPLATES.has(r.templateKey));
 
-  // Auto-generated admin tasks owned by this user OR scoped to the viewer's role.
-  //   • admin / ops_head → all admin_tasks in the org
-  //   • am               → tasks the viewer owns
-  //   • team_lead        → tasks for runs the viewer is on the run_team of
-  //   • other            → tasks they own only
+  // My Work shows only tasks assigned to the current user — always owner_id = me.
   let adminTasks: AdminTaskItem[] = [];
-  if (memberId || role === "admin" || role === "ops_head") {
-    let q = supabase
+  if (memberId) {
+    const { data: rows } = await supabase
       .from("admin_tasks")
-      .select("id,kind,run_id,client_id,step_id,title,body,status,history,notes,created_at,owner_id");
-    if (role === "admin" || role === "ops_head") {
-      // no extra filter — sees everything in the org (RLS guards the org boundary)
-    } else if (role === "team_lead" && memberId) {
-      const { data: teamRows } = await supabase.from("run_team").select("run_id").eq("team_member_id", memberId);
-      const teamRunIds = (teamRows ?? []).map((r) => r.run_id);
-      // include tasks the viewer owns AND tasks for runs they're on
-      if (teamRunIds.length) {
-        q = q.or(`owner_id.eq.${memberId},run_id.in.(${teamRunIds.join(",")})`);
-      } else {
-        q = q.eq("owner_id", memberId);
-      }
-    } else if (memberId) {
-      q = q.eq("owner_id", memberId);
-    }
-    const { data: rows } = await q.order("created_at", { ascending: false }).limit(200);
+      .select("id,kind,run_id,client_id,step_id,title,body,status,history,notes,created_at,owner_id")
+      .eq("owner_id", memberId)
+      .order("created_at", { ascending: false })
+      .limit(200);
     const clientIds = [...new Set((rows ?? []).map((r) => r.client_id).filter(Boolean) as string[])];
     const nameById = new Map<string, string>();
     if (clientIds.length) {
@@ -154,29 +138,40 @@ export default async function MyWorkPage() {
     }
   }
   if (hasAmlAccess && session.profile.org_id && memberId) {
-    const supabaseForAml = await createClient();
-    // Only show AML clients assigned specifically to this team member
-    const { data: amlRecs } = await supabaseForAml
+    const adminDb = createAdminClient();
+    // Head (Krishna / admin / ops_head) sees ALL pending/unassigned; team sees their assigned
+    const isAmlHead = role === "admin" || role === "ops_head" || (() => {
+      // check if memberId === krishna
+      return false; // refined below
+    })();
+    let amlQuery = adminDb
       .from("aml_records")
-      .select("client_id,status")
+      .select("client_id,status,assigned_to")
       .eq("org_id", session.profile.org_id)
-      .eq("assigned_to", memberId)
       .not("status", "eq", "completed");
+    // For non-head team members filter to their assigned rows only
+    const effectiveHead = role === "admin" || role === "ops_head";
+    if (!effectiveHead) {
+      // Check if this member IS krishna (the AML head)
+      const { data: myRow } = await adminDb.from("team_members").select("full_name").eq("id", memberId).maybeSingle();
+      const isKrishna = (myRow?.full_name ?? "").toLowerCase().includes("krishna");
+      if (!isKrishna) {
+        amlQuery = amlQuery.eq("assigned_to", memberId);
+      }
+    }
+    const { data: amlRecs } = await amlQuery;
     const pendingClientIds = (amlRecs ?? []).map((r) => r.client_id as string);
     if (pendingClientIds.length) {
-      const [{ data: clientRows }, { data: driveRows }, { data: runRows }] = await Promise.all([
-        supabaseForAml.from("clients").select("id,name").in("id", pendingClientIds),
-        supabaseForAml.from("drive_folders").select("client_id,tree").in("client_id", pendingClientIds),
-        supabaseForAml.from("onboarding_runs").select("id,client_id,template_key").in("client_id", pendingClientIds).not("status", "in", "(archived,closed)").order("created_at", { ascending: false }),
+      const [{ data: clientRows }, { data: driveRows }] = await Promise.all([
+        adminDb.from("clients").select("id,name").in("id", pendingClientIds),
+        adminDb.from("drive_folders").select("client_id,tree").in("client_id", pendingClientIds),
       ]);
       const driveMap = new Map((driveRows ?? []).map((d) => [d.client_id as string, ((d.tree as { link?: string } | null)?.link) ?? null]));
-      const runMap = new Map<string, string>();
-      for (const r of (runRows ?? [])) { if (!runMap.has(r.client_id as string)) runMap.set(r.client_id as string, r.id as string); }
       const amlStatusMap = new Map((amlRecs ?? []).map((r) => [r.client_id as string, r.status as string]));
       amlClients = (clientRows ?? []).map((c) => ({
         clientId: c.id as string, clientName: c.name as string,
         status: amlStatusMap.get(c.id as string) ?? "pending",
-        runId: runMap.get(c.id as string) ?? null,
+        runId: null,
         driveLink: driveMap.get(c.id as string) ?? null,
       }));
     }
@@ -186,7 +181,7 @@ export default async function MyWorkPage() {
     <div className="scroll">
       <div className="page">
         {(adminTasks.length > 0 || canScan) && (
-          <MyTasksSection items={adminTasks} canScan={canScan} />
+          <MyTasksSection items={adminTasks} canScan={canScan} canDelete={role === "admin"} />
         )}
 
         {hasAmlAccess && amlClients.length > 0 && (

@@ -398,5 +398,181 @@ export async function GET(request: NextRequest) {
     });
   }
 
+  // ── 6) Escalation: open tasks > 2 days → next level; > 7 days → master admin ──
+  const TWO_DAYS = 2 * DAY;
+  const ONE_WEEK = 7 * DAY;
+
+  // Re-use the open tasks we already fetched for dedup.
+  const openForEscalation = (openTasksRaw ?? []) as Array<AdminTaskRow & { id: string }>;
+
+  // Load team members once for role-based chain resolution.
+  const { data: allMembers } = await admin
+    .from("team_members")
+    .select("id,full_name,role,org_id,reports_to")
+    .eq("active", true);
+  const memberById = new Map((allMembers ?? []).map((m) => [m.id, m as { id: string; full_name: string; role: string; org_id: string; reports_to: string | null }]));
+  const membersByOrg = new Map<string, { id: string; full_name: string; role: string }[]>();
+  for (const m of allMembers ?? []) {
+    const list = membersByOrg.get(m.org_id) ?? [];
+    list.push(m as { id: string; full_name: string; role: string });
+    membersByOrg.set(m.org_id, list);
+  }
+
+  // Load run_team membership for runs we've already seen.
+  const escalationRunIds = [...new Set(openForEscalation.map((t) => t.run_id).filter(Boolean) as string[])];
+  const runMetaById = new Map<string, { am_id: string | null; org_id: string }>();
+  if (escalationRunIds.length) {
+    const { data: runRows } = await admin
+      .from("onboarding_runs")
+      .select("id,am_id,org_id")
+      .in("id", escalationRunIds);
+    for (const r of runRows ?? []) runMetaById.set(r.id, { am_id: r.am_id, org_id: r.org_id });
+  }
+  const { data: runTeamRows } = await admin
+    .from("run_team")
+    .select("run_id,team_member_id")
+    .in("run_id", escalationRunIds.length ? escalationRunIds : ["__none__"]);
+  const teamLeadsByRun = new Map<string, string>();
+  for (const r of runTeamRows ?? []) {
+    const m = memberById.get(r.team_member_id);
+    if (m?.role === "team_lead") teamLeadsByRun.set(r.run_id, r.team_member_id);
+  }
+
+  const ROLE_RANK: Record<string, number> = {
+    intern: 0, junior: 1, associate: 1, senior: 2,
+    team_lead: 3, am: 4, ops_head: 5, admin: 6,
+  };
+
+  function findNextOwner(ownerId: string, orgId: string, runId: string | null): { id: string; name: string } | null {
+    const owner = memberById.get(ownerId);
+    if (!owner) return null;
+    const ownerRank = ROLE_RANK[owner.role] ?? 0;
+    const orgMembers = membersByOrg.get(orgId) ?? [];
+
+    // team member → team lead on run (or AM if no team lead)
+    if (ownerRank <= 2) {
+      if (runId) {
+        const tlId = teamLeadsByRun.get(runId);
+        if (tlId && tlId !== ownerId) {
+          const tl = memberById.get(tlId);
+          if (tl) return { id: tl.id, name: tl.full_name };
+        }
+        const run = runMetaById.get(runId);
+        if (run?.am_id && run.am_id !== ownerId) {
+          const am = memberById.get(run.am_id);
+          if (am) return { id: am.id, name: am.full_name };
+        }
+      }
+    }
+
+    // team lead → AM
+    if (owner.role === "team_lead" && runId) {
+      const run = runMetaById.get(runId);
+      if (run?.am_id && run.am_id !== ownerId) {
+        const am = memberById.get(run.am_id);
+        if (am) return { id: am.id, name: am.full_name };
+      }
+    }
+
+    // AM → ops_head
+    if (owner.role === "am") {
+      const ops = orgMembers.find((m) => m.role === "ops_head");
+      if (ops && ops.id !== ownerId) return { id: ops.id, name: ops.full_name };
+    }
+
+    // ops_head → master admin
+    if (owner.role === "ops_head") {
+      const master = ownerByOrg.get(orgId);
+      if (master && master.id !== ownerId) return master;
+    }
+
+    return null; // already at top of chain
+  }
+
+  // Track escalations created this run to avoid double-creating for same target.
+  const escalatedThisRun = new Set<string>();
+
+  for (const task of openForEscalation) {
+    const age = now - new Date(task.created_at).getTime();
+    if (age < TWO_DAYS) continue;
+
+    // Week escalation: jump straight to master admin regardless of chain position.
+    if (age >= ONE_WEEK) {
+      const master = ownerByOrg.get(task.org_id);
+      if (master && master.id !== task.owner_id) {
+        const esc = `${task.kind}::${task.run_id ?? ""}::${master.id}`;
+        if (!escalatedThisRun.has(esc)) {
+          escalatedThisRun.add(esc);
+          const ownerName = memberById.get(task.owner_id)?.full_name ?? "Team";
+          await insertTask({
+            org_id: task.org_id,
+            owner_id: master.id,
+            kind: task.kind as Kind,
+            run_id: task.run_id ?? "",
+            client_id: task.client_id,
+            step_id: task.step_id,
+            title: `[1 week unresolved] ${ownerName} – ${task.title.replace(/^\[.*?\]\s*/, "")}`,
+            body: `Open for ${Math.floor(age / DAY)} days with no resolution. Originally assigned to ${ownerName}.\n\n${task.body ?? ""}`,
+          });
+        }
+      }
+      continue;
+    }
+
+    // Normal 2-day escalation to next person in chain.
+    const next = findNextOwner(task.owner_id, task.org_id, task.run_id);
+    if (!next) continue;
+    const esc = `${task.kind}::${task.run_id ?? ""}::${next.id}`;
+    if (escalatedThisRun.has(esc)) continue;
+    escalatedThisRun.add(esc);
+    const ownerName = memberById.get(task.owner_id)?.full_name ?? "Team";
+    await insertTask({
+      org_id: task.org_id,
+      owner_id: next.id,
+      kind: task.kind as Kind,
+      run_id: task.run_id ?? "",
+      client_id: task.client_id,
+      step_id: task.step_id,
+      title: `[Escalated] ${ownerName} – ${task.title.replace(/^\[.*?\]\s*/, "")}`,
+      body: `Unresolved for ${Math.floor(age / DAY)} days by ${ownerName}. Needs your attention.\n\n${task.body ?? ""}`,
+    });
+  }
+
+  // ── 7) Compliance deadline alert — 1 month before due date ──
+  // Fires to team member + team lead + AM simultaneously on the same day.
+  // Queries client_compliance table for upcoming VAT/CT/document deadlines.
+  // NOTE: Requires a `client_compliance` table with columns:
+  //   id, org_id, client_id, kind (text), label (text), due_date (date), run_id (nullable)
+  // Once that table exists, uncomment the block below.
+  //
+  // const ONE_MONTH = 30 * DAY;
+  // const { data: compRows } = await admin
+  //   .from("client_compliance")
+  //   .select("id,org_id,client_id,kind,label,due_date,run_id")
+  //   .not("due_date", "is", null);
+  // for (const c of compRows ?? []) {
+  //   const dueMs = new Date(c.due_date).getTime();
+  //   const remaining = dueMs - now;
+  //   if (remaining < 0 || remaining > ONE_MONTH) continue; // only fire in the final month
+  //   const { data: client } = await admin.from("clients").select("name").eq("id", c.client_id).maybeSingle();
+  //   const name = client?.name ?? "the client";
+  //   const daysLeft = Math.ceil(remaining / DAY);
+  //   const title = `Compliance due in ${daysLeft}d · ${name} · ${c.label}`;
+  //   const body = `${c.label} is due on ${c.due_date}. Ensure all filings/documents are in order.`;
+  //   // Team member, team lead, and AM all get notified on the same day (no escalation for compliance).
+  //   if (c.run_id) {
+  //     const run = runMetaById.get(c.run_id) ?? (await admin.from("onboarding_runs").select("am_id,org_id").eq("id", c.run_id).maybeSingle()).data;
+  //     const teamIds = (await admin.from("run_team").select("team_member_id").eq("run_id", c.run_id)).data ?? [];
+  //     const targets = new Set<string>();
+  //     if (run?.am_id) targets.add(run.am_id);
+  //     for (const t of teamIds) targets.add(t.team_member_id);
+  //     const master = ownerByOrg.get(c.org_id);
+  //     if (master) targets.add(master.id);
+  //     for (const ownerId of targets) {
+  //       await insertTask({ org_id: c.org_id, owner_id: ownerId, kind: "compliance_alert" as Kind, run_id: c.run_id, client_id: c.client_id, title, body });
+  //     }
+  //   }
+  // }
+
   return NextResponse.json({ ok: true, created: created.length, ids: created });
 }
