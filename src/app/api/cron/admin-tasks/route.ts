@@ -215,7 +215,7 @@ export async function GET(request: NextRequest) {
   // Pull existing task rows once for dedupe per (kind, run, owner).
   const { data: openTasksRaw } = await admin
     .from("admin_tasks")
-    .select("id,kind,run_id,owner_id,closed_at,status,history,notes,org_id,client_id,step_id,title,body,snoozed_until")
+    .select("id,kind,run_id,owner_id,closed_at,status,history,notes,org_id,client_id,step_id,title,body,snoozed_until,created_at")
     .in("status", ["open", "closed"]);
   const openByKey = new Map<string, AdminTaskRow & { id: string; snoozed_until?: string | null }>();
   const lastClosedByKey = new Map<string, AdminTaskRow & { id: string }>();
