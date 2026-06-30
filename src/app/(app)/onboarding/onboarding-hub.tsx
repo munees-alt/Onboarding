@@ -30,7 +30,6 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   const router = useRouter();
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("dashboard");
   const [newOpen, setNewOpen] = useState(false);
-  const [newComplianceOpen, setNewComplianceOpen] = useState(false);
   // Active-runs filters (Dashboard + Clients tabs).
   const [fSearch, setFSearch] = useState("");
   const [fStage, setFStage] = useState<string>("all");
@@ -123,22 +122,11 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
                 <Icon name="refresh-cw" size={15} /> {syncing ? "Syncing…" : "Sync from email"}
               </button>
             )}
-            <button className="btn-ghost" onClick={() => setNewComplianceOpen(true)} title="Create a CT / VAT / FTA compliance run for an existing client">
-              <Icon name="shield-check" size={15} /> New compliance run
-            </button>
+            {/* Tax/compliance runs are now handled in /tax-compliance — the "New compliance run" button is retired. */}
             <button className="btn-primary" onClick={() => setNewOpen(true)}><Icon name="plus" size={15} /> New onboarding</button>
           </div>
         </div>
         {newOpen && <NewOnboardingModal leads={leads} templates={templates} onClose={() => setNewOpen(false)} onStarted={(runId) => router.push(`/onboarding/${runId}`)} />}
-        {newComplianceOpen && (
-          <NewComplianceRunModal
-            templates={templates.filter((t) => t.category === "Taxation")}
-            clients={complianceClients}
-            ams={complianceAms}
-            onClose={() => setNewComplianceOpen(false)}
-            onStarted={(runId) => router.push(`/onboarding/${runId}`)}
-          />
-        )}
 
         <div className="tabs-row">
           {TABS.map((t) => (

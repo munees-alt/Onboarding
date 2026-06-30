@@ -1062,6 +1062,7 @@ export async function escalateUrgentComplianceServices(
   services: string[],
 ): Promise<{ error?: string; created?: number; runIds?: string[] }> {
   const supabase = await createClient();
+  const admin = createAdminClient();
   const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
 
@@ -1078,61 +1079,83 @@ export async function escalateUrgentComplianceServices(
   const picked = services.filter((s) => allowed.has(s));
   if (!picked.length) return { error: "Pick at least one service to escalate, or choose No urgent compliance." };
 
+  // Map picker service IDs → tax_compliance services. Audit isn't a tax-compliance service —
+  // it's an Audit-team workflow, so for now we route audit picks via tax compliance with a note.
+  const SERVICE_MAP: Record<string, string> = {
+    "ct-registration": "ct_reg",
+    "vat-registration": "vat_reg",
+    "ct-filing": "ct_fil",
+    "vat-filing": "vat_fil",
+  };
+  const taxServices = [...new Set(picked.map((p) => SERVICE_MAP[p]).filter(Boolean))];
+  const hasAudit = picked.includes("audit");
+
   const head = await findTaxHead(run.org_id);
   const lead = await findTaxTeamLead(run.org_id, head?.id);
-  const member = await suggestNextAm(run.org_id);
-  const newIds: string[] = [];
-  for (const service of picked) {
-    // Audit reuses the CT filing template under the hood (per product decision).
-    const tplId = service === "audit" ? "ct-filing" : service;
-    const ownerId = head?.id ?? null;
-    const newRunId = await createRunFromTemplate(supabase, {
-      orgId: run.org_id, clientId: run.client_id, amId: ownerId, templateId: tplId,
+  const defaults = [head?.id, lead?.id].filter((x): x is string => !!x);
+
+  // Upsert a single tax_compliance_records row for this client.
+  const { data: client } = await admin.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+  const noteParts: string[] = [];
+  noteParts.push(`Escalated from onboarding run ${runId}.`);
+  if (hasAudit) noteParts.push("Includes Statutory Audit — coordinate with Audit team.");
+
+  const { error: upsertErr } = await admin.from("tax_compliance_records").upsert(
+    {
+      org_id: run.org_id,
+      client_id: run.client_id,
+      status: "open_item",
+      services: taxServices,
+      notes: noteParts.join(" "),
+      assigned_to: defaults,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "client_id" },
+  );
+  if (upsertErr) return { error: upsertErr.message };
+
+  // Action-item chips for Gautam + Nafila.
+  if (defaults.length) {
+    const serviceLabels = picked.map((p) => {
+      if (p === "ct-registration") return "CT Registration";
+      if (p === "vat-registration") return "VAT Registration";
+      if (p === "ct-filing") return "CT Filing";
+      if (p === "vat-filing") return "VAT Filing";
+      return "Statutory Audit";
     });
-    newIds.push(newRunId);
-
-    // Auto-assign the first step: team lead = Nafila (always), team member = capacity pick.
-    const firstStepId = `${tplId}1.1`;
-    const assignees: { id: string; name: string; role: string }[] = [];
-    if (lead) assignees.push({ id: lead.id, name: lead.name, role: "team_lead" });
-    if (member && member.id !== lead?.id) assignees.push({ id: member.id, name: member.name, role: "senior" });
-    if (assignees.length) {
-      const names = assignees.map((a) => a.name).join(", ");
-      await upsertStep(supabase, newRunId, tplId, firstStepId, {
-        status: "pending",
-        assignee_id: lead?.id ?? member?.id ?? null,
-        payload: { assigned: names, assignees },
-      });
-      for (const a of assignees) {
-        await supabase.from("run_team").upsert(
-          { run_id: newRunId, team_member_id: a.id, role_in_run: a.role },
-          { onConflict: "run_id,team_member_id" },
-        );
-      }
-      await supabase.from("notifications").insert(
-        assignees.map((a) => ({
-          org_id: run.org_id, run_id: newRunId, recipient_id: a.id, kind: "task_assigned",
-          title: "Tax compliance run assigned to you",
-          body: `You've been assigned to step 1: "${firstStepId}". Open the run to begin.`,
-        })),
-      );
-    }
-
-    if (ownerId) {
-      const label = service === "audit" ? "Statutory audit" : service.replace("-", " ");
-      await supabase.from("notifications").insert({
-        org_id: run.org_id, run_id: newRunId, recipient_id: ownerId, kind: "escalation",
-        title: `Urgent compliance run created (${label})`,
-        body: `Auto-assigned by capacity. Open the run and start collecting the documents — Assign Roles is your first step.`,
-      });
-    }
+    await supabase.from("admin_tasks").insert(
+      defaults.map((memberId) => ({
+        org_id: run.org_id,
+        owner_id: memberId,
+        kind: "tax_compliance_new",
+        client_id: run.client_id,
+        run_id: runId,
+        step_id: stepId,
+        title: `New tax compliance — ${client?.name ?? "Client"}`,
+        body: `Services needed: ${serviceLabels.join(", ")}. Open Tax Compliance to assign a team member and update the card.`,
+      })),
+    );
+    await supabase.from("notifications").insert(
+      defaults.map((id) => ({
+        org_id: run.org_id, run_id: runId, recipient_id: id, kind: "escalation",
+        title: `New tax compliance assigned — ${client?.name ?? "Client"}`,
+        body: `Open Tax Compliance and assign a team member. Services: ${serviceLabels.join(", ")}.`,
+      })),
+    );
   }
 
   await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "urgent_decision");
-  await supabase.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "urgent_decision", data: { hasUrgent: true, services: picked, runIds: newIds }, status: "escalated" });
+  await supabase.from("run_items").insert({
+    run_id: runId,
+    client_id: run.client_id,
+    kind: "urgent_decision",
+    data: { hasUrgent: true, services: picked, taxComplianceRouted: true },
+    status: "escalated",
+  });
   await completeStep(runId, stepId);
   revalidatePath(`/onboarding/${runId}`);
-  return { created: newIds.length, runIds: newIds };
+  revalidatePath("/tax-compliance");
+  return { created: 1, runIds: [] };
 }
 
 /**

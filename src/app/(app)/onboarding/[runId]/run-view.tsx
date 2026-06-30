@@ -5724,7 +5724,7 @@ function UrgentConfigModal({
       <div className="modal" style={{ width: 600, maxWidth: "calc(100vw - 32px)" }} onClick={(e) => e.stopPropagation()}>
         <div className="hd">
           <h3>Urgent compliance configuration</h3>
-          <div className="sub">Is there any urgent compliance to handle for this client? If yes, pick the services — each spins up a parallel run on the Tax team (auto-assigned by capacity, default head: Gautham).</div>
+          <div className="sub">Is there any urgent compliance to handle for this client? If yes, pick the services — they go to the Tax Compliance board for Gautam (Tax Head) and Nafila (Team Lead). They&apos;ll assign a team member from there.</div>
         </div>
         <div className="bd" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ display: "flex", gap: 8 }}>
@@ -5763,7 +5763,7 @@ function UrgentConfigModal({
         <div className="ft">
           <button className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn-primary" disabled={saving || needed === null} onClick={save}>
-            {saving ? "Saving…" : needed === "yes" ? `Spin up ${picked.size || ""} run${picked.size === 1 ? "" : "s"} for Tax team` : "Mark — no urgent compliance"}
+            {saving ? "Saving…" : needed === "yes" ? `Route to Tax Compliance (${picked.size} service${picked.size === 1 ? "" : "s"})` : "Mark — no urgent compliance"}
           </button>
         </div>
       </div>

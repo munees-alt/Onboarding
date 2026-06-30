@@ -24,6 +24,7 @@ export const NAV: NavItem[] = [
   { id: "team-health", label: "Team Health", icon: "activity", href: "/team-health", group: "admin", roles: ["admin", "ops_head"] },
   { id: "tickets", label: "Requests", icon: "lightbulb", href: "/tickets", group: "admin", roles: ["admin", "ops_head"] },
   { id: "aml", label: "AML Compliance", icon: "file-lock", href: "/aml", group: "admin" },
+  { id: "tax-compliance", label: "Tax Compliance", icon: "percent", href: "/tax-compliance", group: "admin" },
   { id: "doc-audit", label: "Document Audit", icon: "folder-search", href: "/clients/doc-audit", group: "admin", roles: ["admin", "ops_head", "am"] },
   { id: "audit-log", label: "Audit Log", icon: "shield-check", href: "/audit-log", group: "admin", roles: ["admin", "ops_head"] },
   { id: "settings", label: "Settings", icon: "settings", href: "/settings", group: "admin", roles: ["admin", "ops_head"] },
