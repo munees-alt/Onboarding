@@ -1184,7 +1184,7 @@ export async function getCallSuggestedAccountsFromNotes(runId: string, notes: st
 export async function generateCoa(
   runId: string,
   extraAccounts?: string[],
-): Promise<{ error?: string; accounts?: CoaLine[]; rationale?: string; industry?: string }> {
+): Promise<{ error?: string; accounts?: CoaLine[]; rationale?: string; cogsRationale?: string; industry?: string }> {
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in." };
   const supabase = await createClient();
@@ -1228,7 +1228,16 @@ export async function generateCoa(
     `\n\nIMPORTANT — classify by the CLIENT'S OWN primary business activity, NOT the industry of their customers. ` +
     `Example: a marketing agency serving F&B clients is a marketing / professional-services business (service revenue, no inventory/COGS) — it is NOT an F&B business. ` +
     `If the client spans multiple activities, choose the broader fit and add accounts for each material revenue line. The base template above is only a starting point — adapt it to what this client actually does. ` +
-    `\n\nReturn ONLY a JSON object: {"industry":"the effective industry classification you used (e.g. 'Professional Services — Marketing')","rationale":"2-3 sentences on why this COA fits the client",` +
+    `\n\nCOST OF GOODS / GROSS PROFIT — this is critical. You MUST evaluate whether the client has direct costs of delivering revenue. ` +
+    `Direct costs include: inventory purchased for resale, sub-contractor / freelancer fees billed against client work, hosting / SaaS resold to clients, ` +
+    `materials, packaging, freight-in, payment-processor fees taken from gross sales, commissions paid on each sale, food cost (restaurants), ` +
+    `medical consumables (clinics), course content licensing (e-learning), etc. ` +
+    `If ANY of these apply, you MUST include them as "Cost of Goods" section accounts so Gross Profit can be calculated. ` +
+    `Trading / retail / e-commerce / restaurant / manufacturing / construction / clinic / agency-with-subcontractors all have COGS. ` +
+    `Only a PURE service business with no pass-through costs (e.g. a solo consultant billing only own time) has zero COGS. ` +
+    `In your "cogsRationale" field, state explicitly which direct costs apply (and which lines you added) — or, if none apply, state precisely why. ` +
+    `\n\nReturn ONLY a JSON object: {"industry":"the effective industry classification you used","rationale":"2-3 sentences on why this COA fits the client",` +
+    `"cogsRationale":"1-2 sentences explaining the COGS decision (which direct costs apply, or why none apply)",` +
     `"accounts":[{"code":"","account":"","section":"","note":""}]}. ` +
     `Include every Mandatory account plus the optional ones relevant to this client's channels, gateways and VAT status. ` +
     `Add any client-specific accounts needed (e.g. payment-gateway clearing). ` +
@@ -1257,6 +1266,7 @@ export async function generateCoa(
   return {
     accounts: parsed.accounts.map((a) => ({ ...a, include: a.include !== false })),
     rationale: parsed.rationale ?? "",
+    cogsRationale: (parsed as { cogsRationale?: string }).cogsRationale ?? "",
     industry: (parsed as { industry?: string }).industry || tplIndustry,
   };
 }

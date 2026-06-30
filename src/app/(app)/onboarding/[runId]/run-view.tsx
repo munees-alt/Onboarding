@@ -1059,12 +1059,23 @@ function CoaBuilderModal({
   const [fathomParseLoading, setFathomParseLoading] = useState(false);
   const [lines, setLines] = useState<CoaLine[]>([]);
   const [rationale, setRationale] = useState("");
+  const [cogsRationale, setCogsRationale] = useState("");
   const [industry, setIndustry] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
   const [openSec, setOpenSec] = useState<Record<string, boolean>>({});
   const SEC_SECONDARY = ["Assets", "Liabilities", "Equity"];
   const SEC_ORDER = ["Income", "Revenue", "Cost of Goods", "COGS", "Expenses", "Assets", "Liabilities", "Equity"];
+  // Sections that MUST always be shown in the review (so the user notices if COGS is empty).
+  const STANDARD_SECTIONS = ["Income", "Cost of Goods", "Expenses", "Assets", "Liabilities", "Equity"];
+  const SEC_NOTE: Record<string, string> = {
+    "Cost of Goods": "Direct costs of delivering revenue (inventory bought, sub-contractors, hosting passed through, freight, packaging). Required for Gross Profit. If this is a pure service business with no direct cost of sales, leave empty and confirm with the team.",
+    "Income": "Revenue accounts — one per channel the client invoices.",
+    "Expenses": "Operating expenses (rent, salaries, marketing, software).",
+    "Assets": "Bank accounts, AR, prepaid, fixed assets.",
+    "Liabilities": "AP, VAT payable, accruals, loans.",
+    "Equity": "Owner capital, retained earnings.",
+  };
   const secOpen = (sec: string) => openSec[sec] ?? !SEC_SECONDARY.includes(sec);
 
   // Fetch Fathom-based suggestions when the preflight phase mounts
@@ -1102,12 +1113,16 @@ function CoaBuilderModal({
     }
     setLines(res.accounts ?? []);
     setRationale(res.rationale ?? "");
+    setCogsRationale(res.cogsRationale ?? "");
     setIndustry(res.industry ?? "");
     if (res.error) setError(res.error);
     setPhase("review");
   };
 
-  const sections = [...new Set(lines.map((l) => l.section))].sort((a, b) => {
+  // Always include the standard 6 sections so the user sees if Cost of Goods is empty
+  // (key for Gross Profit). Then layer any extras the AI returned.
+  const aiSections = [...new Set(lines.map((l) => l.section))];
+  const sections = [...new Set([...STANDARD_SECTIONS, ...aiSections])].sort((a, b) => {
     const ia = SEC_ORDER.indexOf(a), ib = SEC_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
   });
@@ -1264,13 +1279,33 @@ function CoaBuilderModal({
                 const count = lines.filter((l) => l.section === sec).length;
                 const on = lines.filter((l) => l.section === sec && l.include).length;
                 const open = secOpen(sec);
+                const isEmpty = count === 0;
+                const isCogs = sec === "Cost of Goods" || sec === "COGS";
+                const emptyColor = isCogs ? "#b91c1c" : "var(--ink-3)";
+                const emptyBg = isCogs ? "#fef2f2" : "var(--surface)";
+                const emptyBorder = isCogs ? "#fecaca" : "var(--border)";
                 return (
                 <div key={sec} style={{ marginTop: 12 }}>
                   <button onClick={() => setOpenSec((s) => ({ ...s, [sec]: !open }))} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: 6 }}>
                     <Icon name={open ? "chevron-down" : "chevron-right"} size={14} />
-                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)" }}>{sec}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: isEmpty && isCogs ? "#b91c1c" : "var(--ink-3)" }}>{sec}</span>
                     <span className="pill" style={{ fontSize: 9.5 }}>{on}/{count}</span>
+                    {isEmpty && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: emptyBg, color: emptyColor, border: `1px solid ${emptyBorder}` }}>
+                        {isCogs ? "MISSING — Gross Profit needs this" : "EMPTY"}
+                      </span>
+                    )}
                   </button>
+                  {open && isEmpty && (
+                    <div style={{ background: emptyBg, border: `1px solid ${emptyBorder}`, borderRadius: 6, padding: "8px 10px", marginBottom: 6, fontSize: 12, color: emptyColor, lineHeight: 1.5 }}>
+                      {SEC_NOTE[sec] ?? `No ${sec} accounts returned.`}
+                      {isCogs && (cogsRationale || rationale) && (
+                        <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--ink-3)" }}>
+                          AI reasoning: {cogsRationale || rationale}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {open && lines.map((l, i) => l.section === sec && (
                     <div key={l.code + i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
                       <input type="checkbox" checked={l.include} onChange={(e) => setLines((arr) => arr.map((x, j) => (j === i ? { ...x, include: e.target.checked } : x)))} style={{ accentColor: "var(--orange)" }} />
