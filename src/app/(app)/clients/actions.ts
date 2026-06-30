@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSession } from "@/lib/auth";
 import { createRunFromTemplate } from "@/lib/runs";
-import { createClientDriveFolder, getDriveCapableMemberId, trashDriveFolder } from "@/lib/google";
+import { createClientDriveFolder, getDriveCapableMemberId, trashDriveFolder, listDriveFolder } from "@/lib/google";
 import { runAi } from "@/lib/ai";
 import { fetchFathomNotes, listFathomMeetings, fathomMeetingNotes, fathomMeetingEmails } from "@/lib/fathom";
 import type { SessionInfo } from "@/lib/types";
@@ -819,8 +819,9 @@ export async function setClientAm(clientId: string, amId: string): Promise<{ err
   const role = session.teamMember?.role ?? session.profile.role;
   if (!["am", "team_lead", "ops_head", "admin"].includes(role))
     return { error: "Only an AM or above can assign the Account Manager." };
-  const supabase = await createClient();
-  const { error } = await supabase
+  // Use admin client to bypass RLS — auth check is already enforced above.
+  const admin = createAdminClient();
+  const { error } = await admin
     .from("clients")
     .update({ am_id: amId || null })
     .eq("id", clientId)
@@ -1118,24 +1119,59 @@ export async function deleteRunAction(runId: string): Promise<{ error?: string }
   return {};
 }
 
-/** Demo trigger: set client to onboarding and create the run from the chosen template. */
+/** Updates editable fields on a lead just before it is marked as signed.
+ *  Called from the "configure + sign" modal so the team can fill in industry,
+ *  entity type, services, owner name, and AM in one step. */
+export async function updateClientBeforeSign(
+  clientId: string,
+  patch: {
+    owner_name?: string | null;
+    industry?: string | null;
+    entity_type?: string | null;
+    services?: string[];
+    am_id?: string | null;
+    primary_contact_email?: string | null;
+    phone?: string | null;
+    proposal_id?: string | null;
+    trade_licence_authority?: string | null;
+    trade_licence_no?: string | null;
+    contract_start_date?: string | null;
+    target_go_live?: string | null;
+    expected_onboarding_days?: number | null;
+  },
+): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("clients")
+    .update(patch)
+    .eq("id", clientId)
+    .eq("org_id", session.profile.org_id);
+  if (error) return { error: error.message };
+  return {};
+}
+
+/** Set client to onboarding and create the run from the chosen template.
+ *  newAmId — if provided, sets this as the AM (overrides whatever was stored). */
 export async function markSignedAction(
   clientId: string,
   templateId: string = "medium-team",
+  newAmId?: string,
 ): Promise<{ error?: string; runId?: string }> {
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in." };
 
   const supabase = await createClient();
 
-  // The Account Manager is the one assigned when the client was created. Only
-  // fall back to the person triggering the run if no AM was ever set.
+  // Use the explicitly chosen AM (from the sign-off flow), fall back to the stored AM,
+  // then fall back to whoever is triggering the run.
   const { data: clientRow } = await supabase
     .from("clients")
     .select("am_id")
     .eq("id", clientId)
     .maybeSingle();
-  const amId = clientRow?.am_id ?? session.teamMember?.id ?? null;
+  const amId = newAmId || clientRow?.am_id || session.teamMember?.id || null;
 
   // Guard: if a real run already exists, just return it. A stub `lead-intake`
   // run (created by the standalone Send-Intake flow before sign-off) is NOT a
@@ -1153,7 +1189,9 @@ export async function markSignedAction(
   }
   const stubRun = (existing ?? []).find((r) => r.template_key === "lead-intake") ?? null;
 
-  const { error: ue } = await supabase
+  // Use admin client for the update so RLS doesn't block the am_id write.
+  const adminForUpdate = createAdminClient();
+  const { error: ue } = await adminForUpdate
     .from("clients")
     .update({ status: "onboarding", am_id: amId })
     .eq("id", clientId);
@@ -1408,6 +1446,102 @@ export async function syncFathomMeetingsForClient(
 
   revalidatePath(`/clients/${clientId}`);
   return { added, skipped, scanned: meetings.length, insightsRun } as { error?: string; added?: number; skipped?: number; scanned?: number; insightsRun?: boolean };
+}
+
+/**
+ * Refresh the client playbook — available to ALL team members, not just master admin.
+ * Syncs Fathom meetings (idempotent) so newly recorded calls appear without a manual
+ * "Extract insights" click, then revalidates the playbook path. The caller should call
+ * router.refresh() after this to re-render the server page with the latest DB state.
+ */
+export async function refreshPlaybookAction(
+  clientId: string,
+): Promise<{ error?: string; fathomAdded?: number; fathomSkipped?: number }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+
+  const supabase = await createClient();
+  const { data: client } = await supabase
+    .from("clients")
+    .select("name,primary_contact_email")
+    .eq("id", clientId)
+    .maybeSingle();
+  if (!client) return { error: "Client not found." };
+
+  // Sync Fathom — best-effort: if Fathom isn't connected we return ok, router.refresh()
+  // still re-fetches all DB data (tasks, team, drive folder, payment plan, etc.).
+  let fathomAdded = 0;
+  let fathomSkipped = 0;
+  try {
+    const meetings = await listFathomMeetings(session.profile.org_id);
+    if (meetings) {
+      const cleanForMatch = (raw: string) =>
+        raw.toLowerCase().replace(/\b(fze|fzco|fz|llc|l\.l\.c|ltd|inc)\b/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+      const nameTokens = cleanForMatch(client.name as string).split(/\s+/).filter((w) => w.length >= 3);
+      const clientEmail = ((client.primary_contact_email ?? "") as string).trim().toLowerCase();
+      const clientDomain = clientEmail.split("@")[1] ?? "";
+      const GENERIC_DOMAINS = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "live.com", "me.com", "aol.com"]);
+      const domainUsable = !!clientDomain && !GENERIC_DOMAINS.has(clientDomain);
+
+      const matches = meetings.filter((m: Record<string, unknown>) => {
+        const t = cleanForMatch((m.title ?? m.meeting_title ?? "") as string);
+        if (nameTokens.length && nameTokens.every((tk) => t.includes(tk))) return true;
+        if (domainUsable) {
+          const emails = fathomMeetingEmails(m);
+          if (emails.some((e) => e.endsWith("@" + clientDomain))) return true;
+        }
+        return false;
+      });
+
+      const { data: existingRows } = await supabase
+        .from("client_meetings").select("recording_link").eq("client_id", clientId);
+      const have = new Set((existingRows ?? []).map((r) => (r.recording_link as string | null) ?? "").filter(Boolean));
+
+      for (const m of matches) {
+        const link = (m as Record<string, unknown>).share_url as string || (m as Record<string, unknown>).url as string || "";
+        if (!link || have.has(link)) { fathomSkipped++; continue; }
+        const notes = fathomMeetingNotes(m);
+        const when = (m as Record<string, unknown>).scheduled_start_time || (m as Record<string, unknown>).meeting_time || (m as Record<string, unknown>).created_at || null;
+        const { error: ie } = await supabase.from("client_meetings").insert({
+          org_id: session.profile.org_id,
+          client_id: clientId,
+          title: (m as Record<string, unknown>).title || (m as Record<string, unknown>).meeting_title || `${client.name} — call`,
+          meeting_date: when ? new Date(when as string).toISOString().slice(0, 10) : null,
+          recording_link: link,
+          notes: notes || null,
+          summary: null,
+          source: "fathom",
+          created_by: session.teamMember?.full_name ?? session.email,
+        });
+        if (ie) { fathomSkipped++; continue; }
+        fathomAdded++;
+      }
+    }
+  } catch { /* Fathom sync is best-effort */ }
+
+  // Sync Drive files — list files in the client's Drive folder and store in drive_folders.tree.files
+  try {
+    const admin2 = createAdminClient();
+    const { data: driveRow } = await admin2
+      .from("drive_folders")
+      .select("tree")
+      .eq("client_id", clientId)
+      .maybeSingle();
+    const tree = driveRow?.tree as { id?: string; name?: string; link?: string; files?: unknown[] } | null;
+    if (tree?.id) {
+      const driveMemberId = await getDriveCapableMemberId(session.profile.org_id);
+      if (driveMemberId) {
+        const files = await listDriveFolder(driveMemberId, tree.id);
+        await admin2
+          .from("drive_folders")
+          .update({ tree: { ...tree, files } })
+          .eq("client_id", clientId);
+      }
+    }
+  } catch { /* Drive sync is best-effort */ }
+
+  revalidatePath(`/clients/${clientId}`);
+  return { fathomAdded, fathomSkipped };
 }
 
 export async function deleteClientMeeting(meetingId: string, clientId: string): Promise<{ error?: string }> {
@@ -1904,13 +2038,9 @@ export async function getAmlClients(): Promise<{
 
   const clientIds = amlRows.map((r) => r.client_id as string);
 
-  const [{ data: clientRows }, { data: driveFolders }, { data: runRows }, { data: runTeamRows }] = await Promise.all([
+  const [{ data: clientRows }, { data: driveFolders }] = await Promise.all([
     admin.from("clients").select("id,name,status,am_id").in("id", clientIds),
     admin.from("drive_folders").select("client_id,tree").in("client_id", clientIds),
-    admin.from("onboarding_runs").select("id,client_id").in("client_id", clientIds).not("status", "in", "(archived,closed)").order("created_at", { ascending: false }),
-    admin.from("run_team").select("run_id,team_member_id,role").in("run_id",
-      (await admin.from("onboarding_runs").select("id").in("client_id", clientIds).not("status", "in", "(archived,closed)")).data?.map(r => r.id) ?? []
-    ),
   ]);
 
   // Build AML team (Krishna's subtree)
@@ -1931,41 +2061,22 @@ export async function getAmlClients(): Promise<{
 
   const amlByClient = new Map((amlRows ?? []).map((r) => [r.client_id as string, r]));
   const driveByClient = new Map((driveFolders ?? []).map((d) => [d.client_id as string, ((d.tree as { link?: string } | null)?.link) ?? null]));
-  const runByClient = new Map<string, string>();
-  for (const r of (runRows ?? [])) {
-    if (!runByClient.has(r.client_id as string)) runByClient.set(r.client_id as string, r.id as string);
-  }
-  // run_team indexed by run_id
-  const teamByRun = new Map<string, { team_member_id: string; role: string }[]>();
-  for (const rt of (runTeamRows ?? [])) {
-    if (!teamByRun.has(rt.run_id as string)) teamByRun.set(rt.run_id as string, []);
-    teamByRun.get(rt.run_id as string)!.push({ team_member_id: rt.team_member_id as string, role: rt.role as string });
-  }
-
-  const ROLE_LABEL: Record<string, string> = { am: "AM", team_lead: "Team Lead", senior: "Senior", junior: "Junior", associate: "Associate", intern: "Intern" };
-
   return {
     amlTeam,
     clients: (clientRows ?? []).map((c) => {
       const aml = amlByClient.get(c.id);
       const assignedTo = (aml?.assigned_to as string | null) ?? null;
-      const runId = runByClient.get(c.id) ?? null;
 
-      // Build team list: AM first, then run team members (Team Lead, Senior)
+      // Team = AM + the AML-assigned person (no run dependency)
       const teamMap = new Map<string, { role: string; name: string; email: string | null }>();
       if (c.am_id) {
         const am = memberById.get(c.am_id as string);
         if (am) teamMap.set(am.id, { role: "AM", name: am.full_name, email: am.email ?? null });
       }
-      if (runId) {
-        for (const rt of teamByRun.get(runId) ?? []) {
-          const m = memberById.get(rt.team_member_id);
-          if (m && !teamMap.has(m.id)) {
-            const roleLabel = ROLE_LABEL[m.role] ?? m.role;
-            if (["team_lead", "senior", "junior"].includes(m.role)) {
-              teamMap.set(m.id, { role: roleLabel, name: m.full_name, email: m.email ?? null });
-            }
-          }
+      if (assignedTo) {
+        const assignee = memberById.get(assignedTo);
+        if (assignee && !teamMap.has(assignee.id)) {
+          teamMap.set(assignee.id, { role: "AML", name: assignee.full_name, email: assignee.email ?? null });
         }
       }
 
@@ -1978,7 +2089,7 @@ export async function getAmlClients(): Promise<{
         signingCompletedLink: (aml?.signing_completed_link as string | null) ?? null,
         completedAt: (aml?.completed_at as string | null) ?? null,
         driveLink: driveByClient.get(c.id) ?? null,
-        runId,
+        runId: null,
         assignedTo,
         assignedToName: assignedTo ? (memberById.get(assignedTo)?.full_name ?? null) : null,
         teamMembers: [...teamMap.values()],

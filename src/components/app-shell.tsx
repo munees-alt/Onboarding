@@ -1,22 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { IdentityProvider, type Me, type AccessOverrides } from "./identity-context";
+import { IdentityProvider, type Me, type AccessOverrides, type OrgMember } from "./identity-context";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 
 export function AppShell({
   me,
   accessOverrides,
+  orgMembers = [],
   children,
 }: {
   me: Me;
   accessOverrides?: AccessOverrides;
+  orgMembers?: OrgMember[];
   children: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState(true);
   return (
-    <IdentityProvider me={me} accessOverrides={accessOverrides}>
+    <IdentityProvider me={me} accessOverrides={accessOverrides} orgMembers={orgMembers}>
       <div className={"app" + (expanded ? " expanded" : "")}>
         <Sidebar expanded={expanded} />
         <div className="main">

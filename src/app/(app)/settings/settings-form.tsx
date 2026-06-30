@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { Icon } from "@/components/icon";
 import { PROVIDER_MODELS, AI_FEATURES, type AiFeature, type FeatureModel, type Provider } from "@/lib/ai-config";
-import { saveAiKeys, saveFeatureModels, saveIntegrations, saveLeadSyncConfig, syncLeadsNow, saveRoleOverride, awardUserPoints, saveFollowupConfig } from "./actions";
+import { saveAiKeys, saveFeatureModels, saveIntegrations, saveLeadSyncConfig, syncLeadsNow, saveRoleOverride, saveDeptOverride, saveUserNavOverride, saveDeptOverrideBulk, saveUserNavOverrideBulk, awardUserPoints, saveFollowupConfig, saveTaxDefaultAssignee } from "./actions";
 import { setFeedbackFormUrl } from "../weekly-updates/actions";
 import type { AccessMatrix } from "@/lib/role-access";
 import type { Role } from "@/lib/types";
@@ -30,6 +30,7 @@ export function SettingsForm({
   keysSet, models, fathomSet, pmsName, pmsSet, googleEmail, zohoConnected, slackWorkspace = null,
   isAdmin = false, lead, mailboxes = [],
   accessMatrix = null, accessRoles = [], team = [], recentPoints = [], followup, feedbackFormUrl = null,
+  taxDefaultAssigneeId = null,
 }: {
   keysSet: Record<Provider, boolean>;
   models: Partial<Record<AiFeature, FeatureModel>>;
@@ -48,6 +49,7 @@ export function SettingsForm({
   recentPoints?: RecentPointEntry[];
   followup?: FollowupCfg;
   feedbackFormUrl?: string | null;
+  taxDefaultAssigneeId?: string | null;
 }) {
   const [busy, start] = useTransition();
   const [toast, setToast] = useState<string | null>(null);
@@ -70,6 +72,7 @@ export function SettingsForm({
   const setF = <K extends keyof FollowupCfg>(k: K, v: FollowupCfg[K]) => setFu((c) => ({ ...c, [k]: v }));
 
   const [feedbackUrl, setFeedbackUrl] = useState<string>(feedbackFormUrl ?? "");
+  const [taxAssigneeId, setTaxAssigneeId] = useState<string>(taxDefaultAssigneeId ?? "");
 
   const allCombos = PROVIDERS.flatMap((p) => PROVIDER_MODELS[p].models.map((m) => ({ provider: p, model: m })));
 
@@ -77,6 +80,20 @@ export function SettingsForm({
     <div className="scroll">
       <div className="page" style={{ maxWidth: 860 }}>
         <div className="section-head"><div><h2>Settings</h2><div className="sub">AI providers, integrations and connections. Keys are encrypted and used server-side only.</div></div></div>
+
+        {/* ── Access panel (Master Admin only) — shown FIRST so it's easy to find ── */}
+        {isAdmin && accessMatrix && (
+          <AccessPanel
+            matrix={accessMatrix}
+            roles={accessRoles}
+            onRoleChange={(role, navId, allow) => start(async () => { const r = await saveRoleOverride({ role, navId, allow }); note(r.error ?? "Access saved"); })}
+            onDeptChange={(dept, navId, allow) => start(async () => { const r = await saveDeptOverride({ dept, navId, allow }); note(r.error ?? "Access saved"); })}
+            onDeptBulk={(dept, navIds, allow) => start(async () => { const r = await saveDeptOverrideBulk({ dept, navIds, allow }); note(r.error ?? `Bulk access saved (${navIds.length} modules)`); })}
+            onUserChange={(memberId, navId, allow) => start(async () => { const r = await saveUserNavOverride({ memberId, navId, allow }); note(r.error ?? "Access saved"); })}
+            onUserBulk={(memberId, navIds, allow) => start(async () => { const r = await saveUserNavOverrideBulk({ memberId, navIds, allow }); note(r.error ?? `Bulk access saved (${navIds.length} modules)`); })}
+            busy={busy}
+          />
+        )}
 
         {/* ── AI Configuration ── */}
         <Card title="AI Configuration" icon="sparkles" desc="Paste your own keys for ChatGPT, Claude and Gemini. Pick which model powers each AI feature.">
@@ -132,9 +149,6 @@ export function SettingsForm({
             <button className="btn-ghost" onClick={() => note("Test connection — wired when PMS API is confirmed")}>Test connection</button>
           </div>
         </Card>
-
-        {/* ── Access panel (Master Admin only) ── */}
-        {isAdmin && accessMatrix && <AccessPanel matrix={accessMatrix} roles={accessRoles} onChange={(role, navId, allow) => start(async () => { const r = await saveRoleOverride({ role, navId, allow }); note(r.error ?? "Access saved"); })} busy={busy} />}
 
         {/* ── User Points (Master Admin only) ── */}
         {isAdmin && <UserPointsPanel team={team} recent={recentPoints} onAward={(memberId, points, reason) => start(async () => { const r = await awardUserPoints({ memberId, points, reason }); note(r.error ?? `Awarded ${points > 0 ? "+" : ""}${points} pts`); })} busy={busy} />}
@@ -214,6 +228,31 @@ export function SettingsForm({
         )}
 
         {/* ── Client feedback form URL (Master Admin only) ── */}
+        {/* ── Tax Assignments (Master Admin only) ── */}
+        {isAdmin && (
+          <Card title="Tax assignments" icon="calculator" desc="The team member who receives all tax-related runs by default — VAT registration, CT registration, VAT filing, CT filing, and audit escalations.">
+            <div className="field">
+              <label>Default tax assignee</label>
+              <select
+                value={taxAssigneeId}
+                onChange={(e) => setTaxAssigneeId(e.target.value)}
+                style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}
+              >
+                <option value="">— none (auto-select by capacity) —</option>
+                {team.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}{m.title ? ` · ${m.title}` : ""}</option>
+                ))}
+              </select>
+              <div style={{ fontSize: 11.5, color: "var(--ink-4)", marginTop: 4 }}>
+                When any tax-related run is created or escalated, it will be assigned to this person. Change here if the tax head changes.
+              </div>
+            </div>
+            <div>
+              <button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await saveTaxDefaultAssignee(taxAssigneeId || null); note(r.error ?? "Tax assignee saved"); })}>Save</button>
+            </div>
+          </Card>
+        )}
+
         {isAdmin && (
           <Card title="Client feedback form" icon="message-square" desc="A single feedback form link used by the Weekly Client Updates module. When set, the weekly draft includes a ‘share quick feedback’ link to the client.">
             <div className="field">
@@ -269,60 +308,320 @@ export function SettingsForm({
   );
 }
 
-function AccessPanel({ matrix, roles, onChange, busy }: { matrix: AccessMatrix; roles: Role[]; onChange: (role: Role, navId: string, allow: boolean | null) => void; busy: boolean }) {
-  // For each (role × module), what's the resolved state? Override → use override; else module default.
-  function resolve(role: Role, m: AccessMatrix["modules"][number]): { allowed: boolean; isOverride: boolean } {
+type AccessTab = "role" | "dept" | "user";
+
+function AccessPanel({
+  matrix, roles, onRoleChange, onDeptChange, onDeptBulk, onUserChange, onUserBulk, busy,
+}: {
+  matrix: AccessMatrix;
+  roles: Role[];
+  onRoleChange: (role: Role, navId: string, allow: boolean | null) => void;
+  onDeptChange: (dept: string, navId: string, allow: boolean | null) => void;
+  onDeptBulk: (dept: string, navIds: string[], allow: boolean | null) => void;
+  onUserChange: (memberId: string, navId: string, allow: boolean | null) => void;
+  onUserBulk: (memberId: string, navIds: string[], allow: boolean | null) => void;
+  busy: boolean;
+}) {
+  const [tab, setTab] = useState<AccessTab>("dept");
+  const [focusDept, setFocusDept] = useState<string>(matrix.depts[0] ?? "");
+  const [selectedMember, setSelectedMember] = useState<string>(matrix.members[0]?.id ?? "");
+  const [memberSearch, setMemberSearch] = useState("");
+  const [selModules, setSelModules] = useState<Set<string>>(new Set());
+
+  const toggleModule = (id: string) =>
+    setSelModules((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allIds = matrix.modules.map((m) => m.id);
+  const allSelected = allIds.every((id) => selModules.has(id));
+  const toggleAll = () => setSelModules(allSelected ? new Set() : new Set(allIds));
+  const clearSel = () => setSelModules(new Set());
+
+  // reset selection when switching dept/user
+  const chooseDept = (d: string) => { setFocusDept(d); clearSel(); };
+  const chooseMember = (id: string) => { setSelectedMember(id); clearSel(); };
+
+  // ── Role tab helpers ─────────────────────────────────────────────────────
+  function resolveRole(role: Role, m: AccessMatrix["modules"][number]) {
     const o = matrix.overrides[role]?.[m.id];
     if (typeof o === "boolean") return { allowed: o, isOverride: true };
-    const allowed = !m.defaultRoles || m.defaultRoles.includes(role);
-    return { allowed, isOverride: false };
+    return { allowed: !m.defaultRoles || m.defaultRoles.includes(role), isOverride: false };
   }
-  function cycle(role: Role, m: AccessMatrix["modules"][number]) {
+  function cycleRole(role: Role, m: AccessMatrix["modules"][number]) {
     const cur = matrix.overrides[role]?.[m.id];
     const def = !m.defaultRoles || m.defaultRoles.includes(role);
-    // Tri-state cycle: default → opposite-of-default → cleared (back to default).
-    if (typeof cur !== "boolean") onChange(role, m.id, !def);
-    else if (cur !== def) onChange(role, m.id, null);
-    else onChange(role, m.id, !def);
+    if (typeof cur !== "boolean") onRoleChange(role, m.id, !def);
+    else if (cur !== def) onRoleChange(role, m.id, null);
+    else onRoleChange(role, m.id, !def);
   }
+
+  // ── Dept tab helpers ─────────────────────────────────────────────────────
+  function resolveDept(dept: string, m: AccessMatrix["modules"][number]) {
+    const o = matrix.deptOverrides[dept]?.[m.id];
+    if (typeof o === "boolean") return { allowed: o, isOverride: true };
+    return { allowed: true, isOverride: false };
+  }
+  function cycleDept(dept: string, m: AccessMatrix["modules"][number]) {
+    const cur = matrix.deptOverrides[dept]?.[m.id];
+    if (typeof cur !== "boolean") onDeptChange(dept, m.id, false);
+    else if (!cur) onDeptChange(dept, m.id, null);
+    else onDeptChange(dept, m.id, false);
+  }
+
+  // ── User tab helpers ─────────────────────────────────────────────────────
+  function resolveUser(memberId: string, m: AccessMatrix["modules"][number]) {
+    const o = matrix.userOverrides[memberId]?.[m.id];
+    if (typeof o === "boolean") return { allowed: o, isOverride: true };
+    return { allowed: true, isOverride: false };
+  }
+  function cycleUser(memberId: string, m: AccessMatrix["modules"][number]) {
+    const cur = matrix.userOverrides[memberId]?.[m.id];
+    if (typeof cur !== "boolean") onUserChange(memberId, m.id, false);
+    else if (!cur) onUserChange(memberId, m.id, null);
+    else onUserChange(memberId, m.id, false);
+  }
+
+  const filteredMembers = matrix.members.filter((m) =>
+    !memberSearch || m.name.toLowerCase().includes(memberSearch.toLowerCase()) || (m.dept ?? "").toLowerCase().includes(memberSearch.toLowerCase())
+  );
+
+  const TAB_STYLE = (active: boolean): React.CSSProperties => ({
+    padding: "5px 14px", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 12.5, fontWeight: 600,
+    background: active ? "var(--orange)" : "transparent",
+    color: active ? "#fff" : "var(--ink-2)",
+    transition: "background 0.15s",
+  });
+
+  const CELL_BTN = (allowed: boolean, isOverride: boolean): React.CSSProperties => ({
+    width: 30, height: 30, border: isOverride ? "1.5px solid var(--orange)" : "1px solid var(--border)",
+    borderRadius: 7, background: isOverride ? (allowed ? "var(--orange-soft)" : "#fff") : (allowed ? "var(--green-soft, #ecfdf5)" : "#fff"),
+    color: allowed ? "var(--green-700, #047857)" : "var(--red, #dc2626)",
+    cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: "var(--font)",
+  });
+
+  const selCount = selModules.size;
+
+  // Bulk action bar shown when modules are selected (dept or user tab)
+  function BulkBar({ onBlock, onAllow, onClear }: { onBlock: () => void; onAllow: () => void; onClear: () => void }) {
+    if (selCount === 0) return null;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "var(--orange-soft)", borderRadius: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--orange)" }}>{selCount} module{selCount > 1 ? "s" : ""} selected</span>
+        <button type="button" disabled={busy} onClick={onBlock}
+          style={{ padding: "4px 12px", borderRadius: 6, border: "none", background: "var(--red, #dc2626)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+          Block selected
+        </button>
+        <button type="button" disabled={busy} onClick={onAllow}
+          style={{ padding: "4px 12px", borderRadius: 6, border: "none", background: "var(--green-700, #047857)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+          Allow selected
+        </button>
+        <button type="button" disabled={busy} onClick={onClear}
+          style={{ padding: "4px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "#fff", color: "var(--ink-2)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+          Clear overrides
+        </button>
+        <button type="button" onClick={() => setSelModules(new Set())}
+          style={{ marginLeft: "auto", padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "#fff", color: "var(--ink-3)", fontSize: 12, cursor: "pointer" }}>
+          Deselect all
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: 20, marginBottom: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
         <span style={{ width: 32, height: 32, borderRadius: 8, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center" }}><Icon name="shield" size={16} /></span>
         <h3 style={{ margin: 0, fontSize: 15 }}>Access · who can open which module</h3>
       </div>
-      <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 14, marginLeft: 42 }}>Master-Admin only. Click a cell to toggle: ✓ allowed · ✗ blocked · — using the default. Changes take effect on next page load for that user.</div>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 12 }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)" }}>Module</th>
-              {roles.map((r) => (
-                <th key={r} style={{ textAlign: "center", padding: "8px 6px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)", minWidth: 64 }}>{ROLE_LABEL[r]}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {matrix.modules.map((m) => (
-              <tr key={m.id}>
-                <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-light, #eee)", fontWeight: 600 }}>{m.label}</td>
-                {roles.map((r) => {
-                  const { allowed, isOverride } = resolve(r, m);
-                  return (
-                    <td key={r} style={{ textAlign: "center", padding: "6px", borderBottom: "1px solid var(--border-light, #eee)" }}>
-                      <button type="button" disabled={busy} onClick={() => cycle(r, m)}
-                        title={isOverride ? `Override: ${allowed ? "Allowed" : "Blocked"} (click to cycle)` : `Default: ${allowed ? "Allowed" : "Blocked"} (click to override)`}
-                        style={{ width: 30, height: 30, border: isOverride ? "1.5px solid var(--orange)" : "1px solid var(--border)", borderRadius: 7, background: allowed ? (isOverride ? "var(--orange-soft)" : "var(--green-soft, #ecfdf5)") : "#fff", color: allowed ? "var(--green-700, #047857)" : "var(--red, #dc2626)", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: "var(--font)" }}>
-                        {isOverride ? (allowed ? "✓" : "✗") : (allowed ? "✓" : "—")}
-                      </button>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 14, marginLeft: 42 }}>
+        Master-Admin only. Select modules with the checkbox then use bulk buttons, or click a cell to toggle one at a time. Changes take effect on next page load for that user.
       </div>
+
+      {/* Tab switcher */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 16, background: "var(--surface-2, #f5f5f5)", borderRadius: 9, padding: 3, width: "fit-content" }}>
+        <button type="button" style={TAB_STYLE(tab === "dept")} onClick={() => { setTab("dept"); clearSel(); }}>By Department</button>
+        <button type="button" style={TAB_STYLE(tab === "user")} onClick={() => { setTab("user"); clearSel(); }}>By User</button>
+        <button type="button" style={TAB_STYLE(tab === "role")} onClick={() => { setTab("role"); clearSel(); }}>By Role</button>
+      </div>
+
+      {/* ── By Department ── */}
+      {tab === "dept" && (
+        <div>
+          {matrix.depts.length === 0 ? (
+            <div style={{ color: "var(--ink-3)", fontSize: 13, padding: "12px 0" }}>No departments found.</div>
+          ) : (
+            <div style={{ display: "flex", gap: 12 }}>
+              {/* Dept list */}
+              <div style={{ width: 190, flexShrink: 0, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", maxHeight: 420, overflowY: "auto" }}>
+                {matrix.depts.map((d) => (
+                  <button key={d} type="button" onClick={() => chooseDept(d)}
+                    style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 12px", border: "none", borderBottom: "1px solid var(--border-light, #eee)", cursor: "pointer", background: focusDept === d ? "var(--orange-soft)" : "#fff", color: focusDept === d ? "var(--orange)" : "var(--ink-1)", fontWeight: focusDept === d ? 700 : 400, fontSize: 12.5 }}>
+                    {d}
+                  </button>
+                ))}
+              </div>
+              {/* Module list for focused dept */}
+              <div style={{ flex: 1 }}>
+                {!focusDept ? (
+                  <div style={{ color: "var(--ink-3)", fontSize: 13, padding: "12px 0" }}>Select a department on the left.</div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 8 }}>
+                      Modules for <strong>{focusDept}</strong> — ✓ allowed · ✗ blocked · — default (allowed). Select rows then bulk-block or allow.
+                    </div>
+                    <BulkBar
+                      onBlock={() => { onDeptBulk(focusDept, [...selModules], false); clearSel(); }}
+                      onAllow={() => { onDeptBulk(focusDept, [...selModules], true); clearSel(); }}
+                      onClear={() => { onDeptBulk(focusDept, [...selModules], null); clearSel(); }}
+                    />
+                    <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 12 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ width: 32, padding: "8px 6px", borderBottom: "1px solid var(--border)" }}>
+                            <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all" />
+                          </th>
+                          <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)" }}>Module</th>
+                          <th style={{ textAlign: "center", padding: "8px 6px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)", minWidth: 80 }}>Access</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {matrix.modules.map((m) => {
+                          const { allowed, isOverride } = resolveDept(focusDept, m);
+                          const checked = selModules.has(m.id);
+                          return (
+                            <tr key={m.id} style={{ background: checked ? "var(--orange-soft)" : undefined }}>
+                              <td style={{ padding: "6px", borderBottom: "1px solid var(--border-light, #eee)", textAlign: "center" }}>
+                                <input type="checkbox" checked={checked} onChange={() => toggleModule(m.id)} />
+                              </td>
+                              <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-light, #eee)", fontWeight: 600 }}>{m.label}</td>
+                              <td style={{ textAlign: "center", padding: "6px", borderBottom: "1px solid var(--border-light, #eee)" }}>
+                                <button type="button" disabled={busy} onClick={() => cycleDept(focusDept, m)}
+                                  title={isOverride ? `Override: ${allowed ? "Allowed" : "Blocked"} (click to cycle)` : "Default: Allowed (click to block)"}
+                                  style={CELL_BTN(allowed, isOverride)}>
+                                  {isOverride ? (allowed ? "✓" : "✗") : "✓"}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── By User ── */}
+      {tab === "user" && (
+        <div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 12, alignItems: "center" }}>
+            <input
+              placeholder="Search member or department…"
+              value={memberSearch}
+              onChange={(e) => setMemberSearch(e.target.value)}
+              style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", fontSize: 13 }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 12 }}>
+            {/* Member list */}
+            <div style={{ width: 190, flexShrink: 0, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", maxHeight: 420, overflowY: "auto" }}>
+              {filteredMembers.length === 0 ? (
+                <div style={{ padding: 12, fontSize: 12.5, color: "var(--ink-3)" }}>No members found.</div>
+              ) : filteredMembers.map((mem) => (
+                <button key={mem.id} type="button" onClick={() => chooseMember(mem.id)}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", border: "none", borderBottom: "1px solid var(--border-light, #eee)", cursor: "pointer", background: selectedMember === mem.id ? "var(--orange-soft)" : "#fff", color: selectedMember === mem.id ? "var(--orange)" : "var(--ink-1)", fontWeight: selectedMember === mem.id ? 700 : 400, fontSize: 12.5 }}>
+                  <div>{mem.name}</div>
+                  {mem.dept && <div style={{ fontSize: 11, color: selectedMember === mem.id ? "var(--orange)" : "var(--ink-3)" }}>{mem.dept}</div>}
+                </button>
+              ))}
+            </div>
+            {/* Module toggles for selected member */}
+            <div style={{ flex: 1 }}>
+              {!selectedMember ? (
+                <div style={{ color: "var(--ink-3)", fontSize: 13, padding: "12px 0" }}>Select a team member on the left.</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 8 }}>
+                    Overrides for <strong>{matrix.members.find((m) => m.id === selectedMember)?.name ?? "this member"}</strong>. — = no override (role/dept rules apply).
+                  </div>
+                  <BulkBar
+                    onBlock={() => { onUserBulk(selectedMember, [...selModules], false); clearSel(); }}
+                    onAllow={() => { onUserBulk(selectedMember, [...selModules], true); clearSel(); }}
+                    onClear={() => { onUserBulk(selectedMember, [...selModules], null); clearSel(); }}
+                  />
+                  <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 12 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ width: 32, padding: "8px 6px", borderBottom: "1px solid var(--border)" }}>
+                          <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all" />
+                        </th>
+                        <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)" }}>Module</th>
+                        <th style={{ textAlign: "center", padding: "8px 6px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)", minWidth: 80 }}>Access</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {matrix.modules.map((m) => {
+                        const { allowed, isOverride } = resolveUser(selectedMember, m);
+                        const checked = selModules.has(m.id);
+                        return (
+                          <tr key={m.id} style={{ background: checked ? "var(--orange-soft)" : undefined }}>
+                            <td style={{ padding: "6px", borderBottom: "1px solid var(--border-light, #eee)", textAlign: "center" }}>
+                              <input type="checkbox" checked={checked} onChange={() => toggleModule(m.id)} />
+                            </td>
+                            <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-light, #eee)", fontWeight: 600 }}>{m.label}</td>
+                            <td style={{ textAlign: "center", padding: "6px", borderBottom: "1px solid var(--border-light, #eee)" }}>
+                              <button type="button" disabled={busy} onClick={() => cycleUser(selectedMember, m)}
+                                title={isOverride ? `Override: ${allowed ? "Allowed" : "Blocked"} (click to cycle)` : "No override — click to block"}
+                                style={CELL_BTN(allowed, isOverride)}>
+                                {isOverride ? (allowed ? "✓" : "✗") : "—"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── By Role ── */}
+      {tab === "role" && (
+        <div style={{ overflowX: "auto" }}>
+          <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 8 }}>✓ = allowed · ✗ = blocked · — = using default. Orange border = explicit override. Click a cell to cycle.</div>
+          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)" }}>Module</th>
+                {roles.map((r) => <th key={r} style={{ textAlign: "center", padding: "8px 6px", borderBottom: "1px solid var(--border)", fontWeight: 700, color: "var(--ink-3)", minWidth: 64 }}>{ROLE_LABEL[r]}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {matrix.modules.map((m) => (
+                <tr key={m.id}>
+                  <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-light, #eee)", fontWeight: 600 }}>{m.label}</td>
+                  {roles.map((r) => {
+                    const { allowed, isOverride } = resolveRole(r, m);
+                    return (
+                      <td key={r} style={{ textAlign: "center", padding: "6px", borderBottom: "1px solid var(--border-light, #eee)" }}>
+                        <button type="button" disabled={busy} onClick={() => cycleRole(r, m)}
+                          title={isOverride ? `Override: ${allowed ? "Allowed" : "Blocked"} (click to cycle)` : `Default: ${allowed ? "Allowed" : "Blocked"} (click to override)`}
+                          style={CELL_BTN(allowed, isOverride)}>
+                          {isOverride ? (allowed ? "✓" : "✗") : (allowed ? "✓" : "—")}
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

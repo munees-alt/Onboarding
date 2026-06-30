@@ -6,6 +6,7 @@ import { getAccessMatrix, ACCESS_ROLES } from "@/lib/role-access";
 import { getAmCapacityList, findTaxHead, findTaxTeamLead } from "@/lib/capacity";
 import { SettingsForm } from "./settings-form";
 import { TaxCapacityCard } from "./tax-capacity-card";
+import { TaskPendingSlaCard } from "./task-pending-sla-card";
 import type { AiFeature, FeatureModel } from "@/lib/ai-config";
 
 export default async function SettingsPage() {
@@ -25,7 +26,6 @@ export default async function SettingsPage() {
     accessMatrix,
     { data: teamRows },
     { data: pointsRows },
-    { data: fuRow },
   ] = await Promise.all([
     admin.from("ai_settings").select("openai_key_enc,anthropic_key_enc,google_key_enc,feature_models").eq("org_id", s.profile.org_id).maybeSingle(),
     admin.from("integration_settings").select("fathom_connected,pms_name,pms_key_enc").eq("org_id", s.profile.org_id).maybeSingle(),
@@ -42,9 +42,11 @@ export default async function SettingsPage() {
     isAdmin
       ? admin.from("user_points").select("member_id, points, reason, created_at").eq("org_id", s.profile.org_id).order("created_at", { ascending: false }).limit(200)
       : Promise.resolve({ data: [] }),
-    admin.from("followup_config").select("docs_overdue_days,access_overdue_days,task_overdue_days,note_extension_days").eq("org_id", s.profile.org_id).maybeSingle(),
   ]);
-  const { data: orgRow } = await admin.from("orgs").select("feedback_form_url,tax_capacity_default").eq("id", s.profile.org_id).maybeSingle();
+  const [{ data: orgRow }, { data: fuRow }] = await Promise.all([
+    admin.from("orgs").select("feedback_form_url,tax_capacity_default,tax_default_assignee_id").eq("id", s.profile.org_id).maybeSingle(),
+    admin.from("followup_config").select("docs_overdue_days,access_overdue_days,task_overdue_days,note_extension_days,task_pending_sla_days,compliance_reminder_days,team_escalation_days").eq("org_id", s.profile.org_id).maybeSingle(),
+  ]);
   const conns = (gconn ?? []) as { provider: string; account_email: string | null; connected: boolean }[];
   const google = conns.find((c) => c.provider === "google");
   const zoho = conns.find((c) => c.provider === "zoho");
@@ -85,6 +87,15 @@ export default async function SettingsPage() {
   return (
     <div className="scroll">
       <div className="page">
+        <TaskPendingSlaCard
+          taskPendingSLADays={(fuRow?.task_pending_sla_days as number | null) ?? 3}
+          docsOverdueDays={fuRow?.docs_overdue_days ?? 2}
+          accessOverdueDays={fuRow?.access_overdue_days ?? 2}
+          taskOverdueDays={fuRow?.task_overdue_days ?? 0}
+          noteExtensionDays={fuRow?.note_extension_days ?? 2}
+          complianceReminderDays={(fuRow?.compliance_reminder_days as number | null) ?? 30}
+          teamEscalationDays={(fuRow?.team_escalation_days as number | null) ?? 2}
+        />
         <TaxCapacityCard
           headName={taxHead?.name ?? null}
           leadName={taxLead?.name ?? null}
@@ -114,6 +125,7 @@ export default async function SettingsPage() {
             noteExtensionDays: fuRow?.note_extension_days ?? 2,
           }}
           feedbackFormUrl={(orgRow?.feedback_form_url as string | null) ?? null}
+          taxDefaultAssigneeId={(orgRow?.tax_default_assignee_id as string | null) ?? null}
         />
       </div>
     </div>

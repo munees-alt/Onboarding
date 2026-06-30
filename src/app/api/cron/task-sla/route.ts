@@ -81,6 +81,16 @@ export async function GET(request: NextRequest) {
     return info;
   };
 
+  // Resolve & memoise org-level compliance reminder days from followup_config.
+  const orgCompReminderDays = new Map<string, number>();
+  const getCompReminderDays = async (orgId: string): Promise<number> => {
+    if (orgCompReminderDays.has(orgId)) return orgCompReminderDays.get(orgId)!;
+    const { data: cfg } = await admin.from("followup_config").select("compliance_reminder_days").eq("org_id", orgId).maybeSingle();
+    const d = (cfg as { compliance_reminder_days?: number | null } | null)?.compliance_reminder_days ?? 30;
+    orgCompReminderDays.set(orgId, d);
+    return d;
+  };
+
   // Resolve & memoise the master admin (team_members.role='admin', active) per org.
   const masterByOrg = new Map<string, string | null>();
   const resolveMaster = async (orgId: string): Promise<string | null> => {
@@ -106,9 +116,10 @@ export async function GET(request: NextRequest) {
     if (isNaN(due)) continue;
     const daysToDue = (due - now) / DAY;
     const label = d.label ?? d.type ?? "A filing";
-    // Per-row reminder offset (days before the due date). Default 30 — i.e.
-    // one month ahead — so the team has a full month to chase the client.
-    const reminderDays = Math.max(1, Math.floor(Number(d.reminderDays) || 30));
+    // Per-row reminder offset falls back to org-level followup_config setting.
+    const rowInfo = await resolve(row.run_id);
+    const orgDefault = rowInfo ? await getCompReminderDays(rowInfo.org) : 30;
+    const reminderDays = Math.max(1, Number(d.reminderDays) > 0 ? Math.floor(Number(d.reminderDays)) : orgDefault);
 
     // 1) Heads-up while it's within the per-row reminder window.
     if (daysToDue <= reminderDays && daysToDue > 0 && !d.notified) {
@@ -249,5 +260,209 @@ export async function GET(request: NextRequest) {
     stageBreaches++;
   }
 
-  return NextResponse.json({ ok: true, notified, complianceAlerts, complianceAdminTasks, renewalRuns, stageBreaches, runs: slaRows.length });
+  // ── Team task pending alert ──
+  //   For every incomplete team task (owner_kind='team' or client_visible=false)
+  //   that has been pending longer than the org's task_pending_sla_days threshold,
+  //   surface an admin_task of kind 'task_pending_alert' for the AM of that run.
+  //   Deduped per (run_id, task_id) — one alert per task, not per day.
+  let taskPendingAlerts = 0;
+  const orgPendingSla = new Map<string, number>(); // org_id → sla_days
+  const getTaskPendingSla = async (orgId: string): Promise<number> => {
+    if (orgPendingSla.has(orgId)) return orgPendingSla.get(orgId)!;
+    const { data: cfg } = await admin.from("followup_config").select("task_pending_sla_days").eq("org_id", orgId).maybeSingle();
+    const days = (cfg as { task_pending_sla_days?: number | null } | null)?.task_pending_sla_days ?? 3;
+    orgPendingSla.set(orgId, days);
+    return days;
+  };
+
+  const { data: pendingTaskRuns } = await admin
+    .from("onboarding_runs")
+    .select("id,org_id,am_id,client_id,status,blocked_reason")
+    .not("status", "in", "(archived,closed,complete)");
+
+  for (const run of pendingTaskRuns ?? []) {
+    if (!run.am_id) continue;
+    if ((run as { blocked_reason?: string | null }).blocked_reason) continue;
+    const slaDays = await getTaskPendingSla(run.org_id);
+    const cutoffTs = new Date(now - slaDays * DAY).toISOString();
+
+    const { data: staleTasks } = await admin
+      .from("tasks")
+      .select("id,title,created_at")
+      .eq("run_id", run.id)
+      .neq("status", "complete")
+      .eq("client_visible", false)
+      .lt("created_at", cutoffTs);
+
+    for (const t of staleTasks ?? []) {
+      // Dedupe: skip if an open admin_task of kind task_pending_alert exists for this task
+      const { data: existingAlert } = await admin
+        .from("admin_tasks")
+        .select("id")
+        .eq("kind", "task_pending_alert")
+        .eq("run_id", run.id)
+        .eq("step_id", t.id)
+        .eq("status", "open")
+        .maybeSingle();
+      if (existingAlert) continue;
+
+      const { data: cl } = await admin.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+      const clientName = cl?.name ?? "a client";
+      const ageDays = Math.floor((now - new Date(t.created_at).getTime()) / DAY);
+      await admin.from("admin_tasks").insert({
+        org_id: run.org_id,
+        owner_id: run.am_id,
+        kind: "task_pending_alert",
+        run_id: run.id,
+        client_id: run.client_id,
+        step_id: t.id,
+        title: `Team task pending · ${clientName}`,
+        body: `"${t.title}" has been pending for ${ageDays} day(s) (threshold: ${slaDays}d). Check the task board.`,
+      });
+      taskPendingAlerts++;
+    }
+  }
+
+  // ── AML not added check ──
+  //   For every client with status='onboarding' whose onboarding run was
+  //   created more than 10 days ago, check if a row exists in aml_records.
+  //   If there is NO row at all (client hasn't been pushed into the AML panel),
+  //   surface an action item for the master admin + AM.
+  let amlUnassigned = 0;
+  const AML_DAYS = 10;
+  const cutoff = new Date(now - AML_DAYS * DAY).toISOString();
+
+  // Get all signed (onboarding) clients
+  const { data: onboardingClients } = await admin
+    .from("clients")
+    .select("id,name,org_id,am_id")
+    .eq("status", "onboarding");
+
+  for (const cl of onboardingClients ?? []) {
+    if (!cl.org_id) continue;
+
+    // Find the earliest real (non-lead-intake) onboarding run for this client
+    const { data: runRows } = await admin
+      .from("onboarding_runs")
+      .select("id,created_at,am_id")
+      .eq("client_id", cl.id)
+      .not("template_key", "eq", "lead-intake")
+      .not("status", "in", "(archived,closed)")
+      .order("created_at", { ascending: true })
+      .limit(1);
+    const run = runRows?.[0];
+    if (!run) continue;
+
+    // Only flag once 10 days have passed since the run was created (Mark Signed)
+    if (run.created_at >= cutoff) continue;
+
+    // Check if the client already has ANY aml_records row
+    const { data: amlRow } = await admin
+      .from("aml_records")
+      .select("id")
+      .eq("client_id", cl.id)
+      .maybeSingle();
+    if (amlRow) continue; // already in AML panel — skip
+
+    // Dedupe: skip if an open admin_task of kind aml_unassigned already exists
+    const { data: existing } = await admin
+      .from("admin_tasks")
+      .select("id")
+      .eq("kind", "aml_unassigned")
+      .eq("client_id", cl.id)
+      .eq("status", "open")
+      .limit(1)
+      .maybeSingle();
+    if (existing) continue;
+
+    const amId = run.am_id ?? cl.am_id;
+    const masterId = await resolveMaster(cl.org_id);
+    const ownerIds = Array.from(new Set([masterId, amId].filter((v): v is string => !!v)));
+    for (const ownerId of ownerIds) {
+      await admin.from("admin_tasks").insert({
+        org_id: cl.org_id,
+        owner_id: ownerId,
+        kind: "aml_unassigned",
+        run_id: run.id,
+        client_id: cl.id,
+        step_id: null,
+        title: `AML not added · ${cl.name}`,
+        body: `${cl.name} was signed and onboarding started over ${AML_DAYS} days ago, but they have not been added to the AML Compliance panel yet. Go to AML → add the client.`,
+      });
+    }
+    amlUnassigned++;
+  }
+
+  // ── Team task escalation ──
+  //   For every open admin_task whose owner is a junior/associate/intern/senior
+  //   that has been open longer than the org's team_escalation_days threshold,
+  //   create an escalation admin_task for the owner's manager (reports_to).
+  //   If the owner is a team_lead, escalate to the run's AM.
+  //   Deduped via step_id = "escalation_<original_task_id>".
+  let escalationAlerts = 0;
+  const orgEscalDays = new Map<string, number>();
+  const getEscalDays = async (orgId: string): Promise<number> => {
+    if (orgEscalDays.has(orgId)) return orgEscalDays.get(orgId)!;
+    const { data: cfg } = await admin.from("followup_config").select("team_escalation_days").eq("org_id", orgId).maybeSingle();
+    const d = (cfg as { team_escalation_days?: number | null } | null)?.team_escalation_days ?? 2;
+    orgEscalDays.set(orgId, d);
+    return d;
+  };
+
+  const { data: openAdminTasks } = await admin
+    .from("admin_tasks")
+    .select("id,org_id,owner_id,kind,run_id,client_id,title,created_at")
+    .eq("status", "open")
+    .neq("kind", "task_escalation"); // don't re-escalate escalations
+
+  const { data: allMembersForEscal } = await admin
+    .from("team_members")
+    .select("id,role,reports_to,full_name")
+    .eq("active", true);
+  const memberMapEscal = new Map((allMembersForEscal ?? []).map((m) => [m.id as string, m as { id: string; role: string; reports_to: string | null; full_name: string }]));
+
+  for (const task of openAdminTasks ?? []) {
+    if (!task.owner_id || !task.org_id) continue;
+    const escalDays = await getEscalDays(task.org_id as string);
+    const cutoffEscal = new Date(now - escalDays * DAY).toISOString();
+    if ((task.created_at as string) >= cutoffEscal) continue; // not stale yet
+
+    const owner = memberMapEscal.get(task.owner_id as string);
+    if (!owner) continue;
+    // Only escalate operational roles — skip admin/ops_head (they're already at the top)
+    if (["admin", "ops_head", "am"].includes(owner.role)) continue;
+
+    const escalStepId = `escalation_${task.id}`;
+    const { data: alreadyEscalated } = await admin
+      .from("admin_tasks")
+      .select("id")
+      .eq("step_id", escalStepId)
+      .in("status", ["open", "closed"])
+      .maybeSingle();
+    if (alreadyEscalated) continue;
+
+    // Determine who to escalate to: owner's manager → run AM
+    let escalateTo: string | null = owner.reports_to ?? null;
+    if (!escalateTo && task.run_id) {
+      const { data: escalRun } = await admin.from("onboarding_runs").select("am_id").eq("id", task.run_id as string).maybeSingle();
+      escalateTo = escalRun?.am_id ?? null;
+    }
+    if (!escalateTo) continue;
+
+    const escalTarget = memberMapEscal.get(escalateTo);
+    const ageDays = Math.floor((now - new Date(task.created_at as string).getTime()) / DAY);
+    await admin.from("admin_tasks").insert({
+      org_id: task.org_id,
+      owner_id: escalateTo,
+      kind: "task_escalation",
+      run_id: task.run_id,
+      client_id: task.client_id,
+      step_id: escalStepId,
+      title: `Escalated: ${task.title}`,
+      body: `"${task.title}" was assigned to ${owner.full_name} and has not been actioned in ${ageDays} day(s) (threshold: ${escalDays}d). Escalated to ${escalTarget?.full_name ?? "you"}.`,
+    });
+    escalationAlerts++;
+  }
+
+  return NextResponse.json({ ok: true, notified, complianceAlerts, complianceAdminTasks, renewalRuns, stageBreaches, taskPendingAlerts, amlUnassigned, escalationAlerts, runs: slaRows.length });
 }

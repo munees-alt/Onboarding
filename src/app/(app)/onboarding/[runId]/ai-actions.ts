@@ -108,12 +108,93 @@ Output the ready-to-send email body ONLY — no subject line, no preamble, no JS
   report: { feature: "handover_summary", instruction: "Write a professional MONTHLY REPORT email to the client for the period. Greet by name, give a 2-3 sentence summary of the month's performance, then short labelled lines for Profit & Loss highlights, Balance Sheet position, and Cash Flow. Note the full reports are attached / in their Drive folder, invite questions, and a Finanshels sign-off. Use only figures the team provides — do not invent numbers; leave '[ ]' placeholders for any figure not given. Ready to send after the team fills the numbers." },
   deck: { feature: "handover_summary", instruction: "Write a short, branded client onboarding deck as slide-by-slide content (Slide title + 1-2 lines each): Welcome, Scope of service, Your team, Timeline & milestones, What we need from you, How we work. Client-ready." },
   brief: { feature: "brief", instruction: "Write a sharp internal pre-call brief: business overview, UAE regulatory points (VAT/CT/WPS), the 4-5 best questions to ask on the call, risk/complexity flags, and a COA template recommendation. Concise and specific." },
+
+  // ── Catch-up (CATCHUP_RUN template) ───────────────────────────────────────
+  // Each step's note tells the user what they're drafting; these prompts produce
+  // ready-to-copy plain-text messages with [bracketed placeholders] where the team
+  // must fill specifics before sending.
+  catchup_missing: { feature: "agenda", instruction:
+`Write a short, friendly INTERNAL message (to the team / client contact) listing what is MISSING for the catch-up engagement.
+
+Formatting rules (strict):
+- Plain text — no markdown, no emojis, no headings, no bold.
+- Greeting: "Hi [Name]" on its own line.
+- One short opening sentence: "We're starting the catch-up for [Client Name] and need the following before we proceed:".
+- Then a SINGLE bulleted list (use '- ') in TWO sections, each section preceded by a single label line:
+    Documents:
+    - [list items the team has marked missing — Trade Licence, MOA, Bank statements (catch-up period), Sales invoices, Vendor bills, Contracts, Salary sheet, Tracker, etc. — use '[List missing documents here]' as a placeholder if the team hasn't specified]
+    Access (via Zoho Vault):
+    - [list missing access — FTA portal, Bank access, Payment gateway, Other — use '[List missing access here]' as a placeholder if not specified]
+- Close with: "Could you share these at your earliest? Happy to jump on a quick call if easier." then a Finanshels sign-off.
+
+Output the ready-to-send message body ONLY — no subject line, no preamble, no JSON.` },
+
+  zoho_account: { feature: "agenda", instruction:
+`Write a SHORT internal Slack / email message to Lohith asking him to create a Zoho account for the client.
+
+Formatting rules:
+- Plain text — no markdown.
+- Greeting: "Hi Lohith,".
+- One sentence: "Please create an account in Zoho for [Client Company Name]."
+- Then on separate short lines:
+    Multi-currency: [yes / no]
+    Attached: Trade Licence and VAT certificate (if any)
+- One closing line: "Let me know once the account is ready and share the login details so we can begin the catch-up. Thanks!"
+- Sign off with first name only.
+
+Output the message body ONLY.` },
+
+  catchup_query: { feature: "agenda", instruction:
+`Write a clear, friendly email to the client sharing the CATCH-UP QUERY SHEET (Google Sheet).
+
+Formatting rules:
+- Plain text, no markdown.
+- Greeting: "Hi [Client Name],".
+- One sentence summarising context: "As part of the catch-up for the period [Catch-up Period], we've gone through your bank statements and supporting documents — we've captured a small set of items where we need your input."
+- One sentence with the sheet link placeholder: "Please review the queries here and add your responses directly in the sheet: [Google Sheet Link]"
+- Mention: "Each row notes the transaction date, amount, and what we'd like clarified — adding any supporting reference (invoice / receipt / contract) helps us close the line."
+- Close with: "We'll keep reconciling in parallel and reach out if more come up. Thanks!" plus a Finanshels sign-off.
+
+Output the email body ONLY.` },
+
+  catchup_followup: { feature: "agenda", instruction:
+`Write a SHORT polite follow-up email to the client about the open queries in the catch-up Google Sheet.
+
+Formatting rules:
+- Plain text, no markdown.
+- Greeting: "Hi [Client Name],".
+- One sentence: "Following up on the catch-up query sheet we shared — a few items are still open and are blocking us from closing the books for [Catch-up Period]."
+- One link line: "Sheet: [Google Sheet Link]"
+- Optional one sentence: "If easier, I'm happy to jump on a 15-minute call to walk through them together."
+- Close with a Finanshels sign-off.
+
+Output the email body ONLY.` },
+
+  catchup_review: { feature: "brief", instruction:
+`Write a STRUCTURED INTERNAL QA REVIEW of the client's catch-up books across all 30 catch-up QA checkpoints. This is for the Team Lead to read before final sign-off — it is NOT sent to the client.
+
+Formatting rules:
+- Plain text, no markdown headers, no emojis.
+- One line opening: "Catch-up QA Review — [Client Name] — [Catch-up Period]".
+- Then THREE labelled blocks, each label on its own line:
+    What looks good:
+    - [bulleted observations supported by data the team provided; if no data is given for an area, leave a placeholder '[Data not shared with AI]']
+    Open issues / risks:
+    - [bulleted material issues across these 30 areas: Period Closure, Manual Journals, P&L vs last 6mo, P&L cost-centre, P&L ledger review line-by-line, Revenue cut-off, Expense cut-off & accruals, Balance Sheet vs last 6mo, Cash & Equivalents, Prepayments, Advances & Deposits, Inventory, AR ageing, AP ageing, Fixed Assets, Intangibles, Provisions, Loans & Inter-company, Suspense & Clearing, Equity & Owner, Cash Flow, Corporate Tax, VAT, Sales invoice sampling, Expense sampling, Partner Statement, Management Reports, Flux analysis, SOPs & working papers, Final QA]
+    Items to confirm before sign-off:
+    - [bulleted specific cross-checks the Team Lead should personally verify]
+- Be honest where you have no data: write '[Not assessable — no data shared]' rather than inventing findings.
+
+Output the review body ONLY.` },
 };
 
-/** Generates AI text for a run step (agenda, MoM, welcome email, deck, brief). */
+/** Generates AI text for a run step (agenda, MoM, welcome email, deck, brief).
+ *  `extraContext` is appended to the prompt for steps that require pre-flight input
+ *  (e.g. missing-items list for catchup_missing, notes for catchup_query, etc.). */
 export async function generateStepText(
   runId: string,
   actType: string,
+  extraContext?: string,
 ): Promise<{ error?: string; text?: string }> {
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in." };
@@ -232,11 +313,13 @@ export async function generateStepText(
         : `\n\nNo intake URL available — OMIT the "Before we meet" section entirely.`)
     : "";
 
+  const extraCtxBlock = extraContext?.trim() ? `\n\nAdditional context provided by the team:\n${extraContext.trim()}` : "";
+
   try {
     const text = await runAi(session.profile.org_id, cfg.feature, {
       runId,
       system: "You write for a UAE accounting firm (Finanshels). Output must be polished and ready to send AS-IS — NEVER use [placeholders], brackets, or 'insert X here'; use the real client and team names provided. If a needed detail isn't in the context, leave it out rather than inventing it. Professional, warm, concise.",
-      prompt: `${cfg.instruction}\n\nUse these real details (do not invent beyond them):\n${ctx}${meetingBlock}${agendaIntakeNote}`,
+      prompt: `${cfg.instruction}\n\nUse these real details (do not invent beyond them):\n${ctx}${meetingBlock}${agendaIntakeNote}${extraCtxBlock}`,
     });
     // For the welcome-email step, drop the AI-drafted minutes into the saved
     // template with the client's real name, company and portal link filled in.
@@ -1079,6 +1162,25 @@ export async function getCallSuggestedAccounts(runId: string): Promise<{ suggest
   return { suggestions: [] };
 }
 
+/** Same as getCallSuggestedAccounts but takes explicit notes text (for manual Fathom paste). */
+export async function getCallSuggestedAccountsFromNotes(runId: string, notes: string): Promise<{ suggestions: string[]; error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { suggestions: [], error: "Not signed in." };
+  if (!notes.trim()) return { suggestions: [] };
+  try {
+    const aiText = await runAi(session.profile.org_id, "coa_suggestions", {
+      runId,
+      system: "You are a UAE accounting expert extracting chart-of-accounts items from a client kickoff call transcript.",
+      prompt: `From this kickoff call transcript, extract all specific financial items mentioned that should become accounts in a chart of accounts. Include: revenue streams, expense categories, specific banks named, payment gateways mentioned, specific suppliers or cost types, asset categories, and any other financially relevant named items. Return ONLY a JSON array of short, clean strings — each is an account name or category. Maximum 20 items. No duplicates. Example: ["Sales - Online", "Bank - ADCB", "Stripe Gateway Clearing", "Salary Expense", "Office Rent"]\n\nTranscript:\n${notes.slice(0, 4000)}`,
+    });
+    const parsed = JSON.parse(aiText.match(/\[[\s\S]*\]/)?.[0] ?? "[]");
+    if (Array.isArray(parsed)) return { suggestions: parsed.filter((s: unknown) => typeof s === "string").slice(0, 20) as string[] };
+  } catch {
+    // ignore AI failure
+  }
+  return { suggestions: [] };
+}
+
 export async function generateCoa(
   runId: string,
   extraAccounts?: string[],
@@ -1237,10 +1339,10 @@ export async function saveTaxCodes(
   const cleaned = codes
     .filter((c) => c.code?.trim() && c.name?.trim())
     .map((c) => ({ code: c.code.trim(), name: c.name.trim(), rate: Number(c.rate) || 0, kind: c.kind, notes: c.notes?.trim() || undefined }));
-  // Per-run snapshot for the client.
-  const { error } = await supabase.from("run_items").upsert(
+  // Delete any existing tax_codes row for this run, then insert fresh.
+  await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "tax_codes");
+  const { error } = await supabase.from("run_items").insert(
     { run_id: runId, kind: "tax_codes", data: { industry, codes: cleaned }, sort: 0 },
-    { onConflict: "run_id,kind,sort" },
   );
   if (error) return { error: error.message };
   await completeStep(runId, stepId);
@@ -1287,7 +1389,26 @@ export async function saveCoa(
 
 /** AI-generates a polished onboarding one-pager from the run's compliance calendar, contract,
  *  team and the client's UAE registration facts. Saves to run_items kind='onepager'. */
-export async function generateOnePager(runId: string): Promise<{ error?: string; data?: { generated: string; sections?: { heading: string; items: string[] }[]; generatedAt: string } }> {
+function buildWhatsAppMsg(opts: { ownerName: string; amName: string; amEmail: string; clientName: string; nextDeadline: string; docsCount: number; firstDelivery: string }): string {
+  const { ownerName, amName, amEmail, clientName, nextDeadline, docsCount, firstDelivery } = opts;
+  const greeting = ownerName ? `Hi ${ownerName.split(" ")[0]}` : "Hi";
+  return [
+    `${greeting}! I'm ${amName} from Finanshels — your Account Manager for ${clientName}.`,
+    ``,
+    `I've put together your onboarding summary. Here's what it covers:`,
+    `✅ Your compliance calendar — key deadlines & renewals`,
+    nextDeadline ? `📅 Next upcoming: ${nextDeadline}` : ``,
+    docsCount > 0 ? `📁 ${docsCount} document(s) received and on file` : ``,
+    firstDelivery ? `📊 First delivery: ${firstDelivery}` : ``,
+    `👥 Your dedicated Finanshels team`,
+    ``,
+    `I'll send this across shortly. If you have any questions or need to share additional documents, feel free to reply here or email me at ${amEmail}.`,
+    ``,
+    `Looking forward to working with you!`,
+  ].filter((l) => l !== undefined && !(l === `` && false)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+export async function generateOnePager(runId: string): Promise<{ error?: string; data?: { generated: string; sections?: { heading: string; items: string[] }[]; generatedAt: string; whatsappMsg?: string } }> {
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in." };
   const supabase = await createClient();
@@ -1297,9 +1418,43 @@ export async function generateOnePager(runId: string): Promise<{ error?: string;
   const { data: client } = await supabase.from("clients").select("name,owner_name,industry,reg_facts,vat_registered,ct_registered,entity_type").eq("id", run.client_id).maybeSingle();
   if (!client) return { error: "Client not found." };
 
-  // Compliance calendar items
+  // Compliance calendar items — deduplicated and cleaned
   const { data: compRows } = await supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "compliance");
-  const compliance = (compRows ?? []).map((r) => r.data as { label?: string; type?: string; date?: string }).filter((x) => x?.date);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const rawComp = (compRows ?? []).map((r) => r.data as { label?: string; type?: string; date?: string | null; reminderDays?: number });
+  // Remove past dates (except TBC items with null date)
+  const futureComp = rawComp.filter((x) => {
+    if (!x.date) return true; // null = TBC, keep
+    return new Date(x.date) >= today;
+  });
+  // WPS: keep only the single soonest occurrence, mark as recurring
+  const wpsItems = futureComp.filter((x) => x.type === "WPS" || (x.label ?? "").toLowerCase().includes("wps")).sort((a, b) => (a.date ?? "9999") < (b.date ?? "9999") ? -1 : 1);
+  const wpsNext = wpsItems[0] ? { ...wpsItems[0], label: "WPS Monthly Salary Transfer", _recurring: true } : null;
+  // Non-WPS: dedupe by label+date
+  const seen = new Set<string>();
+  const nonWps = futureComp.filter((x) => x.type !== "WPS" && !(x.label ?? "").toLowerCase().includes("wps")).filter((x) => {
+    const key = `${x.label ?? ""}|${x.date ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  // Skip VAT return rows if client is not VAT registered
+  const vatReg = String(client.vat_registered).toLowerCase();
+  const ctReg = String(client.ct_registered).toLowerCase();
+  const isVatRegistered = vatReg === "yes" || vatReg === "true";
+  const isCtRegistered = ctReg === "yes" || ctReg === "true";
+  const filteredNonWps = nonWps.filter((x) => {
+    const lbl = (x.label ?? "").toLowerCase();
+    const typ = (x.type ?? "").toLowerCase();
+    if (!isVatRegistered && (typ === "vat" || lbl.includes("vat return"))) return false;
+    if (!isCtRegistered && (typ === "ct" || lbl.includes("corporate tax return"))) return false;
+    return true;
+  });
+  // Sort all by date, TBC last
+  const compliance = [...(wpsNext ? [wpsNext] : []), ...filteredNonWps].sort((a, b) => {
+    if (!a.date && !b.date) return 0;
+    if (!a.date) return 1; if (!b.date) return -1;
+    return a.date < b.date ? -1 : 1;
+  }) as { label?: string; type?: string; date?: string | null; _recurring?: boolean }[];
 
   // First delivery date — from contract analysis
   const { data: contractRow } = await supabase.from("run_items").select("data").eq("run_id", runId).eq("kind", "contract").maybeSingle();
@@ -1316,8 +1471,12 @@ export async function generateOnePager(runId: string): Promise<{ error?: string;
   type TeamRow = { role_in_run: string; team_members: { full_name: string; email?: string; role?: string } | { full_name: string; email?: string; role?: string }[] | null };
   const team = (teamRows ?? []).map((t: TeamRow) => {
     const tm = Array.isArray(t.team_members) ? t.team_members[0] : t.team_members;
-    return tm ? { role: t.role_in_run, name: tm.full_name, email: tm.email ?? "" } : null;
+    return tm ? { role: t.role_in_run, name: tm.full_name, email: (tm as { email?: string }).email ?? "" } : null;
   }).filter(Boolean) as { role: string; name: string; email: string }[];
+
+  // Uploaded documents (client portal + Drive)
+  const { data: docRows } = await supabase.from("documents").select("label,status").eq("client_id", run.client_id);
+  const uploadedDocs = (docRows ?? []).filter((d) => d.status === "uploaded" || d.status === "received").map((d) => d.label as string);
 
   const reg = (client.reg_facts as { incorporationDate?: string; tradeLicenceExpiry?: string; vatFirstFiling?: string; ctFirstFiling?: string } | null) ?? {};
 
@@ -1325,39 +1484,59 @@ export async function generateOnePager(runId: string): Promise<{ error?: string;
     `UAE registration facts: incorporation ${reg.incorporationDate ?? "n/a"}; trade licence expiry ${reg.tradeLicenceExpiry ?? "n/a"}; VAT first filing ${reg.vatFirstFiling ?? "n/a"}; CT first filing ${reg.ctFirstFiling ?? "n/a"}.\n` +
     `First delivery: ${firstDelivery || "to be confirmed once data is in"}.\n` +
     `Assigned team: ${team.length ? team.map((t) => `${t.role}: ${t.name}${t.email ? ` <${t.email}>` : ""}`).join("; ") : "team not yet assigned"}.\n` +
+    `Documents received from client: ${uploadedDocs.length ? uploadedDocs.join(", ") : "none uploaded yet"}.\n` +
     `Compliance calendar items: ${compliance.length ? compliance.map((c) => `${c.label} (${c.type}) due ${c.date}`).join("; ") : "none extracted yet"}.`;
 
   try {
     const text = await runAi(session.profile.org_id, "handover_summary", {
       runId,
-      system: "You write polished client-facing one-pagers for a UAE accounting firm (Finanshels). Output plain text only — no markdown, no headings with #, no asterisks. Use only the details given; never invent.",
+      system: "You write polished client-facing one-pagers for a UAE accounting firm called Finanshels (www.finanshels.com). Finanshels is a modern UAE accounting firm known for tech-forward, proactive service. Output plain text only — no markdown, no headings with #, no asterisks. Use only the details given; never invent. Where documents are listed, mention they have been received to reassure the client.",
       prompt:
         `Write a tight one-pager that summarises everything the client needs to know after onboarding completes — for the AM to share before recurring delivery starts. Sections in order:\n` +
-        `1) Compliance calendar — the next 12 months of UAE filings & expiries (bullet list).\n` +
+        `1) Compliance calendar — the next 12 months of UAE filings & expiries (bullet list). If no items provided, write "We will set up your compliance calendar once your VAT/CT registration details are confirmed."\n` +
         `2) First delivery date — when the first report will land.\n` +
-        `3) Your Finanshels team — names + roles + emails.\n` +
-        `4) UAE compliance details — incorporation, trade licence expiry, VAT & CT first filings.\n\n` +
-        `Keep it under 350 words. Warm, factual, no jargon.\n\nDetails:\n${ctx}`,
+        `3) Documents received — list the documents the client has already submitted (shows progress and builds trust). Omit if none.\n` +
+        `4) Your Finanshels team — names + roles + emails.\n` +
+        `5) UAE compliance details — incorporation, trade licence expiry, VAT & CT first filings. Omit lines that are "n/a".\n\n` +
+        `Keep it under 400 words. Warm, professional, Finanshels brand voice — tech-forward UAE accounting firm. No jargon.\n\nDetails:\n${ctx}`,
     });
     const generatedAt = new Date().toISOString();
+    const complianceItems = compliance.map((c) => {
+      const datePart = c.date ? ` — ${c.date}` : " — To be confirmed";
+      const recurringPart = c._recurring ? " (monthly recurring)" : "";
+      return `${c.label}${datePart}${c.type ? ` (${c.type})` : ""}${recurringPart}`;
+    });
     const sections = [
-      { heading: "Compliance calendar", items: compliance.map((c) => `${c.label} — ${c.date}${c.type ? ` (${c.type})` : ""}`) },
+      { heading: "Compliance calendar", items: complianceItems },
       { heading: "First delivery", items: firstDelivery ? [firstDelivery] : ["To be confirmed once data is in."] },
+      ...(uploadedDocs.length ? [{ heading: "Documents received", items: uploadedDocs }] : []),
       { heading: "Your Finanshels team", items: team.map((t) => `${t.role.toUpperCase()} — ${t.name}${t.email ? ` · ${t.email}` : ""}`) },
       { heading: "UAE compliance details", items: [
         reg.incorporationDate ? `Incorporation: ${reg.incorporationDate}` : null,
-        reg.tradeLicenceExpiry ? `Trade licence expires: ${reg.tradeLicenceExpiry}` : null,
+        (reg as Record<string, string>).licence_expiry ? `Trade licence expires: ${(reg as Record<string, string>).licence_expiry}` : reg.tradeLicenceExpiry ? `Trade licence expires: ${reg.tradeLicenceExpiry}` : null,
         reg.vatFirstFiling ? `VAT — first filing: ${reg.vatFirstFiling}` : null,
         reg.ctFirstFiling ? `Corporate Tax — first filing: ${reg.ctFirstFiling}` : null,
       ].filter(Boolean) as string[] },
     ];
 
+    // WhatsApp message — deterministic, no AI
+    const am = team.find((t) => t.role === "am") ?? team[0];
+    const nextUpcoming = compliance.find((c) => c.date);
+    const nextDeadlineStr = nextUpcoming ? `${nextUpcoming.label} on ${nextUpcoming.date}` : "";
+    const whatsappMsg = buildWhatsAppMsg({
+      ownerName: (client.owner_name as string | null) ?? "",
+      amName: am?.name ?? "Your Account Manager",
+      amEmail: am?.email ?? "team@finanshels.com",
+      clientName: client.name as string,
+      nextDeadline: nextDeadlineStr,
+      docsCount: uploadedDocs.length,
+      firstDelivery,
+    });
+
     const admin = createAdminClient();
-    // Upsert (one onepager row per run)
     const { data: existing } = await admin.from("run_items").select("id").eq("run_id", runId).eq("kind", "onepager").maybeSingle();
-    const payload = { generated: text, sections, generatedAt, notes: "" };
+    const payload = { generated: text, sections, generatedAt, notes: "", whatsappMsg };
     if (existing) {
-      // Preserve any existing notes
       const { data: cur } = await admin.from("run_items").select("data").eq("id", existing.id).maybeSingle();
       const curData = (cur?.data ?? {}) as { notes?: string };
       payload.notes = curData.notes ?? "";
@@ -1365,7 +1544,7 @@ export async function generateOnePager(runId: string): Promise<{ error?: string;
     } else {
       await admin.from("run_items").insert({ run_id: runId, client_id: run.client_id, kind: "onepager", data: payload });
     }
-    return { data: { generated: text, sections, generatedAt } };
+    return { data: { generated: text, sections, generatedAt, whatsappMsg } };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI failed" };
   }

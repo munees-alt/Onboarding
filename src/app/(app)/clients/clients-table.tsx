@@ -15,6 +15,7 @@ import {
   sendStandaloneIntakeEmail,
   copyClientAction,
   setClientAm,
+  updateClientBeforeSign,
   deleteClientGroup,
   assignAmlRun,
   assignToAmlAction,
@@ -31,13 +32,17 @@ export interface ClientRow {
   status: "lead" | "signed" | "onboarding" | "active" | "inactive" | "hold" | "paused";
   services: string[] | null;
   primary_contact_email: string | null;
+  phone: string | null;
   profile_complete: boolean;
   am_id: string | null;
   custom_code: string | null;
   trade_licence_no: string | null;
-  contract_start_date: string | null;
-  group_id: string | null;
   trade_licence_authority: string | null;
+  contract_start_date: string | null;
+  target_go_live: string | null;
+  expected_onboarding_days: number | null;
+  proposal_id: string | null;
+  group_id: string | null;
 }
 export interface ClientGroup { id: string; name: string }
 export interface RunLite {
@@ -73,7 +78,7 @@ const STATUS_LABEL: Record<ClientRow["status"], string> = {
   hold: "On hold",
   paused: "Paused",
 };
-const TABS = ["All", "Active", "Onboarding", "Lead", "Hold", "Paused", "Inactive", "Overdue Payments"] as const;
+const TABS = ["All", "Active", "Onboarding", "Lead", "Hold", "Paused", "Inactive", "Overdue Payments", "AML Pending"] as const;
 
 // Generalised UAE industry buckets — broad enough that any incoming business fits one.
 // The COA engine classifies by the client's primary activity, so these are deliberately wide.
@@ -137,6 +142,7 @@ export function ClientsTable({
   masterAdmin = false,
   intakeByClient = {},
   overdueClientIds = new Set<string>(),
+  amlAssignedClientIds = new Set<string>(),
 }: {
   clients: ClientRow[];
   groups?: ClientGroup[];
@@ -149,6 +155,7 @@ export function ClientsTable({
   masterAdmin?: boolean;
   intakeByClient?: Record<string, IntakeStatus>;
   overdueClientIds?: Set<string>;
+  amlAssignedClientIds?: Set<string>;
 }) {
   const router = useRouter();
   const [tab, setTab] = useState<(typeof TABS)[number]>("All");
@@ -158,7 +165,7 @@ export function ClientsTable({
   const [fMonth, setFMonth] = useState("all");
   const [fAuthority, setFAuthority] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
-  const [picking, setPicking] = useState<{ clientId: string; name: string } | null>(null);
+  const [picking, setPicking] = useState<{ clientId: string; name: string; amId: string; patch?: { ownerName?: string | null; industry?: string | null; entityType?: string | null; services?: string[]; email?: string | null; phone?: string | null; proposalId?: string | null; tradeAuthority?: string | null; tradeLicenceNo?: string | null; contractStart?: string | null; targetGoLive?: string | null; expectedDays?: number | null } } | null>(null);
   const [signing, setSigning] = useState<{ name: string; step: number } | null>(null);
   const [toast, setToast] = useState<{ msg: string; kind: string } | null>(null);
   const [menuFor, setMenuFor] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -170,6 +177,14 @@ export function ClientsTable({
   const [intakeFor, setIntakeFor] = useState<{ clientId: string; name: string } | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [changeAmFor, setChangeAmFor] = useState<{ clientId: string; name: string; currentAmId: string | null } | null>(null);
+  const [pickingAm, setPickingAm] = useState<{
+    clientId: string; name: string;
+    ownerName: string | null; industry: string | null; entityType: string | null;
+    services: string[] | null; amId: string | null;
+    email: string | null; phone: string | null;
+    proposalId: string | null; tradeAuthority: string | null; tradeLicenceNo: string | null;
+    contractStart: string | null; targetGoLive: string | null; expectedDays: number | null;
+  } | null>(null);
 
   // Configurable columns — user picks which optional columns to show; persisted
   // in localStorage per browser. Client / Status / Actions are always visible.
@@ -239,6 +254,7 @@ export function ClientsTable({
     const matchesTab = (c: ClientRow) =>
       tab === "All" ? true
       : tab === "Overdue Payments" ? overdueClientIds.has(c.id)
+      : tab === "AML Pending" ? (["active", "onboarding", "hold", "paused"].includes(c.status ?? "") && !amlAssignedClientIds.has(c.id))
       : c.status === tab.toLowerCase();
     const matchesSearch = (c: ClientRow) =>
       !q || c.name.toLowerCase().includes(q) || (c.owner_name ?? "").toLowerCase().includes(q) || (c.industry ?? "").toLowerCase().includes(q);
@@ -334,14 +350,31 @@ export function ClientsTable({
 
   // filteredRows replaces the old `filtered` flat list — see grouped useMemo above
 
-  const runMarkSigned = async (clientId: string, name: string, templateId: string) => {
+  const runMarkSigned = async (clientId: string, name: string, templateId: string, amId?: string, patch?: { ownerName?: string | null; industry?: string | null; entityType?: string | null; services?: string[]; email?: string | null; phone?: string | null; proposalId?: string | null; tradeAuthority?: string | null; tradeLicenceNo?: string | null; contractStart?: string | null; targetGoLive?: string | null; expectedDays?: number | null }) => {
     setPicking(null);
     setSigning({ name, step: 0 });
     const timer = setInterval(
       () => setSigning((s) => (s ? { ...s, step: Math.min(s.step + 1, SIGN_STEPS.length - 2) } : s)),
       800,
     );
-    const res = await markSignedAction(clientId, templateId);
+    if (patch) {
+      await updateClientBeforeSign(clientId, {
+        owner_name: patch.ownerName ?? null,
+        industry: patch.industry ?? null,
+        entity_type: patch.entityType ?? null,
+        services: patch.services,
+        am_id: amId ?? null,
+        primary_contact_email: patch.email ?? null,
+        phone: patch.phone ?? null,
+        proposal_id: patch.proposalId ?? null,
+        trade_licence_authority: patch.tradeAuthority ?? null,
+        trade_licence_no: patch.tradeLicenceNo ?? null,
+        contract_start_date: patch.contractStart ?? null,
+        target_go_live: patch.targetGoLive ?? null,
+        expected_onboarding_days: patch.expectedDays ?? null,
+      });
+    }
+    const res = await markSignedAction(clientId, templateId, amId);
     clearInterval(timer);
     setSigning((s) => (s ? { ...s, step: SIGN_STEPS.length - 1 } : s));
     setTimeout(() => {
@@ -567,11 +600,7 @@ export function ClientsTable({
                         <div className="client" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           {isChild && <span style={{ color: "var(--ink-4)", fontSize: 11 }}>└</span>}
                           {c.name}
-                          {!c.profile_complete && (
-                            <span className="pill amber" style={{ fontSize: 10, padding: "1px 7px" }}>
-                              Profile incomplete
-                            </span>
-                          )}
+                          {!c.profile_complete && <ProfileIncompletePopover client={c} />}
                         </div>
                         <div className="wf">{c.owner_name ?? "—"}</div>
                       </div>
@@ -649,24 +678,33 @@ export function ClientsTable({
                             <button className="btn-ghost" onClick={() => router.push(`/onboarding/${run.id}`)}>
                               Open run <Icon name="arrow-right" size={13} />
                             </button>
-                            {(c.status === "active" || c.status === "hold" || c.status === "paused" || c.status === "signed") && (
-                              <button
-                                className="btn-ghost"
-                                style={{ fontSize: 12, color: "#7c3aed", borderColor: "#c4b5fd", padding: "4px 10px" }}
-                                title="Assign to AML compliance team"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  const res = await assignToAmlAction(c.id);
-                                  if (res.error) showToast(res.error, "red");
-                                  else showToast(`${c.name} assigned to AML compliance`);
-                                }}
-                              >
-                                <Icon name="file-lock" size={12} /> AML
-                              </button>
+                            {(c.status === "active" || c.status === "hold" || c.status === "paused" || c.status === "signed" || c.status === "onboarding") && (
+                              amlAssignedClientIds.has(c.id) ? (
+                                <span
+                                  style={{ fontSize: 12, color: "#15803d", background: "#dcfce7", border: "1px solid #86efac", borderRadius: 6, padding: "4px 10px", display: "inline-flex", alignItems: "center", gap: 4 }}
+                                  title="AML review already assigned"
+                                >
+                                  <Icon name="check-circle" size={12} /> AML Done
+                                </span>
+                              ) : (
+                                <button
+                                  className="btn-ghost"
+                                  style={{ fontSize: 12, color: "#7c3aed", borderColor: "#c4b5fd", padding: "4px 10px" }}
+                                  title="Assign to AML compliance team"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    const res = await assignToAmlAction(c.id);
+                                    if (res.error) showToast(res.error, "red");
+                                    else showToast(`${c.name} assigned to AML compliance`);
+                                  }}
+                                >
+                                  <Icon name="file-lock" size={12} /> AML
+                                </button>
+                              )
                             )}
                           </>
                         ) : c.status === "lead" || c.status === "signed" ? (
-                          <button className="btn-primary" onClick={() => setPicking({ clientId: c.id, name: c.name })}>
+                          <button className="btn-primary" onClick={() => setPickingAm({ clientId: c.id, name: c.name, ownerName: c.owner_name, industry: c.industry, entityType: c.entity_type, services: c.services, amId: c.am_id, email: c.primary_contact_email, phone: c.phone, proposalId: c.proposal_id, tradeAuthority: c.trade_licence_authority, tradeLicenceNo: c.trade_licence_no, contractStart: c.contract_start_date, targetGoLive: c.target_go_live, expectedDays: c.expected_onboarding_days })}>
                             Mark as Signed
                           </button>
                         ) : null}
@@ -700,14 +738,7 @@ export function ClientsTable({
                                       )}
                                     </>
                                   )}
-                                  {canManageStatus && (
-                                    <MenuItem icon="file-lock" label="Assign AML review" onClick={async () => {
-                                      setMenuFor(null);
-                                      const res = await assignAmlRun(c.id);
-                                      if (res.error) showToast(res.error, "red");
-                                      else showToast(`AML run created for ${c.name} — team notified`);
-                                    }} />
-                                  )}
+                                  {/* AML review is handled via the AML Compliance panel — no run required */}
                                   {canDelete && run && (
                                     <MenuItem icon="trash-2" danger label="Delete onboarding run" onClick={() => { setMenuFor(null); setConfirmDel({ kind: "run", id: run.id, name: c.name }); }} />
                                   )}
@@ -738,9 +769,36 @@ export function ClientsTable({
             showToast(`${name} added as a lead`);
             router.refresh();
           }}
-          onMarkSigned={(clientId, name) => {
+          onMarkSigned={(clientId, p) => {
             setAddOpen(false);
-            setPicking({ clientId, name });
+            setPickingAm({ clientId, name: p.name, ownerName: p.ownerName, industry: p.industry, entityType: p.entityType, services: p.services, amId: p.amId, email: p.email, phone: p.phone, proposalId: p.proposalId, tradeAuthority: p.tradeAuthority, tradeLicenceNo: p.tradeLicenceNo, contractStart: p.contractStart, targetGoLive: p.targetGoLive, expectedDays: p.expectedDays });
+          }}
+        />
+      )}
+
+      {/* Step 1: full configure + AM before template */}
+      {pickingAm && (
+        <SignClientModal
+          clientId={pickingAm.clientId}
+          name={pickingAm.name}
+          ownerName={pickingAm.ownerName}
+          industry={pickingAm.industry}
+          entityType={pickingAm.entityType}
+          services={pickingAm.services}
+          currentAmId={pickingAm.amId}
+          email={pickingAm.email}
+          phone={pickingAm.phone}
+          proposalId={pickingAm.proposalId}
+          tradeAuthority={pickingAm.tradeAuthority}
+          tradeLicenceNo={pickingAm.tradeLicenceNo}
+          contractStart={pickingAm.contractStart}
+          targetGoLive={pickingAm.targetGoLive}
+          expectedDays={pickingAm.expectedDays}
+          members={members}
+          onClose={() => setPickingAm(null)}
+          onNext={(amId, patch) => {
+            setPickingAm(null);
+            setPicking({ clientId: pickingAm.clientId, name: pickingAm.name, amId, patch });
           }}
         />
       )}
@@ -757,7 +815,7 @@ export function ClientsTable({
                 <button
                   key={t.id}
                   className="next-card"
-                  onClick={() => runMarkSigned(picking.clientId, picking.name, t.id)}
+                  onClick={() => runMarkSigned(picking.clientId, picking.name, t.id, picking.amId, (picking as any).patch)}
                 >
                   <span style={{ width: 34, height: 34, borderRadius: 8, background: "var(--orange-soft)", color: "var(--orange)", display: "grid", placeItems: "center", flexShrink: 0 }}>
                     <Icon name={t.id === "medium-enterprise" ? "building-2" : t.id.startsWith("micro") ? "zap" : "users"} size={17} />
@@ -891,6 +949,74 @@ export function ClientsTable({
         </div>
       )}
     </div>
+  );
+}
+
+function ProfileIncompletePopover({ client }: { client: ClientRow }) {
+  const [open, setOpen] = useState(false);
+
+  const FIELDS: { label: string; value: string | null | undefined | string[] }[] = [
+    { label: "Owner / Contact name", value: client.owner_name },
+    { label: "Email", value: client.primary_contact_email },
+    { label: "Industry", value: client.industry },
+    { label: "Entity type", value: client.entity_type },
+    { label: "Services", value: client.services?.length ? client.services.join(", ") : null },
+    { label: "Trade licence no.", value: client.trade_licence_no },
+    { label: "Contract start date", value: client.contract_start_date },
+    { label: "Trade licence authority", value: client.trade_licence_authority },
+  ];
+
+  const missing = FIELDS.filter((f) => {
+    const v = f.value;
+    return v == null || v === "" || (Array.isArray(v) && v.length === 0);
+  });
+
+  return (
+    <span style={{ position: "relative", display: "inline-flex" }}>
+      <button
+        className="pill amber"
+        style={{ fontSize: 10, padding: "1px 7px", cursor: "pointer", border: "none", background: "none" }}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        title="Click to see missing fields"
+      >
+        Profile incomplete
+      </button>
+      {open && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={() => setOpen(false)} />
+          <div
+            style={{
+              position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 200,
+              background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: "12px 14px",
+              minWidth: 240, maxWidth: 300,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "#0f172a" }}>
+              Missing details
+            </div>
+            {missing.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#15803d" }}>All fields filled — intake may not have been submitted yet.</div>
+            ) : (
+              <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 5 }}>
+                {missing.map((f) => (
+                  <li key={f.label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                    <span style={{ width: 16, height: 16, borderRadius: "50%", background: "#fee2e2", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <Icon name="x" size={10} style={{ color: "#b91c1c" }} />
+                    </span>
+                    <span style={{ color: "#374151" }}>{f.label}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #f1f5f9", fontSize: 11, color: "#94a3b8" }}>
+              Open the client profile to fill these in.
+            </div>
+          </div>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -1098,6 +1224,203 @@ const ROLE_SHORT: Record<string, string> = {
   senior: "Senior", junior: "Junior", associate: "Associate", intern: "Intern", other: "Team",
 };
 
+function SignClientModal({
+  name,
+  ownerName: initOwnerName,
+  industry: initIndustry,
+  entityType: initEntityType,
+  services: initServices,
+  currentAmId,
+  email: initEmail,
+  phone: initPhone,
+  proposalId: initProposalId,
+  tradeAuthority: initTradeAuthority,
+  tradeLicenceNo: initTradeLicenceNo,
+  contractStart: initContractStart,
+  targetGoLive: initTargetGoLive,
+  expectedDays: initExpectedDays,
+  members,
+  onClose,
+  onNext,
+}: {
+  clientId: string;
+  name: string;
+  ownerName: string | null;
+  industry: string | null;
+  entityType: string | null;
+  services: string[] | null;
+  currentAmId: string | null;
+  email: string | null;
+  phone: string | null;
+  proposalId: string | null;
+  tradeAuthority: string | null;
+  tradeLicenceNo: string | null;
+  contractStart: string | null;
+  targetGoLive: string | null;
+  expectedDays: number | null;
+  members: AmOption[];
+  onClose: () => void;
+  onNext: (amId: string, patch: { ownerName: string | null; industry: string | null; entityType: string | null; services: string[]; email: string | null; phone: string | null; proposalId: string | null; tradeAuthority: string | null; tradeLicenceNo: string | null; contractStart: string | null; targetGoLive: string | null; expectedDays: number | null }) => void;
+}) {
+  const [ownerName, setOwnerName] = useState(initOwnerName ?? "");
+  const [industry, setIndustry] = useState(initIndustry ?? "");
+  const [entityType, setEntityType] = useState(initEntityType ?? "");
+  const [services, setServices] = useState<string[]>(initServices ?? []);
+  const [amId, setAmId] = useState(currentAmId ?? "");
+  const [email, setEmail] = useState(initEmail ?? "");
+  const [phone, setPhone] = useState(initPhone ?? "");
+  const [proposalId, setProposalId] = useState(initProposalId ?? "");
+  const [tradeAuthority, setTradeAuthority] = useState(initTradeAuthority ?? "");
+  const [tradeLicenceNo, setTradeLicenceNo] = useState(initTradeLicenceNo ?? "");
+  const [contractStart, setContractStart] = useState((initContractStart ?? "").slice(0, 7));
+  const [targetGoLive, setTargetGoLive] = useState(initTargetGoLive ?? "");
+  const [expectedDays, setExpectedDays] = useState<string>(initExpectedDays != null ? String(initExpectedDays) : "");
+
+  const toggleService = (s: string) =>
+    setServices((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
+
+  const eligible = members.filter((m) => ["am", "team_lead", "ops_head", "admin"].includes(m.role));
+
+  const handleNext = () => {
+    if (!amId) return;
+    onNext(amId, {
+      ownerName: ownerName || null,
+      industry: industry || null,
+      entityType: entityType || null,
+      services,
+      email: email || null,
+      phone: phone || null,
+      proposalId: proposalId || null,
+      tradeAuthority: tradeAuthority || null,
+      tradeLicenceNo: tradeLicenceNo || null,
+      contractStart: contractStart ? `${contractStart}-01` : null,
+      targetGoLive: targetGoLive || null,
+      expectedDays: expectedDays ? Number(expectedDays) : null,
+    });
+  };
+
+  return (
+    <div className="modal-overlay open" style={{ zIndex: 90 }} onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="hd">
+          <h3>Confirm &amp; Sign</h3>
+          <div className="sub">Review all details for <strong>{name}</strong> before starting onboarding.</div>
+        </div>
+        <div className="bd">
+
+          {/* Company */}
+          <div className="field">
+            <label>Company name</label>
+            <input value={name} disabled style={{ opacity: 0.6, cursor: "not-allowed" }} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="field">
+              <label>Owner / founder name</label>
+              <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="e.g. Ahmed Al-Rashidi" />
+            </div>
+            <div className="field">
+              <label>Proposal ID</label>
+              <input value={proposalId} onChange={(e) => setProposalId(e.target.value)} placeholder="e.g. PROP-2026-0142" />
+            </div>
+          </div>
+
+          {/* Contact */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="field">
+              <label>Contact email</label>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="client@company.com" />
+            </div>
+            <div className="field">
+              <label>Phone</label>
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+971 50 000 0000" />
+            </div>
+          </div>
+
+          {/* Business */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="field">
+              <label>Industry</label>
+              <select value={industry} onChange={(e) => setIndustry(e.target.value)}>
+                <option value="">Select…</option>
+                {INDUSTRIES.map((i) => <option key={i} value={i}>{i}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Entity type</label>
+              <select value={entityType} onChange={(e) => setEntityType(e.target.value)}>
+                <option value="">Select…</option>
+                {ENTITIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Services */}
+          <div className="field">
+            <label>Services signed</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {SERVICES.map((s) => (
+                <button key={s} type="button" onClick={() => toggleService(s)}
+                  className={"tab-pill" + (services.includes(s) ? " active" : "")}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Trade licence */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="field">
+              <label>Issuing authority</label>
+              <select value={tradeAuthority} onChange={(e) => setTradeAuthority(e.target.value)}>
+                <option value="">Select…</option>
+                {UAE_AUTHORITIES.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Trade licence #</label>
+              <input value={tradeLicenceNo} onChange={(e) => setTradeLicenceNo(e.target.value)} placeholder="e.g. 1234567" />
+            </div>
+          </div>
+
+          {/* Timeline */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <div className="field">
+              <label>Service start (month)</label>
+              <input type="month" value={contractStart} onChange={(e) => setContractStart(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Target go-live</label>
+              <input type="date" value={targetGoLive} onChange={(e) => setTargetGoLive(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Onboarding days</label>
+              <input type="number" value={expectedDays} onChange={(e) => setExpectedDays(e.target.value)} placeholder="28" min={1} />
+            </div>
+          </div>
+
+          {/* AM */}
+          <div className="field">
+            <label>Account Manager (AM) *</label>
+            <select value={amId} onChange={(e) => setAmId(e.target.value)}>
+              <option value="">— Select AM —</option>
+              {eligible.map((m) => (
+                <option key={m.id} value={m.id}>{m.full_name} · {ROLE_SHORT[m.role] ?? m.role}</option>
+              ))}
+            </select>
+          </div>
+
+        </div>
+        <div className="ft">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={handleNext} disabled={!amId}>
+            Next: Choose Template →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChangeAmModal({
   clientName,
   currentAmId,
@@ -1158,7 +1481,7 @@ function AddClientModal({
   members: AmOption[];
   onClose: () => void;
   onCreated: (name: string) => void;
-  onMarkSigned: (clientId: string, name: string) => void;
+  onMarkSigned: (clientId: string, prefill: { name: string; ownerName: string | null; industry: string | null; entityType: string | null; services: string[] | null; amId: string | null; email: string | null; phone: string | null; proposalId: string | null; tradeAuthority: string | null; tradeLicenceNo: string | null; contractStart: string | null; targetGoLive: string | null; expectedDays: number | null }) => void;
 }) {
   const [form, setForm] = useState<NewClientInput>({ name: "", services: [] });
   const [busy, setBusy] = useState(false);
@@ -1178,7 +1501,7 @@ function AddClientModal({
     const res = await createClientAction(form);
     setBusy(false);
     if (res.error) return setError(res.error);
-    if (markSigned && res.clientId) onMarkSigned(res.clientId, form.name.trim());
+    if (markSigned && res.clientId) onMarkSigned(res.clientId, { name: form.name.trim(), ownerName: form.owner_name ?? null, industry: form.industry ?? null, entityType: form.entity_type ?? null, services: form.services ?? null, amId: form.am_id ?? null, email: form.email ?? null, phone: form.phone ?? null, proposalId: form.proposal_id ?? null, tradeAuthority: form.trade_licence_authority ?? null, tradeLicenceNo: form.trade_licence_no ?? null, contractStart: form.contract_start_date ?? null, targetGoLive: form.target_go_live ?? null, expectedDays: form.expected_onboarding_days ?? null });
     else onCreated(form.name.trim());
   };
 

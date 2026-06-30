@@ -17,7 +17,7 @@ export default async function ClientsPage() {
 
   const { data: allClients } = await supabase
     .from("clients")
-    .select("id,name,owner_name,industry,entity_type,status,services,primary_contact_email,profile_complete,am_id,custom_code,trade_licence_no,contract_start_date,group_id,trade_licence_authority")
+    .select("id,name,owner_name,industry,entity_type,status,services,primary_contact_email,phone,profile_complete,am_id,custom_code,trade_licence_no,trade_licence_authority,contract_start_date,target_go_live,expected_onboarding_days,proposal_id,group_id")
     .order("created_at", { ascending: true });
 
   const { data: groups } = await supabase
@@ -52,14 +52,18 @@ export default async function ClientsPage() {
   }
 
   // Non-admins/ops only see clients assigned to them: where they're the AM, or
-  // they're on a run's team for that client.
+  // they're on a run's team for that client, OR they're assigned as AML reviewer.
   let clients = allClients ?? [];
   if (!seesAll && memberId) {
-    const { data: teamRuns } = await supabase.from("run_team").select("run_id").eq("team_member_id", memberId);
+    const [{ data: teamRuns }, { data: amlAssigned }] = await Promise.all([
+      supabase.from("run_team").select("run_id").eq("team_member_id", memberId),
+      supabase.from("aml_records").select("client_id").eq("assigned_to", memberId),
+    ]);
     const myRunIds = new Set((teamRuns ?? []).map((r) => r.run_id));
-    const myClientIds = new Set(
-      (runs ?? []).filter((r) => myRunIds.has(r.id)).map((r) => r.client_id),
-    );
+    const myClientIds = new Set([
+      ...(runs ?? []).filter((r) => myRunIds.has(r.id)).map((r) => r.client_id),
+      ...(amlAssigned ?? []).map((r) => r.client_id as string),
+    ]);
     clients = clients.filter((c) => c.am_id === memberId || myClientIds.has(c.id));
   } else if (!seesAll) {
     clients = [];
@@ -92,17 +96,26 @@ export default async function ClientsPage() {
     }
     for (const r of runs ?? []) {
       const people = byRun[r.id] ?? [];
-      teamByClient[r.client_id] = {
-        seniors: people.filter((p) => p.role === "senior" || p.roleInRun === "senior").map((p) => p.name),
-        teamLeads: people.filter((p) => p.role === "team_lead" || p.roleInRun === "team_lead").map((p) => p.name),
-        juniors: people.filter((p) => p.role === "junior" || p.roleInRun === "junior").map((p) => p.name),
-      };
+      const seniors = people.filter((p) => p.role === "senior" || p.roleInRun === "senior").map((p) => p.name);
+      const teamLeads = people.filter((p) => p.role === "team_lead" || p.roleInRun === "team_lead").map((p) => p.name);
+      const juniors = people.filter((p) => p.role === "junior" || p.roleInRun === "junior").map((p) => p.name);
+      // Only set when this run has team members; don't overwrite a run that already populated the team
+      if (seniors.length || teamLeads.length || juniors.length) {
+        teamByClient[r.client_id] ??= { seniors, teamLeads, juniors };
+      }
     }
   }
 
   const canDelete = role === "admin" || role === "ops_head";
   const canManageStatus = ["am", "team_lead", "ops_head", "admin"].includes(role);
   const masterAdmin = isMasterAdmin(role);
+
+  // AML assignment status — which clients already have an aml_records entry.
+  const { data: amlRows } = await supabase
+    .from("aml_records")
+    .select("client_id")
+    .eq("org_id", session?.profile.org_id ?? "");
+  const amlAssignedClientIds = new Set<string>((amlRows ?? []).map((r) => r.client_id as string));
 
   // Clients with overdue payment entries for the "Overdue Payments" tab.
   const { data: overdueRows } = await supabase
@@ -129,6 +142,7 @@ export default async function ClientsPage() {
       masterAdmin={masterAdmin}
       intakeByClient={intakeByClient}
       overdueClientIds={overdueClientIds}
+      amlAssignedClientIds={amlAssignedClientIds}
     />
   );
 }

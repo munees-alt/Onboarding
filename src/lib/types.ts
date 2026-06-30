@@ -46,6 +46,8 @@ export interface SessionInfo {
   profile: Profile;
   teamMember: TeamMember | null;
   org: Org | null;
+  /** Set when a master admin is impersonating another team member. */
+  viewingAs?: { realName: string; realMemberId: string | null; realRole: Role } | null;
 }
 
 export interface NavItem {

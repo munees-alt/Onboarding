@@ -7,6 +7,7 @@ import { Icon } from "@/components/icon";
 import { stepCount, type OnbTemplate } from "@/lib/onboarding-templates";
 import type { RunCardData } from "@/lib/data/runs";
 import { markSignedAction, deleteRunAction, setClientAm, createComplianceRun } from "../clients/actions";
+import { forceCompleteRun, deleteRun as hardDeleteRun } from "./[runId]/actions";
 import { createTemplateFromText, forkTemplate, saveTemplateAction } from "../templates/actions";
 import { syncLeadsNow } from "../settings/actions";
 
@@ -39,7 +40,9 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   const [fIndustry, setFIndustry] = useState<string>("all");
   const [fMonth, setFMonth] = useState<string>("all"); // YYYY-MM
   const [confirmDel, setConfirmDel] = useState<{ id: string; name: string } | null>(null);
+  const [confirmComplete, setConfirmComplete] = useState<{ id: string; name: string } | null>(null);
   const [busy, startDel] = useTransition();
+  const [busyComplete, startComplete] = useTransition();
   const [syncing, startSync] = useTransition();
   const [toast, setToast] = useState<string | null>(null);
   const note = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3500); };
@@ -86,9 +89,21 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   const doDeleteRun = () => {
     if (!confirmDel) return;
     startDel(async () => {
-      const res = await deleteRunAction(confirmDel.id);
+      const res = await hardDeleteRun(confirmDel.id);
       setConfirmDel(null);
-      if (!res.error) router.refresh();
+      if (res.error) { note(res.error); return; }
+      router.refresh();
+    });
+  };
+
+  const doForceComplete = () => {
+    if (!confirmComplete) return;
+    startComplete(async () => {
+      const res = await forceCompleteRun(confirmComplete.id);
+      setConfirmComplete(null);
+      if (res.error) { note(res.error); return; }
+      note(`${confirmComplete.name} marked complete.`);
+      router.refresh();
     });
   };
 
@@ -172,6 +187,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
                         <td onClick={(e) => e.stopPropagation()}>
                           <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
                             <button className="btn-ghost" onClick={() => router.push(`/onboarding/${r.id}`)}>Open <Icon name="arrow-right" size={13} /></button>
+                            {canDelete && <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>}
                           </div>
                         </td>
                       </tr>
@@ -197,10 +213,15 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
                     <td>{r.currentStage}. {r.currentStageName}</td>
                     <td><div className="progress-wrap"><div className="progress orange"><i style={{ width: `${r.progress}%` }} /></div><span className="progress-pct">{r.progress}%</span></div></td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", flexWrap: "wrap" }}>
                         <button className="btn-ghost" onClick={() => router.push(`/onboarding/${r.id}`)}>Open <Icon name="arrow-right" size={13} /></button>
-                        {canDelete && (
-                          <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>
+                        {isAdmin && (
+                          <>
+                            <button className="btn-ghost" style={{ fontSize: 12, color: "#15803d", padding: "3px 8px" }} title="Force complete all steps for this run" onClick={() => setConfirmComplete({ id: r.id, name: r.clientName })}>
+                              <Icon name="check-circle" size={13} /> Complete
+                            </button>
+                            <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -225,7 +246,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
                     <td onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
                         <button className="btn-ghost" onClick={() => router.push(`/onboarding/${r.id}`)}>Open <Icon name="arrow-right" size={13} /></button>
-                        {canDelete && <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>}
+                        {isAdmin && <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>}
                       </div>
                     </td>
                   </tr>
@@ -243,11 +264,26 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
             <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
               <div className="hd">
                 <h3>Delete onboarding run?</h3>
-                <div className="sub">This permanently deletes the onboarding run for {confirmDel.name} — its stages, steps, tasks and messages. The client stays. This cannot be undone.</div>
+                <div className="sub">This permanently deletes the onboarding run for <strong>{confirmDel.name}</strong> — its stages, steps, tasks and messages. The client record stays. This cannot be undone.</div>
               </div>
               <div className="ft">
                 <button className="btn-ghost" onClick={() => setConfirmDel(null)} disabled={busy}>Cancel</button>
                 <button className="btn-danger" onClick={doDeleteRun} disabled={busy}>{busy ? "Deleting…" : "Delete run"}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {confirmComplete && (
+          <div className="modal-overlay open" style={{ zIndex: 90 }} onClick={() => !busyComplete && setConfirmComplete(null)}>
+            <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+              <div className="hd">
+                <h3>Force complete this run?</h3>
+                <div className="sub">This marks every step as complete for <strong>{confirmComplete.name}</strong> regardless of their current state, and closes the onboarding. The client moves to the Done tab. Use this only when work is genuinely finished but the system hasn&apos;t caught up.</div>
+              </div>
+              <div className="ft">
+                <button className="btn-ghost" onClick={() => setConfirmComplete(null)} disabled={busyComplete}>Cancel</button>
+                <button className="btn-primary" onClick={doForceComplete} disabled={busyComplete}>{busyComplete ? "Completing…" : "Mark complete"}</button>
               </div>
             </div>
           </div>

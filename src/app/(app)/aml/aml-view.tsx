@@ -47,11 +47,14 @@ export function AmlView({
   const [assignPanel, setAssignPanel] = useState<string | null>(null);
   const [assignBusy, setAssignBusy] = useState(false);
 
-  const visible = localClients.filter((c) => {
-    if (filter !== "all" && c.status !== filter) return false;
-    if (search && !c.clientName.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
+  const ACTIVE_STATUSES = ["pending", "in_review", "link_sent", "signed"];
+  const searched = localClients.filter((c) =>
+    !search || c.clientName.toLowerCase().includes(search.toLowerCase()),
+  );
+  const activeClients = searched.filter((c) => ACTIVE_STATUSES.includes(c.status));
+  const completedClients = searched.filter((c) => c.status === "completed");
+  // legacy: keep visible for compatibility with tab filter if used
+  const visible = searched.filter((c) => filter === "all" || c.status === filter);
 
   function startEdit(c: AmlClient) {
     setEditing(c.clientId);
@@ -93,35 +96,37 @@ export function AmlView({
 
   return (
     <>
-      {/* Status filter pills */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+      {/* Search bar */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, alignItems: "center" }}>
         <input
           placeholder="Search clients…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 13, width: 220 }}
+          style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 13, width: 240 }}
         />
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <button onClick={() => setFilter("all")} style={{ padding: "4px 12px", borderRadius: 20, border: "1px solid var(--border)", fontSize: 12, background: filter === "all" ? "var(--orange)" : "transparent", color: filter === "all" ? "#fff" : "var(--ink-2)", cursor: "pointer" }}>
-            All ({localClients.length})
-          </button>
-          {ALL_STATUSES.map((s) => (
-            <button key={s} onClick={() => setFilter(s)} style={{ padding: "4px 12px", borderRadius: 20, border: "1px solid var(--border)", fontSize: 12, background: filter === s ? STATUS_COLOR[s] : "transparent", color: filter === s ? "#fff" : "var(--ink-2)", cursor: "pointer" }}>
-              {STATUS_LABEL[s]} {counts[s] ? `(${counts[s]})` : ""}
-            </button>
-          ))}
-        </div>
+        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+          {activeClients.length} pending · {completedClients.length} completed
+        </span>
       </div>
 
-      {visible.length === 0 && (
-        <div style={{ padding: 48, textAlign: "center", color: "var(--ink-3)", fontSize: 13, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12 }}>
-          No clients assigned to AML yet. Use the <strong>AML</strong> button next to a client in the Clients list.
-        </div>
-      )}
+      {/* Split layout: two panels side by side */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "start" }}>
 
-      {/* Client cards */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {visible.map((c) => (
+        {/* ── Pending / Active panel ── */}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-1)" }}>Pending Items</span>
+            <span style={{ fontSize: 11, fontWeight: 700, background: "var(--orange-soft, #fff7ed)", color: "var(--orange)", padding: "2px 8px", borderRadius: 20 }}>
+              {activeClients.length}
+            </span>
+          </div>
+          {activeClients.length === 0 && (
+            <div style={{ padding: "28px 16px", textAlign: "center", color: "var(--ink-3)", fontSize: 12.5, background: "var(--card)", border: "1px dashed var(--border)", borderRadius: 10 }}>
+              No pending AML items.
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {activeClients.map((c) => (
           <div key={c.clientId} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "14px 18px" }}>
             {editing === c.clientId ? (
               <AmlEditForm
@@ -203,6 +208,59 @@ export function AmlView({
             )}
           </div>
         ))}
+          </div>
+        </div>
+
+        {/* ── Completed panel ── */}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-1)" }}>Completed Items</span>
+            <span style={{ fontSize: 11, fontWeight: 700, background: "#dcfce7", color: "#16a34a", padding: "2px 8px", borderRadius: 20 }}>
+              {completedClients.length}
+            </span>
+          </div>
+          {completedClients.length === 0 && (
+            <div style={{ padding: "28px 16px", textAlign: "center", color: "var(--ink-3)", fontSize: 12.5, background: "var(--card)", border: "1px dashed var(--border)", borderRadius: 10 }}>
+              No completed AML records yet.
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {completedClients.map((c) => (
+              <div key={c.clientId} style={{ background: "var(--card)", border: "1px solid #bbf7d0", borderRadius: 10, padding: "14px 18px" }}>
+                {editing === c.clientId ? (
+                  <AmlEditForm
+                    clientId={c.clientId}
+                    clientName={c.clientName}
+                    form={forms[c.clientId] ?? {}}
+                    onChange={(patch) => setForms((f) => ({ ...f, [c.clientId]: { ...f[c.clientId], ...patch } }))}
+                    onSave={() => doSave(c.clientId)}
+                    onCancel={() => setEditing(null)}
+                    saving={saving === c.clientId}
+                    driveLink={c.driveLink}
+                    runId={c.runId}
+                  />
+                ) : (
+                  <div>
+                    <AmlClientRow
+                      c={c}
+                      onEdit={() => startEdit(c)}
+                      canEdit={canEdit}
+                      isHead={!!isHead}
+                      onAssign={amlTeam.length > 0 ? () => setAssignPanel(c.clientId) : undefined}
+                    />
+                    {isAdmin && (
+                      <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
+                        onClick={() => setAdminPanel(c.clientId)}>
+                        Admin actions
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
       </div>
     </>
   );
@@ -222,20 +280,6 @@ function AmlClientRow({
           {c.clientName}
         </Link>
         {c.notes && <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>{c.notes}</div>}
-        {/* Team popover */}
-        {teamOpen && c.teamMembers.length > 0 && (
-          <div style={{ marginTop: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", display: "inline-flex", flexDirection: "column", gap: 6, minWidth: 260 }}>
-            {c.teamMembers.map((m) => (
-              <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-3)", width: 72, flexShrink: 0 }}>{m.role}</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-1)" }}>{m.name}</span>
-                {m.email && (
-                  <a href={`mailto:${m.email}`} style={{ fontSize: 12, color: "#3b82f6", textDecoration: "none" }}>{m.email}</a>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
         {/* Assigned team member — shown for head */}
         {isHead && (
           <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
@@ -283,16 +327,61 @@ function AmlClientRow({
             <Icon name="file-text" size={11} /> Run
           </Link>
         )}
-        {/* Team view icon */}
-        {c.teamMembers.length > 0 && (
+        {/* Team icon — always visible, opens popover */}
+        <div style={{ position: "relative" }}>
           <button
             onClick={() => setTeamOpen((v) => !v)}
-            title="View client team"
-            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: teamOpen ? "var(--orange)" : "var(--ink-3)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+            title="View assigned team"
+            style={{
+              display: "flex", alignItems: "center", gap: 4, fontSize: 12,
+              color: teamOpen ? "var(--orange)" : "var(--ink-2)",
+              background: teamOpen ? "var(--orange-soft, #fff7ed)" : "none",
+              border: "1px solid " + (teamOpen ? "var(--orange)" : "var(--border)"),
+              borderRadius: 6, cursor: "pointer", padding: "3px 8px",
+            }}
           >
-            <Icon name="users" size={14} />
+            <Icon name="users" size={13} /> Team
           </button>
-        )}
+          {teamOpen && (
+            <div
+              style={{
+                position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50,
+                background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10,
+                padding: "12px 16px", minWidth: 300, boxShadow: "0 4px 16px rgba(0,0,0,0.10)",
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 10 }}>
+                Assigned Team
+              </div>
+              {c.teamMembers.length === 0 ? (
+                <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No team assigned yet.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {c.teamMembers.map((m) => (
+                    <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em",
+                        color: m.role === "AM" ? "var(--orange)" : "var(--ink-3)",
+                        background: m.role === "AM" ? "#fff7ed" : "var(--surface)",
+                        padding: "2px 7px", borderRadius: 4, flexShrink: 0, minWidth: 60, textAlign: "center",
+                      }}>{m.role}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-1)", flex: 1 }}>{m.name}</span>
+                      {m.email && (
+                        <a href={`mailto:${m.email}`} style={{ fontSize: 12, color: "#3b82f6", textDecoration: "none" }}>{m.email}</a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setTeamOpen(false)}
+                style={{ marginTop: 10, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+              >
+                Close
+              </button>
+            </div>
+          )}
+        </div>
         {canEdit && (
           <button className="btn-ghost" style={{ fontSize: 12, padding: "3px 10px" }} onClick={onEdit}>Update</button>
         )}

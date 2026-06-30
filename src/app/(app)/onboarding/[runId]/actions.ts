@@ -10,7 +10,7 @@ import { canManageCoa, canRevealAccessCredentials } from "@/lib/roles";
 import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, getDriveCapableMemberId, shareDriveFolder, type DriveFolderNode } from "@/lib/google";
 import { getTemplate, getAllTemplates } from "@/lib/templates-store";
 import { createRunFromTemplate } from "@/lib/runs";
-import { findTaxHead, suggestNextAm, findAlcHead, suggestNextAlc, suggestNextByRole } from "@/lib/capacity";
+import { findTaxHead, findTaxTeamLead, suggestNextAm, findAlcHead, suggestNextAlc, suggestNextByRole, getAmCapacityList } from "@/lib/capacity";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const KIND_TO_TYPE: Record<string, string> = { ai: "ai", link: "link", doc: "form", check: "manual", person: "manual" };
@@ -469,6 +469,26 @@ export async function pushToPms(runId: string): Promise<{ error?: string; ok?: b
     action: "pms_push", module: "onboarding", resource_ref: `Pushed ${count} projects to ${settings.pms_name ?? "PMS"}`, resource_id: runId, resource_type: "run",
   });
   return { ok: true, pushed: count };
+}
+
+/** Creates the Drive folder tree (from contract period) + stores the contract breakdown, then completes the step. */
+/** Client already has a Drive folder — save the link they provide and complete the step. No folder creation, no sharing. */
+export async function saveExistingDriveLink(
+  runId: string, stepId: string, link: string,
+): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const trimmed = link.trim();
+  if (!trimmed) return { error: "Please paste a Drive link first." };
+  await supabase.from("drive_folders").upsert(
+    { client_id: run.client_id, tree: { link: trimmed } },
+    { onConflict: "client_id" },
+  );
+  await completeStep(runId, stepId);
+  return {};
 }
 
 /** Creates the Drive folder tree (from contract period) + stores the contract breakdown, then completes the step. */
@@ -1059,16 +1079,45 @@ export async function escalateUrgentComplianceServices(
   if (!picked.length) return { error: "Pick at least one service to escalate, or choose No urgent compliance." };
 
   const head = await findTaxHead(run.org_id);
+  const lead = await findTaxTeamLead(run.org_id, head?.id);
+  const member = await suggestNextAm(run.org_id);
   const newIds: string[] = [];
   for (const service of picked) {
     // Audit reuses the CT filing template under the hood (per product decision).
     const tplId = service === "audit" ? "ct-filing" : service;
-    const owner = await suggestNextAm(run.org_id);
-    const ownerId = owner?.id ?? head?.id ?? null;
+    const ownerId = head?.id ?? null;
     const newRunId = await createRunFromTemplate(supabase, {
       orgId: run.org_id, clientId: run.client_id, amId: ownerId, templateId: tplId,
     });
     newIds.push(newRunId);
+
+    // Auto-assign the first step: team lead = Nafila (always), team member = capacity pick.
+    const firstStepId = `${tplId}1.1`;
+    const assignees: { id: string; name: string; role: string }[] = [];
+    if (lead) assignees.push({ id: lead.id, name: lead.name, role: "team_lead" });
+    if (member && member.id !== lead?.id) assignees.push({ id: member.id, name: member.name, role: "senior" });
+    if (assignees.length) {
+      const names = assignees.map((a) => a.name).join(", ");
+      await upsertStep(supabase, newRunId, tplId, firstStepId, {
+        status: "pending",
+        assignee_id: lead?.id ?? member?.id ?? null,
+        payload: { assigned: names, assignees },
+      });
+      for (const a of assignees) {
+        await supabase.from("run_team").upsert(
+          { run_id: newRunId, team_member_id: a.id, role_in_run: a.role },
+          { onConflict: "run_id,team_member_id" },
+        );
+      }
+      await supabase.from("notifications").insert(
+        assignees.map((a) => ({
+          org_id: run.org_id, run_id: newRunId, recipient_id: a.id, kind: "task_assigned",
+          title: "Tax compliance run assigned to you",
+          body: `You've been assigned to step 1: "${firstStepId}". Open the run to begin.`,
+        })),
+      );
+    }
+
     if (ownerId) {
       const label = service === "audit" ? "Statutory audit" : service.replace("-", " ");
       await supabase.from("notifications").insert({
@@ -1833,6 +1882,46 @@ export async function completeOnboarding(runId: string): Promise<{ error?: strin
   return {};
 }
 
+/** Master Admin only — hard-delete an onboarding run and all its child rows. */
+export async function deleteRun(runId: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (session?.profile.role !== "admin") return { error: "Master Admin only." };
+  const supabase = await createClient();
+  // Delete child rows first to avoid FK violations
+  await supabase.from("run_steps").delete().eq("run_id", runId);
+  await supabase.from("run_team").delete().eq("run_id", runId);
+  await supabase.from("run_items").delete().eq("run_id", runId);
+  await supabase.from("documents").delete().eq("run_id", runId);
+  await supabase.from("admin_tasks").delete().eq("run_id", runId);
+  const { error } = await supabase.from("onboarding_runs").delete().eq("id", runId);
+  if (error) return { error: error.message };
+  revalidatePath("/onboarding");
+  return {};
+}
+
+/** Master Admin only — force-complete a run, bypassing step completion checks. */
+export async function forceCompleteRun(runId: string): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (session?.profile.role !== "admin") return { error: "Master Admin only." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const tpl = await getTemplate(run.template_key);
+  if (!tpl) return { error: "Template missing." };
+  const now = new Date().toISOString();
+  for (const [si, stage] of tpl.stages.entries()) {
+    for (const step of stage.steps) {
+      await supabase.from("run_steps").upsert(
+        { run_id: runId, step_no: step.id, stage_no: si + 1, title: step.title, type: KIND_TO_TYPE[step.kind] ?? "manual", status: "complete", completed_at: now },
+        { onConflict: "run_id,step_no" },
+      );
+    }
+  }
+  await recompute(supabase, runId, run.template_key);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 /**
  * Pause SLA + compliance alerts for this run because work is blocked upstream
  * (catch-up incomplete, client docs pending, FTA portal outage…). The crons
@@ -1972,4 +2061,115 @@ export async function pushCoaToZoho(
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Zoho push failed." };
   }
+}
+
+/** Returns default tax-team assignments for the Assign Team modal (Stage 0 on taxation templates). */
+export async function getTaxAssignDefaults(runId: string): Promise<{
+  am: { id: string; name: string } | null;
+  lead: { id: string; name: string } | null;
+  member: { id: string; name: string } | null;
+  allPeople: { id: string; name: string; role: string }[];
+  error?: string;
+}> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { am: null, lead: null, member: null, allPeople: [], error: "Not signed in." };
+  const orgId = session.profile.org_id;
+  const supabase = await createClient();
+
+  // Get current assignments from run_steps payload if already saved
+  const { data: runStep } = await supabase
+    .from("run_steps")
+    .select("payload,assignee_id")
+    .eq("run_id", runId)
+    .like("step_no", "%.0.1")
+    .maybeSingle();
+
+  const payload = runStep?.payload as { am?: { id: string; name: string }; lead?: { id: string; name: string }; member?: { id: string; name: string } } | null;
+
+  // Fetch capacity defaults
+  const [head, lead, member, capacityRows] = await Promise.all([
+    findTaxHead(orgId),
+    findTaxHead(orgId).then((h) => findTaxTeamLead(orgId, h?.id)),
+    suggestNextAm(orgId),
+    getAmCapacityList(orgId),
+  ]);
+
+  const allPeople = capacityRows.map((r) => ({ id: r.id, name: r.name, role: r.role ?? "senior" }));
+
+  return {
+    am: payload?.am ?? (head ? { id: head.id, name: head.name } : null),
+    lead: payload?.lead ?? (lead ? { id: lead.id, name: lead.name } : null),
+    member: payload?.member ?? (member ? { id: member.id, name: member.name } : null),
+    allPeople,
+  };
+}
+
+/** Saves tax-team role assignments for the Assign Team step (Stage 0 on taxation templates). */
+export async function saveTaxAssign(
+  runId: string,
+  stepId: string,
+  assignments: { amId: string; amName: string; leadId: string; leadName: string; memberId: string; memberName: string },
+): Promise<{ error?: string }> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { error: "Not signed in." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key,org_id").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+
+  const assignees: { id: string; name: string; role: string }[] = [
+    ...(assignments.amId ? [{ id: assignments.amId, name: assignments.amName, role: "am" }] : []),
+    ...(assignments.leadId ? [{ id: assignments.leadId, name: assignments.leadName, role: "team_lead" }] : []),
+    ...(assignments.memberId ? [{ id: assignments.memberId, name: assignments.memberName, role: "senior" }] : []),
+  ];
+
+  const parts: string[] = [];
+  if (assignments.amName) parts.push(`AM: ${assignments.amName}`);
+  if (assignments.leadName) parts.push(`TL: ${assignments.leadName}`);
+  if (assignments.memberName) parts.push(`Member: ${assignments.memberName}`);
+  const assigned = parts.join(", ");
+
+  const r = await upsertStep(supabase, runId, run.template_key, stepId, {
+    status: "complete",
+    assignee_id: assignments.amId || null,
+    payload: {
+      assigned,
+      assignees,
+      am: assignments.amId ? { id: assignments.amId, name: assignments.amName } : null,
+      lead: assignments.leadId ? { id: assignments.leadId, name: assignments.leadName } : null,
+      member: assignments.memberId ? { id: assignments.memberId, name: assignments.memberName } : null,
+    },
+    completed_at: new Date().toISOString(),
+  });
+  if (r.error) return r;
+
+  // Upsert each person into run_team
+  for (const a of assignees) {
+    await supabase.from("run_team").upsert(
+      { run_id: runId, team_member_id: a.id, role_in_run: a.role },
+      { onConflict: "run_id,team_member_id" },
+    );
+  }
+
+  // Update run's am_id so the header shows the correct AM
+  if (assignments.amId) {
+    await supabase.from("onboarding_runs").update({ am_id: assignments.amId }).eq("id", runId);
+  }
+
+  // Notify all three
+  if (assignees.length) {
+    await supabase.from("notifications").insert(
+      assignees.map((a) => ({
+        org_id: run.org_id,
+        run_id: runId,
+        recipient_id: a.id,
+        kind: "task_assigned",
+        title: "You were assigned to a tax compliance run",
+        body: `Role: ${a.role.replace(/_/g, " ")}. Open the run to see your tasks.`,
+      })),
+    );
+  }
+
+  await recompute(supabase, runId, run.template_key);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
 }

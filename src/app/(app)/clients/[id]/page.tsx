@@ -49,7 +49,7 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
   // Client Drive folder link (created at client creation), saved meetings + the latest
   // contract analysis (whichever run had it analysed last — the playbook surfaces the
   // engagement scope / inclusions / exclusions / payment / deliverables in their own card).
-  const [{ data: driveRow }, { data: meetingRows }, { data: contractRow }, { data: paymentPlanRow }, { data: paymentEntryRows }, { data: clientTeamRows }] = await Promise.all([
+  const [{ data: driveRow }, { data: meetingRows }, { data: contractRow }, { data: paymentPlanRow }, { data: paymentEntryRows }, { data: clientTeamRows }, { data: amlRow }, { data: adminTaskRows }] = await Promise.all([
     supabase.from("drive_folders").select("tree").eq("client_id", id).maybeSingle(),
     supabase.from("client_meetings").select("id,title,meeting_date,recording_link,notes,summary,source,created_at").eq("client_id", id).order("meeting_date", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false }),
     supabase.from("run_items")
@@ -62,8 +62,20 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
     supabase.from("client_payment_plans").select("*").eq("client_id", id).maybeSingle(),
     supabase.from("client_payment_entries").select("*").eq("client_id", id).order("due_date"),
     supabase.from("client_team_members").select("id,name,role_label,email,phone,notes,sort_order").eq("client_id", id).order("sort_order"),
+    supabase.from("aml_records").select("status,assigned_to,completed_at,notes,signing_link,signing_completed_link").eq("client_id", id).maybeSingle(),
+    supabase.from("admin_tasks").select("id,kind,title,body,status,created_at,history").eq("client_id", id).order("created_at", { ascending: false }),
   ]);
-  const driveLink = ((driveRow?.tree as { link?: string } | null)?.link) ?? null;
+  const driveTree = driveRow?.tree as { link?: string; files?: { id: string; name: string; mimeType: string; webViewLink: string; modifiedTime: string | null; size: string | null }[] } | null;
+  const driveLink = driveTree?.link ?? null;
+  const driveFiles = driveTree?.files ?? [];
+
+  // Resolve AML assigned member name
+  let amlAssignedName: string | null = null;
+  const amlTyped = amlRow as { status: string; assigned_to: string | null; completed_at: string | null; notes: string | null; signing_link: string | null; signing_completed_link: string | null } | null;
+  if (amlTyped?.assigned_to) {
+    const { data: memberRow } = await supabase.from("team_members").select("full_name").eq("id", amlTyped.assigned_to).maybeSingle();
+    amlAssignedName = (memberRow?.full_name as string | null) ?? null;
+  }
   const meetings = (meetingRows ?? []) as PlaybookData["meetings"];
   const contract = (contractRow?.data ?? null) as PlaybookData["contract"];
   const contractAnalysedAt = (contractRow?.created_at ?? null) as string | null;
@@ -130,10 +142,20 @@ export default async function ClientPlaybookPage({ params }: { params: Promise<{
     fieldDefs,
     portalAccess,
     driveLink,
+    driveFiles,
     meetings,
     contract,
     contractAnalysedAt,
     canEdit,
+    amlRecord: amlTyped ? {
+      status: amlTyped.status,
+      assignedToName: amlAssignedName,
+      completedAt: amlTyped.completed_at,
+      notes: amlTyped.notes,
+      signingLink: amlTyped.signing_link,
+      signingCompletedLink: amlTyped.signing_completed_link,
+    } : null,
+    adminTasks: ((adminTaskRows ?? []) as { id: string; kind: string; title: string; body: string | null; status: string; created_at: string; history: { at?: string; action?: string; notes?: string }[] }[]).map((r) => ({ id: r.id, kind: r.kind, title: r.title, body: r.body, status: r.status, createdAt: r.created_at, history: Array.isArray(r.history) ? r.history : [] })),
     paymentPlan: (paymentPlanRow as Record<string, unknown> | null) ?? null,
     paymentEntries: ((paymentEntryRows ?? []) as Record<string, unknown>[]),
     clientTeam: ((clientTeamRows ?? []) as { id: string; name: string; role_label: string; email: string | null; phone: string | null; notes: string | null; sort_order: number }[]).map((r) => ({

@@ -261,6 +261,33 @@ export async function createClientDriveFolder(
   return ensureDriveFolder(token, clientName, rootId);
 }
 
+export interface DriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  webViewLink: string;
+  modifiedTime: string | null;
+  size: string | null;
+}
+
+/** Lists all non-trashed files (not sub-folders) directly inside a Drive folder. */
+export async function listDriveFolder(
+  teamMemberId: string,
+  folderId: string,
+): Promise<DriveFile[]> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return [];
+  const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+  const fields = "files(id,name,mimeType,webViewLink,modifiedTime,size)";
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&pageSize=100`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) return [];
+  const j = await res.json();
+  return (j.files ?? []) as DriveFile[];
+}
+
 /** Moves a Drive folder to trash (soft-delete). Best-effort — does not throw. */
 export async function trashDriveFolder(teamMemberId: string, folderId: string): Promise<void> {
   const token = await getValidGoogleToken(teamMemberId);

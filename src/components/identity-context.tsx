@@ -10,6 +10,15 @@ export interface Me {
   color: string;
   email: string | null;
   memberId: string | null;
+  viewingAs?: { realName: string; realMemberId: string | null; realRole: Role } | null;
+}
+
+export interface OrgMember {
+  id: string;
+  name: string;
+  role: string;
+  initials: string;
+  color: string;
 }
 
 /** Master-Admin role-overrides for nav visibility. Shape: { [role]: { [navId]: allow } }. */
@@ -21,6 +30,7 @@ interface IdentityCtx {
   setEffectiveRole: (r: Role) => void;
   isAdmin: boolean;
   accessOverrides: AccessOverrides;
+  orgMembers: OrgMember[];
 }
 
 const Ctx = createContext<IdentityCtx | null>(null);
@@ -28,13 +38,15 @@ const Ctx = createContext<IdentityCtx | null>(null);
 export function IdentityProvider({
   me,
   accessOverrides = {},
+  orgMembers = [],
   children,
 }: {
   me: Me;
   accessOverrides?: AccessOverrides;
+  orgMembers?: OrgMember[];
   children: React.ReactNode;
 }) {
-  const isAdmin = me.role === "admin";
+  const isAdmin = me.role === "admin" || me.viewingAs?.realRole === "admin";
   const [viewAs, setViewAs] = useState<Role>(me.role);
 
   useEffect(() => {
@@ -56,6 +68,7 @@ export function IdentityProvider({
         setEffectiveRole,
         isAdmin,
         accessOverrides,
+        orgMembers,
       }}
     >
       {children}

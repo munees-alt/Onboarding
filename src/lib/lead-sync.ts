@@ -5,7 +5,7 @@
 // no code change needed to retune it.
 import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { listGmailLabels, listGmailMessageIds, getGmailMessage, createClientDriveFolder } from "@/lib/google";
+import { listGmailLabels, listGmailMessageIds, getGmailMessage } from "@/lib/google";
 import { parsePaymentEmail } from "@/lib/sales-email";
 
 export interface LeadSyncConfig {
@@ -158,23 +158,13 @@ export async function runLeadSync(orgId: string): Promise<LeadSyncResult> {
     const { data: client, error: ce } = await admin.from("clients").insert({
       org_id: orgId,
       name: companyName,
-      owner_name: parsed.clientName || null,
-      services,
-      proposal_id: parsed.proposalId,
-      am_id: mailbox,
       status: "lead",
       profile_complete: false,
       slug: slugify(companyName),
     }).select("id").single();
     if (ce || !client) { result.errors.push(`insert ${msgId}: ${ce?.message}`); continue; }
 
-    try {
-      const drive = await createClientDriveFolder(mailbox, companyName);
-      if (drive) await admin.from("drive_folders").upsert(
-        { client_id: client.id, tree: { name: companyName, id: drive.id, link: drive.link } },
-        { onConflict: "client_id" },
-      );
-    } catch { /* folder is best-effort */ }
+    // Drive folder is NOT created here — it is created only when "Mark as Signed" is triggered.
 
     await admin.from("sales_email_leads").insert({
       org_id: orgId, gmail_message_id: msgId, client_id: client.id,

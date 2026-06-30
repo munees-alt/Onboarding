@@ -3,7 +3,7 @@
 
 export type StepKind = "ai" | "person" | "link" | "doc" | "check";
 export type WhoToken =
-  | "System" | "AI" | "Client" | "Ops" | "AM" | "Senior" | "Junior";
+  | "System" | "AI" | "Client" | "Ops" | "AM" | "Team Lead" | "Senior" | "Junior";
 
 export interface StepAct {
   type: string;
@@ -129,8 +129,6 @@ const MEDIUM_ENTERPRISE: OnbTemplate = {
       { id: "e7.1", title: "Task list auto-generated from template", kind: "ai", who: ["System"] },
       { id: "e7.2", title: "Team configures tasks + due dates", kind: "person", who: ["AM"] },
       { id: "e7.3", title: "Client-visible toggles set per task", kind: "person", who: ["AM"] },
-      { id: "e7.3b", title: "Create COA in accounting software", kind: "person", who: ["Senior"], note: "Set up the Chart of Accounts in the client's accounting software (Zoho Books / QuickBooks / Xero). Confirm all accounts match the approved COA.", act: { type: "checklist", btn: "COA created", items: ["COA imported / created in accounting software", "Account codes match the approved COA", "Opening balances entered (if applicable)", "AM reviewed and confirmed"] } },
-      { id: "e7.3c", title: "Create tax codes in accounting software", kind: "person", who: ["Senior"], note: "Set up UAE tax codes (5% VAT, exempt, zero-rated, CT categories) in the accounting software.", act: { type: "checklist", btn: "Tax codes created", items: ["Standard 5% VAT tax code created", "Exempt and zero-rated codes set up", "Corporate Tax categories configured", "Tax codes tested on a sample transaction", "AM reviewed and confirmed"] } },
       { id: "e7.4", title: "Generate onboarding one-pager", kind: "person", who: ["AM"], note: "Polished one-pager summarising the compliance calendar, first delivery date, team contacts and UAE compliance details. Share with the client before recurring delivery kicks off.", act: { type: "onepager", btn: "Generate one-pager" } },
     ] },
     { id: "e8", name: "Handover", optional: true, desc: "Optional structured handover. Recommended for a clean transition, but the run can be completed without it.", steps: [
@@ -185,6 +183,13 @@ const MEDIUM_TEAM: OnbTemplate = {
       { id: "t2.4", title: "Create & share client Drive link", kind: "link", who: ["System", "Senior"], note: "The Drive folder is auto-created when onboarding starts. Generate the shareable link — saved to the run and sent with the magic link.", act: { type: "drivelink", btn: "Create & share Drive link", toast: "Drive link created and shared with the client" } },
       { id: "t2.4b", title: "Send (or re-send) the onboarding portal link", kind: "link", who: ["AM"], note: "Generates the secure onboarding portal magic link plus ready-to-send email + WhatsApp templates. Use this step to dispatch the link for the first time AND to re-send if the client lost it. Add extra teammate emails who should also be able to open the portal — they're saved to the link and the templates are re-sent to all of them.", act: { type: "dispatch", btn: "Send / re-send portal link" } },
     ], gate: { label: "AM Approval", after: "t2.3", sop: "Review the document list and the client task board, then confirm before the magic link is dispatched." } },
+    { id: "t4", name: "Call with Client", targetDays: 7, desc: "Optional AI agenda sent ahead, then the client meeting covering scope and needs. AI generates the minutes of meeting from the recording.", steps: [
+      { id: "t4.0", title: "Generate & send call agenda (optional)", kind: "ai", who: ["AI", "AM"], note: "Optional — AI drafts a call agenda from the intake + brief. Review and send before the call.", act: { type: "agenda", btn: "Generate & send agenda" } },
+      { id: "t4.1", title: "Meeting — client discussion & scope alignment", kind: "person", who: ["AM", "Senior"], note: "Hold the client meeting. Cross off each coverage point, then add the recording link and your notes.", act: { type: "call", cover: ["Business model & revenue understood", "Payroll / salary points covered", "Accounting & compliance scope agreed", "Required documents walked through", "Open questions logged"] } },
+      { id: "t4.1b", title: "Cross-sell checklist — what else does this client need?", kind: "person", who: ["AM"], note: "Tick every additional service the client is likely to need. Each ticked item becomes a flagged lead the AM can convert later — don't sell on the call, just capture.", act: { type: "checklist", btn: "Cross-sell captured", items: ["Statutory audit (revenue > AED 50M or required by free zone)", "Salary benchmarking — owner / executive comp review", "VAT registration (estimated taxable revenue > AED 375K)", "Corporate Tax registration (every UAE entity)", "Prior-period catch-up bookkeeping", "AML / UBO compliance (DNFBP — real estate / brokers / dealers)"] } },
+      { id: "t4.2", title: "Welcome email — review & send", kind: "ai", who: ["AI", "AM"], note: "Builds the welcome email from the saved template: the client's name, company and portal link are filled in, plus the AI-drafted minutes of the meeting (from your call notes). Review, edit, then send — one step. Dispatch the portal magic link first.", act: { type: "mom", btn: "Generate welcome email" } },
+      { id: "t4.3", title: "Confirm accounting software", kind: "person", who: ["AM", "Senior"], note: "Record which accounting software we'll run this client on (Zoho Books, QuickBooks, Xero, Odoo…). Saved to the client and shown in the playbook → Tools & Access.", act: { type: "accountingsoftware", btn: "Set accounting software" } },
+    ] },
     { id: "t3", name: "COA Prep · Zoho Books", targetDays: 5, desc: "Senior Accountant prepares the chart of accounts and sets up Zoho Books. AM signs off before it goes to the client.", steps: [
       { id: "t3.1", title: "Client data received — checklist", kind: "person", who: ["Senior"], note: "Cross off each item before COA prep. Attach the engagement contract to auto-detect any catch-up backlog.", act: { type: "checklist", btn: "Confirm received", contract: true, items: ["Documents all collected", "Intake form completed", "Registrations confirmed (CT / VAT / WPS)", "Bank statements received"] } },
       { id: "t3.1b", title: "Urgent compliance triage", kind: "person", who: ["AM", "Senior"], note: "Flag penalty-risk items (CT / VAT / WPS / AML). For each, pick a person — it lands in their My Work with the task template ready.", act: { type: "triage", btn: "Assign urgent items" } },
@@ -193,13 +198,6 @@ const MEDIUM_TEAM: OnbTemplate = {
       { id: "t3.3", title: "Set up Zoho Books & import COA", kind: "person", who: ["Senior"], approval: { by: "AM" }, note: "Connect Zoho Books, import the approved COA and confirm.", act: { type: "zoho", btn: "Import COA into Zoho" } },
       { id: "t3.4", title: "Create compliance calendar", kind: "ai", who: ["AI", "Senior"], note: "Auto-populated from filing due dates (VAT, CT, WPS) and document expiries. Review, edit or add.", act: { type: "calendar", btn: "Create compliance calendar", reopen: true } },
     ], gate: { label: "AM Approval", after: "t3.4", sop: "Review the COA numbering, Zoho import and compliance calendar, then approve." } },
-    { id: "t4", name: "Call with Client", targetDays: 7, desc: "Optional AI agenda sent ahead, then the client meeting covering COA review. AI generates the minutes of meeting from the recording.", steps: [
-      { id: "t4.0", title: "Generate & send call agenda (optional)", kind: "ai", who: ["AI", "AM"], note: "Optional — AI drafts a call agenda from the intake + brief. Review and send before the call.", act: { type: "agenda", btn: "Generate & send agenda" } },
-      { id: "t4.1", title: "Meeting — COA review & other discussions", kind: "person", who: ["AM", "Senior"], note: "Hold the client meeting. Cross off each coverage point, then add the recording link and your notes.", act: { type: "call", cover: ["Business model & revenue understood", "Payroll / salary points covered", "Accounting & compliance scope agreed", "COA reviewed with the client", "Required documents walked through", "Open questions logged"] } },
-      { id: "t4.1b", title: "Cross-sell checklist — what else does this client need?", kind: "person", who: ["AM"], note: "Tick every additional service the client is likely to need. Each ticked item becomes a flagged lead the AM can convert later — don't sell on the call, just capture.", act: { type: "checklist", btn: "Cross-sell captured", items: ["Statutory audit (revenue > AED 50M or required by free zone)", "Salary benchmarking — owner / executive comp review", "VAT registration (estimated taxable revenue > AED 375K)", "Corporate Tax registration (every UAE entity)", "Prior-period catch-up bookkeeping", "AML / UBO compliance (DNFBP — real estate / brokers / dealers)"] } },
-      { id: "t4.2", title: "Welcome email — review & send", kind: "ai", who: ["AI", "AM"], note: "Builds the welcome email from the saved template: the client's name, company and portal link are filled in, plus the AI-drafted minutes of the meeting (from your call notes). Review, edit, then send — one step. Dispatch the portal magic link first.", act: { type: "mom", btn: "Generate welcome email" } },
-      { id: "t4.3", title: "Confirm accounting software", kind: "person", who: ["AM", "Senior"], note: "Record which accounting software we'll run this client on (Zoho Books, QuickBooks, Xero, Odoo…). Saved to the client and shown in the playbook → Tools & Access.", act: { type: "accountingsoftware", btn: "Set accounting software" } },
-    ] },
     { id: "t4b", name: "Optional Operations", targetDays: 1, optional: true, desc: "Decide if catch-up bookkeeping or urgent compliance is needed. Catch-up + urgent compliance both route to Gautham (Tax Head). Senior confirms before we move on.", steps: [
       { id: "t4b.1", title: "Catch-up — configure & assign", kind: "person", who: ["AM"], note: "Decide yes/no. If yes, we spin up a parallel catch-up run assigned to Gautham (the only AM allowed to own catch-up). If no, this step is marked complete and we move on.", act: { type: "catchup_config", btn: "Configure catch-up" } },
       { id: "t4b.2", title: "Urgent compliance — configure & assign", kind: "person", who: ["AM"], note: "Is there any urgent compliance to handle? Pick yes/no. If yes, choose the services needed (CT Registration, VAT Registration, CT Filing, VAT Filing, Statutory Audit) — each spins up a parallel run for the Tax team (default head: Gautham). Audit reuses the CT Filing template.", act: { type: "urgent_config", btn: "Configure urgent compliance" } },
@@ -207,8 +205,6 @@ const MEDIUM_TEAM: OnbTemplate = {
     ], gate: { label: "Senior confirmation", after: "t4b.3", sop: "Senior signs off the optional operations setup before we move to delivery." } },
     { id: "t6", name: "Project & Tasks — Internal Team", targetDays: 2, desc: "Separate from the client board: the recurring project and tasks created in the PMS for the internal team, then the live workflow diagrams.", steps: [
       { id: "t6.1", title: "Create internal projects & monthly tasks", kind: "person", who: ["AM"], note: "Internal delivery — choose the months, the tasks for each, set due dates and link templates / SOPs. Not shown to the client.", act: { type: "project", btn: "Create projects & tasks", reopen: true } },
-      { id: "t6.1b", title: "Create COA in accounting software", kind: "person", who: ["Senior"], note: "Set up the Chart of Accounts in the client's accounting software (Zoho Books / QuickBooks / Xero). Confirm all accounts match the approved COA.", act: { type: "checklist", btn: "COA created", items: ["COA imported / created in accounting software", "Account codes match the approved COA", "Opening balances entered (if applicable)", "AM reviewed and confirmed"] } },
-      { id: "t6.1c", title: "Create tax codes in accounting software", kind: "person", who: ["Senior"], note: "Set up UAE tax codes (5% VAT, exempt, zero-rated, CT categories) in the accounting software.", act: { type: "checklist", btn: "Tax codes created", items: ["Standard 5% VAT tax code created", "Exempt and zero-rated codes set up", "Corporate Tax categories configured", "Tax codes tested on a sample transaction", "AM reviewed and confirmed"] } },
       { id: "t6.2", title: "Build the workflow diagrams", kind: "person", who: ["AM", "Senior"], note: "Map the delivery / monthly-close process. Add as many diagrams as you need — they land in the client playbook → Workflows.", act: { type: "diagram", btn: "Confirm diagrams built", toast: "Workflow diagrams saved to playbook" } },
       { id: "t6.3", title: "Generate onboarding one-pager", kind: "person", who: ["AM"], note: "Polished one-pager summarising the compliance calendar, first delivery date, team contacts and UAE compliance details. Share with the client before recurring delivery kicks off.", act: { type: "onepager", btn: "Generate one-pager" } },
     ] },
@@ -274,6 +270,14 @@ const MICRO_TEAM: OnbTemplate = {
       { id: "m2.4", title: "Create & share client Drive link", kind: "link", who: ["System", "Senior"], note: "Generate the shareable Drive link.", act: { type: "drivelink", btn: "Create & share Drive link", toast: "Drive link created and shared with the client" } },
       { id: "m2.4b", title: "Send (or re-send) the onboarding portal link", kind: "link", who: ["AM"], note: "Generates the secure onboarding portal magic link plus ready-to-send email + WhatsApp templates. Use this step to dispatch the link for the first time AND to re-send if the client lost it. Add extra teammate emails who should also be able to open the portal — they're saved to the link and the templates are re-sent to all of them.", act: { type: "dispatch", btn: "Send / re-send portal link" } },
     ], gate: { label: "AM Approval", after: "m2.3", sop: "Review the document list and the client task board, then confirm." } },
+    { id: "m4", name: "Call with Client", targetDays: 7, desc: "Contract-scoped branded deck opens the call, an optional AI agenda is sent ahead, then the meeting runs from a coverage checklist.", steps: [
+      { id: "m4.0b", title: "Branded onboarding deck", kind: "ai", who: ["AI", "AM"], note: "Auto-generated client-facing deck, scoped from the contract + CRM + intake. Download or present.", act: { type: "deck", btn: "Generate onboarding deck" } },
+      { id: "m4.0", title: "Generate & send call agenda (optional)", kind: "ai", who: ["AI", "AM"], note: "Optional — AI drafts a call agenda.", act: { type: "agenda", btn: "Generate & send agenda" } },
+      { id: "m4.1", title: "Meeting — client discussion & scope alignment", kind: "person", who: ["AM", "Senior"], note: "Hold the client meeting. Cross off each coverage point, then add the recording link and your notes.", act: { type: "call", cover: ["Business model & revenue understood", "Payroll / salary points covered", "Accounting & compliance scope agreed", "Required documents walked through", "Open questions logged"] } },
+      { id: "m4.1b", title: "Cross-sell checklist — what else does this client need?", kind: "person", who: ["AM"], note: "Tick every additional service the client is likely to need. Each ticked item is captured for follow-up — don't sell on the call.", act: { type: "checklist", btn: "Cross-sell captured", items: ["Statutory audit (revenue > AED 50M or required by free zone)", "Salary benchmarking — owner / executive comp review", "VAT registration (estimated taxable revenue > AED 375K)", "Corporate Tax registration (every UAE entity)", "Prior-period catch-up bookkeeping", "AML / UBO compliance (DNFBP — real estate / brokers / dealers)"] } },
+      { id: "m4.2", title: "Welcome email — review & send", kind: "ai", who: ["AI", "AM"], note: "Builds the welcome email from the saved template: the client's name, company and portal link are filled in, plus the AI-drafted minutes of the meeting (from your call notes). Review, edit, then send — one step. Dispatch the portal magic link first.", act: { type: "mom", btn: "Generate welcome email" } },
+      { id: "m4.3", title: "Confirm accounting software", kind: "person", who: ["AM", "Senior"], note: "Record which accounting software we'll run this client on (Zoho Books, QuickBooks, Xero, Odoo…). Saved to the client and shown in the playbook → Tools & Access.", act: { type: "accountingsoftware", btn: "Set accounting software" } },
+    ] },
     { id: "m3", name: "COA Prep · Zoho Books", targetDays: 5, desc: "Senior prepares the COA and sets up Zoho Books. Penalty-risk compliance is triaged first. AM signs off.", steps: [
       { id: "m3.1", title: "Client data received — checklist", kind: "person", who: ["Senior"], note: "Cross off each item before COA prep. Attach the engagement contract to auto-detect catch-up backlog.", act: { type: "checklist", btn: "Confirm received", contract: true, items: ["Documents all collected", "Intake form completed (if used)", "Registrations confirmed (CT / VAT / WPS)", "Bank statements received"] } },
       { id: "m3.1b", title: "Urgent compliance triage", kind: "person", who: ["AM", "Senior"], note: "Flag penalty-risk items if any.", act: { type: "triage", btn: "Assign urgent items" } },
@@ -282,14 +286,6 @@ const MICRO_TEAM: OnbTemplate = {
       { id: "m3.3", title: "Set up Zoho Books & import COA", kind: "person", who: ["Senior"], approval: { by: "AM" }, note: "Connect Zoho Books, import the approved COA and confirm.", act: { type: "zoho", btn: "Import COA into Zoho" } },
       { id: "m3.4", title: "Create compliance calendar", kind: "ai", who: ["AI", "Senior"], note: "Auto-populated from filing due dates and document expiries.", act: { type: "calendar", btn: "Create compliance calendar", reopen: true } },
     ], gate: { label: "AM Approval", after: "m3.4", sop: "Review the COA numbering, Zoho import and compliance calendar, then approve." } },
-    { id: "m4", name: "Call with Client", targetDays: 7, desc: "Contract-scoped branded deck opens the call, an optional AI agenda is sent ahead, then the meeting runs from a coverage checklist.", steps: [
-      { id: "m4.0b", title: "Branded onboarding deck", kind: "ai", who: ["AI", "AM"], note: "Auto-generated client-facing deck, scoped from the contract + CRM + intake. Download or present.", act: { type: "deck", btn: "Generate onboarding deck" } },
-      { id: "m4.0", title: "Generate & send call agenda (optional)", kind: "ai", who: ["AI", "AM"], note: "Optional — AI drafts a call agenda.", act: { type: "agenda", btn: "Generate & send agenda" } },
-      { id: "m4.1", title: "Meeting — COA review & other discussions", kind: "person", who: ["AM", "Senior"], note: "Hold the client meeting.", act: { type: "call", cover: ["Business model & revenue understood", "Payroll / salary points covered", "Accounting & compliance scope agreed", "COA reviewed with the client", "Required documents walked through", "Open questions logged"] } },
-      { id: "m4.1b", title: "Cross-sell checklist — what else does this client need?", kind: "person", who: ["AM"], note: "Tick every additional service the client is likely to need. Each ticked item is captured for follow-up — don't sell on the call.", act: { type: "checklist", btn: "Cross-sell captured", items: ["Statutory audit (revenue > AED 50M or required by free zone)", "Salary benchmarking — owner / executive comp review", "VAT registration (estimated taxable revenue > AED 375K)", "Corporate Tax registration (every UAE entity)", "Prior-period catch-up bookkeeping", "AML / UBO compliance (DNFBP — real estate / brokers / dealers)"] } },
-      { id: "m4.2", title: "Welcome email — review & send", kind: "ai", who: ["AI", "AM"], note: "Builds the welcome email from the saved template: the client's name, company and portal link are filled in, plus the AI-drafted minutes of the meeting (from your call notes). Review, edit, then send — one step. Dispatch the portal magic link first.", act: { type: "mom", btn: "Generate welcome email" } },
-      { id: "m4.3", title: "Confirm accounting software", kind: "person", who: ["AM", "Senior"], note: "Record which accounting software we'll run this client on (Zoho Books, QuickBooks, Xero, Odoo…). Saved to the client and shown in the playbook → Tools & Access.", act: { type: "accountingsoftware", btn: "Set accounting software" } },
-    ] },
     { id: "m4b", name: "Optional Operations", targetDays: 1, optional: true, desc: "Decide if catch-up bookkeeping or urgent compliance is needed. Catch-up + urgent compliance both route to Gautham (Tax Head). Senior confirms before we move on.", steps: [
       { id: "m4b.1", title: "Catch-up — configure & assign", kind: "person", who: ["AM"], note: "Decide yes/no. If yes, we spin up a parallel catch-up run assigned to Gautham (the only AM allowed to own catch-up). If no, this step is marked complete and we move on.", act: { type: "catchup_config", btn: "Configure catch-up" } },
       { id: "m4b.2", title: "Urgent compliance — configure & assign", kind: "person", who: ["AM"], note: "Is there any urgent compliance to handle? Pick yes/no. If yes, choose the services needed (CT Registration, VAT Registration, CT Filing, VAT Filing, Statutory Audit) — each spins up a parallel run for the Tax team (default head: Gautham). Audit reuses the CT Filing template.", act: { type: "urgent_config", btn: "Configure urgent compliance" } },
@@ -297,8 +293,6 @@ const MICRO_TEAM: OnbTemplate = {
     ], gate: { label: "Senior confirmation", after: "m4b.3", sop: "Senior signs off the optional operations setup before we move to delivery." } },
     { id: "m6", name: "Project & Tasks — Internal Team", desc: "The recurring project and tasks created in the PMS for the internal team, then the live workflow diagrams.", steps: [
       { id: "m6.1", title: "Create internal projects & monthly tasks", kind: "person", who: ["AM"], note: "Internal delivery — not shown to the client.", act: { type: "project", btn: "Create projects & tasks", reopen: true } },
-      { id: "m6.1b", title: "Create COA in accounting software", kind: "person", who: ["Senior"], note: "Set up the Chart of Accounts in the client's accounting software (Zoho Books / QuickBooks / Xero). Confirm all accounts match the approved COA from Stage 3.", act: { type: "checklist", btn: "COA created", items: ["COA imported / created in accounting software", "Account codes match the approved COA", "Opening balances entered (if applicable)", "AM reviewed and confirmed"] } },
-      { id: "m6.1c", title: "Create tax codes in accounting software", kind: "person", who: ["Senior"], note: "Set up UAE tax codes (5% VAT, exempt, zero-rated, CT categories) in the accounting software. Match the tax codes approved in Stage 3.", act: { type: "checklist", btn: "Tax codes created", items: ["Standard 5% VAT tax code created", "Exempt and zero-rated codes set up", "Corporate Tax categories configured", "Tax codes tested on a sample transaction", "AM reviewed and confirmed"] } },
       { id: "m6.2", title: "Build the workflow diagrams", kind: "person", who: ["AM", "Senior"], note: "Map the delivery / monthly-close process.", act: { type: "diagram", btn: "Confirm diagrams built", toast: "Workflow diagrams saved to playbook" } },
       { id: "m6.3", title: "Generate onboarding one-pager", kind: "person", who: ["AM"], note: "Polished one-pager summarising the compliance calendar, first delivery date, team contacts and UAE compliance details. Share with the client before recurring delivery kicks off.", act: { type: "onepager", btn: "Generate one-pager" } },
     ] },
@@ -389,21 +383,117 @@ const CATCHUP_RUN: OnbTemplate = {
   id: "catchup",
   name: "Catch-up Accounting",
   tier: "Catch-up",
-  teamLabel: "Dedicated catch-up team",
-  desc: "Historical catch-up bookkeeping handed to a dedicated team. Configure the months/board and assign the owners.",
+  teamLabel: "Dedicated catch-up team (Aarju K + team)",
+  desc: "Historical catch-up bookkeeping handled end-to-end: assign team, verify Drive docs + Zoho Vault access, request Zoho account, extract bank + first-pass recon, prep query sheet, build COA, close books, AI review, Team Lead 30-point QA, send final reports.",
   color: "teal",
   live: true,
   usedBy: 0,
+  category: "Catch-up",
   stages: [
-    { id: "cu1", name: "Configure & assign", desc: "Set the catch-up board and assign owners.", steps: [
-      { id: "cu1.1", title: "Assign the catch-up owner(s)", kind: "person", who: ["AM"], note: "Pick who will run the historical catch-up.", act: { type: "assign", role: "Junior", btn: "Assign owner(s)" } },
-      { id: "cu1.2", title: "Run the catch-up board", kind: "person", who: ["Senior"], note: "Work the monthly catch-up tasks to completion — board pre-seeded from the onboarding team, editable any time.", act: { type: "catchup", btn: "Open catch-up board", reopen: true } },
+    // 1. Role assignment ────────────────────────────────────────────────────
+    { id: "cu1", name: "Assign Roles", desc: "Assign the Team Lead (default: Aarju K) and the team members under her who will work this catch-up.", steps: [
+      { id: "cu1.1", title: "Assign Team Lead", kind: "person", who: ["AM"], note: "Default: Aarju K (Team Lead — ALC). The AM can override.", act: { type: "assign", role: "Team Lead", btn: "Assign Team Lead" } },
+      { id: "cu1.2", title: "Assign team members", kind: "person", who: ["Team Lead"], note: "Pick the team members under the assigned Team Lead who will work this catch-up.", act: { type: "assign", role: "Senior", btn: "Assign team members" } },
     ] },
-    { id: "cu2", name: "Sign-off", desc: "Confirm all catch-up complete.", steps: [
-      { id: "cu2.1", title: "Confirm all catch-up completed", kind: "person", who: ["Senior"], approval: { by: "AM" }, act: { type: "approve", btn: "Confirm completed", role: "Senior", gateOnCatchup: true } },
+
+    // 2. Drive + document & access verification ─────────────────────────────
+    { id: "cu2", name: "Drive & Verification", desc: "Open the client Drive, cross-check every document and every Zoho Vault access, and draft a message for anything missing.", steps: [
+      { id: "cu2.1", title: "Open client Drive folder", kind: "link", who: ["Senior"], note: "The Drive folder is auto-created at client creation. Use this to access it.", act: { type: "drivelink", btn: "Open Drive folder" } },
+      { id: "cu2.2", title: "Document checklist (Drive)", kind: "person", who: ["Senior"], note: "Tick each document present in the catch-up Drive folder. Items left unticked feed the missing-items draft message below. You can rename / add / remove items.", act: { type: "checklist", btn: "Documents verified", items: ["Trade Licence", "MOA / AOA", "Bank statements (catch-up period)", "Sales invoices", "Vendor bills", "Contracts (if any)", "Salary sheet (if any)", "Tracker (if any)"] } },
+      { id: "cu2.3", title: "Access checklist (Zoho Vault)", kind: "person", who: ["Senior"], note: "Tick each access available in Zoho Vault. Items left unticked feed the missing-items draft message.", act: { type: "checklist", btn: "Access verified", items: ["FTA portal access", "Bank access", "Payment gateway access (if any)", "Other (specify)"] } },
+      { id: "cu2.4", title: "Draft message — request the missing items", kind: "ai", who: ["AI", "Senior"], note: "Draft a copy-paste message to the client / internal team listing every unticked document + access. Edit before sending.", act: { type: "catchup_missing", btn: "Draft missing-items message" } },
+    ] },
+
+    // 3. Zoho account creation request to Lohith ────────────────────────────
+    { id: "cu3", name: "Zoho Account Request", desc: "Draft the message to Lohith to create the client's Zoho account.", steps: [
+      { id: "cu3.1", title: "Draft account-creation message to Lohith", kind: "ai", who: ["AI", "Senior"], note: "Draft: 'Hi Lohith, please create an account in Zoho for <company name>. Multi-currency: <yes/no>. Attached: TL and VAT certificate (if any).' Edit, copy, send to Lohith.", act: { type: "zoho_account", btn: "Draft message to Lohith" } },
+    ] },
+
+    // 4. Data review & query sheet prep ─────────────────────────────────────
+    { id: "cu4", name: "Data Review & Query Sheet", desc: "Extract the bank statements, run a first-pass reconciliation, download Excel, capture queries into a Google Sheet, message the client.", steps: [
+      { id: "cu4.1", title: "Bank extraction & first-pass reconciliation", kind: "person", who: ["Senior"], note: "Pulls bank statements from the client's Drive folder (prefers a 'Catch-up' or 'Bank Statements' sub-folder), extracts every line via Klippa, applies the categorisation rules against the live COA Google Sheet, and produces a 5-sheet XLSX (Summary / Raw / Categorised / Needs Review / COA Used). Output is ready for review — never auto-posted.", act: { type: "bankrecon", btn: "Run bank extraction & reconciliation" } },
+      { id: "cu4.2", title: "Prepare query sheet (Google Sheets)", kind: "person", who: ["Senior"], note: "Open the query Google Sheet, capture every line item that needs the client's input, then paste the sheet link below for sending.", act: { type: "checklist", btn: "Query sheet ready", items: ["Reviewed the extracted Excel", "Captured every unknown line in the Google Sheet", "Sheet link captured for sending"] } },
+      { id: "cu4.3", title: "Draft message — send query sheet to client", kind: "ai", who: ["AI", "Senior"], note: "Draft a message to the client with the query Google Sheet link asking them to resolve the open lines.", act: { type: "catchup_query", btn: "Draft query-sheet message" } },
+    ] },
+
+    // 5. Create COA + tax codes, upload docs to Zoho ────────────────────────
+    { id: "cu5", name: "Create COA & Tax Codes", desc: "Build the Chart of Accounts and tax codes (same flow as standard onboarding), then upload every catch-up document to Zoho.", steps: [
+      { id: "cu5.1", title: "Build COA", kind: "person", who: ["Senior"], approval: { by: "AM" }, note: "Auto-populated from the industry, then edited.", act: { type: "coa", btn: "Build COA" } },
+      { id: "cu5.2", title: "Upload all documents to Zoho", kind: "person", who: ["Senior"], note: "Confirm every catch-up document has been uploaded to Zoho.", act: { type: "checklist", btn: "Uploaded to Zoho", items: ["Trade Licence uploaded", "MOA uploaded", "Bank statements uploaded", "Invoices uploaded", "Bills uploaded", "Tax certificates uploaded"] } },
+    ] },
+
+    // 6. Reconciliation progress ────────────────────────────────────────────
+    { id: "cu6", name: "Reconciliation Progress", desc: "Map how much of the catch-up is done and capture any blockers.", steps: [
+      { id: "cu6.1", title: "Track reconciliation progress", kind: "person", who: ["Senior"], note: "Tick each area as it completes and capture any blockers in the run chat.", act: { type: "checklist", btn: "Progress updated", items: ["Bank reconciliation complete", "Invoices reconciled", "Bills reconciled", "Salary / WPS reconciled", "No open blockers"] } },
+    ] },
+
+    // 7. Optional client follow-up ──────────────────────────────────────────
+    { id: "cu7", name: "Client Follow-up (optional)", desc: "Send a follow-up query message if more data is needed from the client.", optional: true, steps: [
+      { id: "cu7.1", title: "Send follow-up query to client", kind: "ai", who: ["AI", "Senior"], note: "Optional. Draft a follow-up to the client with the latest open queries. Paste the Google Sheet link to include it.", act: { type: "catchup_followup", btn: "Draft follow-up", optional: true } },
+    ] },
+
+    // 8. Close books — team review ──────────────────────────────────────────
+    { id: "cu8", name: "Close Books", desc: "Team review — confirm the catch-up books are closed before AI / Team Lead review.", steps: [
+      { id: "cu8.1", title: "Close books — team review", kind: "person", who: ["Senior"], note: "Team confirms every item is closed before the next review stages.", act: { type: "checklist", btn: "Books closed", items: ["P&L reviewed for anomalies", "Balance sheet ties out", "All schedules attached", "All queries with client resolved or disclosed", "Period locked"] } },
+    ] },
+
+    // 9. Claude AI review ──────────────────────────────────────────────────
+    { id: "cu9", name: "AI Review (Claude)", desc: "Run an automated review across the 30 catch-up QA checkpoints — the result is saved here so the Team Lead has it for their final sign-off.", steps: [
+      { id: "cu9.1", title: "Run AI review", kind: "ai", who: ["AI"], note: "Generates a structured review across all 30 catch-up QA checkpoints (material flux, cut-offs, schedules, VAT, CT, partner-statement match). Saved here for the Team Lead to read before their sign-off.", act: { type: "catchup_review", btn: "Run AI review" } },
+    ] },
+
+    // 10. Team Lead 30-point QA ─────────────────────────────────────────────
+    { id: "cu10", name: "Team Lead QA Sign-off", desc: "Team Lead works the 30-point catch-up QA checklist before client dispatch.", steps: [
+      { id: "cu10.1", title: "Team Lead QA — 30 checkpoints", kind: "person", who: ["Team Lead"], approval: { by: "Team Lead" }, note: "All 30 QA checkpoints must be reviewed. Capture any issues in the run chat and resolve before sign-off.", act: { type: "checklist", btn: "QA complete — sign off", items: [
+        "1. Period Closure — accounting period closed and locked; no post-lock entries without approval",
+        "2. Manual Journals — all manual journals reviewed for materiality, narration, support, and approval",
+        "3. P&L — current month compared with last 6 months for Revenue, COGS, and Opex",
+        "4. P&L Cost Centre-wise — cost centre allocations reviewed and validated against last 6 months",
+        "5. P&L Ledger Review — all Revenue, COGS, and Opex ledgers reviewed line by line",
+        "6. Revenue Cut-off — revenue recognised in correct accounting period",
+        "7. Expense Cut-off & Accruals — expenses and accruals recorded in correct period",
+        "8. Balance Sheet — all balances compared with last 6 months and validated",
+        "9. Cash & Cash Equivalents — Bank, CC, and PG balances matched with statements",
+        "10. Prepayments — balances matched with schedules and amortisation verified",
+        "11. Advances & Deposits — employee, vendor, and refundable balances reviewed",
+        "12. Inventory — balances matched with system / POS and valuation reviewed",
+        "13. Accounts Receivable — AR ageing reviewed and balances >90 days explained",
+        "14. Accounts Payable — AP ageing reviewed and balances >90 days explained",
+        "15. Fixed Assets — FA balances matched with register and depreciation verified",
+        "16. Intangible Assets — intangible balances and amortisation verified",
+        "17. Provisions & Other Liabilities — provisions reviewed and supported by workings",
+        "18. Loans & Inter-company Accounts — balances matched with agreements and confirmations",
+        "19. Suspense & Clearing Accounts — no unexplained balances carried forward",
+        "20. Equity & Owner Accounts — capital, drawings, and equity movements reviewed",
+        "21. Cash Flow Statement — last 3 months cash flow reviewed against profit",
+        "22. Corporate Tax — deductibility readiness review completed for expenses",
+        "23. VAT Review — VAT reports matched with P&L, BS, and VAT return",
+        "24. Random Sales Invoice Checks — VAT, category, customer, date, MOP, credit notes",
+        "25. Random Expense / Bill Checks — VAT, category, supplier, date, MOP, debit notes",
+        "26. Partner Statement Review — partner workings matched with books and approved",
+        "27. Management / Performance Reports — figures, charts, and narratives validated",
+        "28. Flux Analysis — final material variance analysis completed post period lock",
+        "29. SOP & working papers updated and uploaded",
+        "30. Final QA & sign-off — all issues resolved or disclosed before client dispatch",
+      ] } },
+    ], gate: { label: "Team Lead sign-off" } },
+
+    // 11. Final send reports ────────────────────────────────────────────────
+    { id: "cu11", name: "Send Final Reports", desc: "Share the final catch-up reports with the client and close the run.", steps: [
+      { id: "cu11.1", title: "Draft & send catch-up report email", kind: "ai", who: ["AI", "AM"], note: "Drafts the email: P&L, balance sheet, cash flow highlights for the catch-up period. Review, attach reports, send to client.", act: { type: "report", btn: "Draft final report email" } },
+      { id: "cu11.2", title: "Confirm reports shared — close catch-up", kind: "person", who: ["AM"], approval: { by: "AM" }, act: { type: "approve", role: "AM", btn: "Confirm sent — close catch-up" } },
     ] },
   ],
-  uploads: [],
+  uploads: [
+    { id: "cu-u1", label: "Trade Licence", who: "client" },
+    { id: "cu-u2", label: "MOA / AOA", who: "client" },
+    { id: "cu-u3", label: "Bank statements (catch-up period)", who: "client" },
+    { id: "cu-u4", label: "Sales invoices", who: "client" },
+    { id: "cu-u5", label: "Vendor bills", who: "client" },
+    { id: "cu-u6", label: "Contracts (if any)", who: "client" },
+    { id: "cu-u7", label: "Salary sheet (if any)", who: "client" },
+    { id: "cu-u8", label: "Tracker (if any)", who: "client" },
+  ],
   intake: [],
   taskboard: [],
 };
@@ -516,6 +606,38 @@ function complianceTemplate(args: {
 }): OnbTemplate {
   const idp = args.id;
   const stages: OnbTemplate["stages"] = [];
+
+  // Stage 0 — assign tax team (three separate steps, same pattern as micro onboarding)
+  stages.push({
+    id: `${idp}0`, name: "Assign Team",
+    desc: "Set the Account Manager, Team Lead, and Team Member before starting work.",
+    steps: [
+      {
+        id: `${idp}0.1`,
+        title: "Assign Account Manager",
+        kind: "person",
+        who: ["AM"],
+        note: "Default: Gautam Sanoj (Tax Head). Change if needed.",
+        act: { type: "assign", role: "AM", btn: "Assign AM" },
+      },
+      {
+        id: `${idp}0.2`,
+        title: "Assign Team Lead",
+        kind: "person",
+        who: ["AM"],
+        note: "Default: Nafila. Change if needed.",
+        act: { type: "assign", role: "Team Lead", btn: "Assign Team Lead" },
+      },
+      {
+        id: `${idp}0.3`,
+        title: "Assign Team Member",
+        kind: "person",
+        who: ["AM"],
+        note: "Auto-suggested by capacity (least-loaded under Nafila). Change if needed.",
+        act: { type: "assign", role: "Senior", btn: "Assign Team Member" },
+      },
+    ],
+  });
 
   // Stage 1 — collect from team
   stages.push({
@@ -739,7 +861,73 @@ const AML_REVIEW: OnbTemplate = {
   taskboard: [],
 };
 
-export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, COMPLIANCE_RENEWAL, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT, AML_REVIEW];
+// ── Tax team: one-time compliance document-collection flow ───────────────────
+// Minimal 4-stage template for clients who only need documents collected for a
+// one-time compliance submission. No COA, no Zoho, no welcome-email ceremony.
+const COMPLIANCE_DOC_COLLECTION: OnbTemplate = {
+  id: "compliance-doc-collection",
+  name: "Compliance Doc Collection",
+  tier: "Tax",
+  teamLabel: "Tax team (AM + Senior)",
+  desc: "Simplified flow for one-time compliance clients — collect required documents, review and submit. No onboarding ceremony.",
+  color: "green",
+  live: true,
+  usedBy: 0,
+  category: "Taxation",
+  stages: [
+    {
+      id: "cdc1", name: "Assign & Scope", targetDays: 1,
+      desc: "Tax AM assigned, scope confirmed, document checklist prepared.",
+      steps: [
+        { id: "cdc1.1", title: "Run created — assign Tax AM", kind: "person", who: ["Ops", "AM"], act: { type: "assign", role: "AM" } },
+        { id: "cdc1.2", title: "Confirm compliance type & documents required", kind: "person", who: ["AM"], note: "Decide exactly which documents are needed for this submission (CT reg, VAT filing, etc.) and configure the upload list.", act: { type: "uploads", btn: "Set document list" } },
+      ],
+    },
+    {
+      id: "cdc2", name: "Document Request", targetDays: 5,
+      desc: "Send a no-login upload link to the client with WhatsApp + email templates. Nudge until all documents are in.",
+      steps: [
+        { id: "cdc2.1", title: "Send no-login upload link to client", kind: "link", who: ["AM"], note: "Generates a public (no-login) upload link the client can use to submit documents. Copies ready-to-send WhatsApp and email messages.", act: { type: "dispatch", intake: true, btn: "Send upload link" } },
+        { id: "cdc2.2", title: "Confirm all documents received", kind: "person", who: ["AM", "Senior"], note: "Tick off each document as it arrives. Use the Nudge button to re-send the upload link if items are still missing.", act: { type: "checklist", btn: "All documents received", items: ["Trade Licence (current)", "MOA / Articles of Association", "Owner Emirates ID & Passport", "Tax Certificates (CT / VAT TRN)", "Bank statements (last 3 months)", "Other client-specific documents"] } },
+      ],
+      gate: { label: "Documents complete", after: "cdc2.2", sop: "Confirm all required documents are received before proceeding to review." },
+    },
+    {
+      id: "cdc3", name: "Review & Submit", targetDays: 3,
+      desc: "Senior reviews documents for quality and compliance. AM submits via the FTA portal or relevant authority.",
+      steps: [
+        { id: "cdc3.1", title: "Senior reviews all documents", kind: "person", who: ["Senior"], approval: { by: "AM" }, note: "Check completeness, validity dates (trade licence, EID), and any red flags. Flag any issues to AM before submitting." },
+        { id: "cdc3.2", title: "Submit via FTA portal / authority", kind: "person", who: ["AM", "Senior"], note: "Log in to the relevant portal (FTA, CBUAE, MOHRE, etc.) and submit the application or filing. Paste the submission reference number in the step notes.", act: { type: "checklist", btn: "Submitted", items: ["Logged into portal", "Application / filing submitted", "Reference number noted", "Receipt / acknowledgement downloaded"] } },
+      ],
+      gate: { label: "AM Approval", after: "cdc3.1" },
+    },
+    {
+      id: "cdc4", name: "Completion", targetDays: 1,
+      desc: "Send acknowledgement to client. Close the run.",
+      steps: [
+        { id: "cdc4.1", title: "Send acknowledgement to client", kind: "person", who: ["AM"], note: "Share the submission confirmation / certificate with the client via email or WhatsApp. Confirm next steps (if any)." },
+        { id: "cdc4.2", title: "Mark run complete", kind: "person", who: ["AM"] },
+      ],
+    },
+  ],
+  intake: [],
+  uploads: [
+    { id: "cdc-u1", label: "Trade Licence (current)", who: "client", suggested: true },
+    { id: "cdc-u2", label: "MOA / Articles of Association", who: "client", suggested: true },
+    { id: "cdc-u3", label: "Owner Emirates ID", who: "client", suggested: true },
+    { id: "cdc-u4", label: "Owner Passport copy", who: "client" },
+    { id: "cdc-u5", label: "Tax Certificate (CT / VAT TRN)", who: "client" },
+    { id: "cdc-u6", label: "Bank statements (last 3 months)", who: "client" },
+  ],
+  taskboard: [
+    { id: "cdc-t1", title: "Collect client documents", owner: "AM", due: "3 days", clientVisible: false, needsClient: true, chat: [] },
+    { id: "cdc-t2", title: "Review documents", owner: "Senior", due: "5 days", clientVisible: false, needsClient: false, chat: [] },
+    { id: "cdc-t3", title: "Submit to authority", owner: "AM", due: "7 days", clientVisible: false, needsClient: false, chat: [] },
+    { id: "cdc-t4", title: "Send acknowledgement to client", owner: "AM", due: "8 days", clientVisible: true, needsClient: false, chat: [] },
+  ],
+};
+
+export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, COMPLIANCE_RENEWAL, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT, AML_REVIEW, COMPLIANCE_DOC_COLLECTION];
 export const templateById = (id: string) => ONB_TEMPLATES.find((t) => t.id === id);
 
 export function stepCount(t: OnbTemplate) {

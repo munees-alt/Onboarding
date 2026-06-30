@@ -64,6 +64,8 @@ export interface RunDetail {
   } | null;
   tasks: TaskRow[];
   items: Record<string, { id: string; data: Record<string, unknown>; status: string }[]>;
+  /** Drive folder link already saved for this client (from a prior onboarding run or manual entry). Null if none. */
+  clientDriveLink: string | null;
   playbook: {
     profile: Record<string, unknown>;
     intake: Record<string, unknown> | null;
@@ -92,7 +94,7 @@ export async function getRunDetail(
     { data: srs }, { data: jrs }, { data: aps },
     { data: taskRows }, { data: itemRows }, amRes,
     { data: pbClient }, { data: pbIntake }, { data: pbCoa }, { data: pbDocs }, { data: pbDiag }, { data: pbTeam },
-    { data: portalLinkRow }, { data: lastMsgRow },
+    { data: portalLinkRow }, { data: lastMsgRow }, { data: driveFolderRow },
   ] = await Promise.all([
     supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle(),
     supabase.from("run_stages").select("stage_no,name,status,step_total,step_done").eq("run_id", runId).order("stage_no"),
@@ -111,8 +113,11 @@ export async function getRunDetail(
     supabase.from("run_team").select("role_in_run,team_members(id,full_name,role)").eq("run_id", runId),
     supabase.from("magic_links").select("token,email").eq("run_id", runId).eq("purpose", "portal").maybeSingle(),
     supabase.from("run_messages").select("created_at").eq("run_id", runId).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("drive_folders").select("tree").eq("client_id", run.client_id).maybeSingle(),
   ]);
   const amName = (amRes as { data: { full_name?: string } | null } | null)?.data?.full_name ?? null;
+  const driveFolderTree = (driveFolderRow?.tree ?? null) as { link?: string; id?: string } | null;
+  const clientDriveLink = driveFolderTree?.link ?? (driveFolderTree?.id ? `https://drive.google.com/drive/folders/${driveFolderTree.id}` : null) ?? null;
 
   // Round 2 — name lookups that depend on round-1 results, fetched in parallel.
   const assigneeIds = [...new Set((steps ?? []).map((s) => s.assignee_id).filter(Boolean))] as string[];
@@ -213,6 +218,7 @@ export async function getRunDetail(
     tasks,
     items,
     playbook,
+    clientDriveLink,
     runId: run.id,
     orgId: run.org_id,
     templateId: run.template_key,

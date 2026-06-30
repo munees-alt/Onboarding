@@ -56,6 +56,17 @@ export async function setAllTaxCapacity(maxTasks: number): Promise<{ error?: str
   return { ok: true, count: rows.length };
 }
 
+/** Master Admin: set the team member who receives all tax-related assignments by default. */
+export async function saveTaxDefaultAssignee(teamMemberId: string | null): Promise<{ error?: string; ok?: boolean }> {
+  const orgId = await orgGuard();
+  if (!orgId) return { error: "Only the Master Admin or Ops Head can change this." };
+  const admin = createAdminClient();
+  const { error } = await admin.from("orgs").update({ tax_default_assignee_id: teamMemberId || null }).eq("id", orgId);
+  if (error) return { error: error.message };
+  revalidatePath("/settings");
+  return { ok: true };
+}
+
 /** Master Admin / Ops Head: set the org-level default new-member capacity ceiling. */
 export async function saveTaxCapacityDefault(defaultMax: number): Promise<{ error?: string; ok?: boolean }> {
   const orgId = await orgGuard();
@@ -232,6 +243,94 @@ export async function saveRoleOverride(input: {
   return { ok: true };
 }
 
+/** Master-Admin: set a department-level nav override. Pass allow=null to clear. */
+export async function saveDeptOverride(input: {
+  dept: string;
+  navId: string;
+  allow: boolean | null;
+}): Promise<{ error?: string; ok?: boolean }> {
+  const orgId = await masterGuard();
+  if (!orgId) return { error: "Only the Master Admin can change access." };
+  const admin = createAdminClient();
+  if (input.allow === null) {
+    await admin.from("dept_overrides").delete().eq("org_id", orgId).eq("dept", input.dept).eq("nav_id", input.navId);
+  } else {
+    await admin.from("dept_overrides").upsert({
+      org_id: orgId, dept: input.dept, nav_id: input.navId, allow: input.allow,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "org_id,dept,nav_id" });
+  }
+  revalidatePath("/settings");
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+/** Master-Admin: set a user-specific nav override. Pass allow=null to clear. */
+export async function saveUserNavOverride(input: {
+  memberId: string;
+  navId: string;
+  allow: boolean | null;
+}): Promise<{ error?: string; ok?: boolean }> {
+  const orgId = await masterGuard();
+  if (!orgId) return { error: "Only the Master Admin can change access." };
+  const admin = createAdminClient();
+  if (input.allow === null) {
+    await admin.from("user_nav_overrides").delete().eq("org_id", orgId).eq("member_id", input.memberId).eq("nav_id", input.navId);
+  } else {
+    await admin.from("user_nav_overrides").upsert({
+      org_id: orgId, member_id: input.memberId, nav_id: input.navId, allow: input.allow,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "org_id,member_id,nav_id" });
+  }
+  revalidatePath("/settings");
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+/** Master-Admin: bulk set dept-level nav overrides for multiple navIds at once. */
+export async function saveDeptOverrideBulk(input: {
+  dept: string;
+  navIds: string[];
+  allow: boolean | null;
+}): Promise<{ error?: string; ok?: boolean }> {
+  const orgId = await masterGuard();
+  if (!orgId) return { error: "Only the Master Admin can change access." };
+  const admin = createAdminClient();
+  if (input.allow === null) {
+    await admin.from("dept_overrides").delete().eq("org_id", orgId).eq("dept", input.dept).in("nav_id", input.navIds);
+  } else {
+    await admin.from("dept_overrides").upsert(
+      input.navIds.map((navId) => ({ org_id: orgId, dept: input.dept, nav_id: navId, allow: input.allow, updated_at: new Date().toISOString() })),
+      { onConflict: "org_id,dept,nav_id" }
+    );
+  }
+  revalidatePath("/settings");
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+/** Master-Admin: bulk set user-specific nav overrides for multiple navIds at once. */
+export async function saveUserNavOverrideBulk(input: {
+  memberId: string;
+  navIds: string[];
+  allow: boolean | null;
+}): Promise<{ error?: string; ok?: boolean }> {
+  const orgId = await masterGuard();
+  if (!orgId) return { error: "Only the Master Admin can change access." };
+  const admin = createAdminClient();
+  if (input.allow === null) {
+    await admin.from("user_nav_overrides").delete().eq("org_id", orgId).eq("member_id", input.memberId).in("nav_id", input.navIds);
+  } else {
+    await admin.from("user_nav_overrides").upsert(
+      input.navIds.map((navId) => ({ org_id: orgId, member_id: input.memberId, nav_id: navId, allow: input.allow, updated_at: new Date().toISOString() })),
+      { onConflict: "org_id,member_id,nav_id" }
+    );
+  }
+  revalidatePath("/settings");
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
 /** Master-Admin: award (or deduct, with negative points) points to a team member. */
 export async function awardUserPoints(input: {
   memberId: string;
@@ -262,10 +361,13 @@ export async function saveFollowupConfig(input: {
   accessOverdueDays: number;
   taskOverdueDays: number;
   noteExtensionDays: number;
+  taskPendingSLADays?: number;
+  complianceReminderDays?: number;
+  teamEscalationDays?: number;
 }): Promise<{ error?: string; ok?: boolean }> {
   const orgId = await masterGuard();
   if (!orgId) return { error: "Only the Master Admin can change SLA windows." };
-  const clamp = (n: unknown) => Math.max(0, Math.floor(Number(n) || 0));
+  const clamp = (n: unknown) => Math.max(1, Math.floor(Number(n) || 1));
   const admin = createAdminClient();
   const { error } = await admin.from("followup_config").upsert({
     org_id: orgId,
@@ -273,6 +375,9 @@ export async function saveFollowupConfig(input: {
     access_overdue_days: clamp(input.accessOverdueDays),
     task_overdue_days: clamp(input.taskOverdueDays),
     note_extension_days: clamp(input.noteExtensionDays),
+    task_pending_sla_days: clamp(input.taskPendingSLADays ?? 3),
+    compliance_reminder_days: clamp(input.complianceReminderDays ?? 30),
+    team_escalation_days: clamp(input.teamEscalationDays ?? 2),
     updated_at: new Date().toISOString(),
   }, { onConflict: "org_id" });
   if (error) return { error: error.message };

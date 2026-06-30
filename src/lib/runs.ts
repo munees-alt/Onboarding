@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { ONB_TEMPLATES, type OnbTemplate } from "./onboarding-templates";
 import { getTemplate } from "./templates-store";
+import { findTaxTeamLead, findTaxHead, suggestNextAm } from "./capacity";
 
 export interface CreateRunOpts {
   orgId: string;
@@ -149,6 +150,35 @@ export async function createRunFromTemplate(
         };
       }),
     );
+  }
+
+  // For Taxation-category templates, pre-populate the Assign Team steps with defaults:
+  //   Step 0.1 (AM)          → Tax Head (Gautam)
+  //   Step 0.2 (Team Lead)   → Nafila
+  //   Step 0.3 (Team Member) → least-loaded member under Nafila by capacity
+  if (tpl.category === "Taxation") {
+    try {
+      const head = await findTaxHead(opts.orgId);
+      const lead = await findTaxTeamLead(opts.orgId, head?.id);
+      const member = await suggestNextAm(opts.orgId);
+      const idp = tpl.id;
+      const defaults: { stepNo: string; id: string; name: string; role: string }[] = [];
+      if (head) defaults.push({ stepNo: `${idp}0.1`, id: head.id, name: head.name, role: "am" });
+      if (lead) defaults.push({ stepNo: `${idp}0.2`, id: lead.id, name: lead.name, role: "team_lead" });
+      if (member) defaults.push({ stepNo: `${idp}0.3`, id: member.id, name: member.name, role: "senior" });
+      for (const d of defaults) {
+        await supabase.from("run_steps")
+          .update({ assignee_id: d.id, payload: { assigned: d.name, assignees: [{ id: d.id, name: d.name, role: d.role }] } })
+          .eq("run_id", runId)
+          .eq("step_no", d.stepNo);
+        await supabase.from("run_team").upsert(
+          { run_id: runId, team_member_id: d.id, role_in_run: d.role },
+          { onConflict: "run_id,team_member_id" },
+        );
+      }
+    } catch {
+      // Non-fatal — defaults can be set manually in the Assign Team stage.
+    }
   }
 
   return runId;

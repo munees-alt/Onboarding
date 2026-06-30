@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import type { SessionInfo, Profile, TeamMember, Org } from "./types";
 
 /** Returns the signed-in user's session (profile + team member + org), or null. */
@@ -90,6 +92,43 @@ export async function getSession(): Promise<SessionInfo | null> {
       team_member_id: null,
       role: "junior",
     } satisfies Profile);
+
+  const realRole = teamMember?.role ?? effectiveProfile.role;
+
+  // "View as" impersonation — master admin only. Reads a server-side cookie to
+  // override the session's teamMember so every page/data-fetch sees the
+  // impersonated person's scoped view.
+  if (realRole === "admin" && effectiveProfile.org_id) {
+    try {
+      const jar = await cookies();
+      const viewAsMemberId = jar.get("cadence_view_as")?.value;
+      if (viewAsMemberId) {
+        const adminDb = createAdminClient();
+        const { data: tm } = await adminDb
+          .from("team_members")
+          .select("*")
+          .eq("id", viewAsMemberId)
+          .eq("org_id", effectiveProfile.org_id)
+          .maybeSingle<TeamMember>();
+        if (tm) {
+          return {
+            userId: user.id,
+            email: user.email ?? null,
+            profile: { ...effectiveProfile, role: tm.role, team_member_id: tm.id },
+            teamMember: tm,
+            org,
+            viewingAs: {
+              realName: teamMember?.full_name ?? effectiveProfile.full_name ?? "Admin",
+              realMemberId: teamMember?.id ?? null,
+              realRole: "admin",
+            },
+          };
+        }
+      }
+    } catch {
+      // cookies() unavailable in this context (e.g. API route called from cron) — skip
+    }
+  }
 
   return {
     userId: user.id,

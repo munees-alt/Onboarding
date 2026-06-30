@@ -9,7 +9,7 @@ import { isMasterAdmin } from "@/lib/roles";
 import type { OnbTemplate } from "@/lib/onboarding-templates";
 import type { ContractAnalysis } from "@/app/(app)/onboarding/[runId]/ai-actions";
 import { formatEngagementPeriod } from "@/lib/contract-format";
-import { extractCallInsights, saveCallInsights, generateClientSummary, sendClientWeeklyDigest, addClientMeeting, deleteClientMeeting, syncFathomMeetingsForClient, addPlaybookAccess, setPlaybookAccessStatus, deletePlaybookAccess, setClientPortalAccess, rebuildClientCompliance, savePaymentPlan, generatePaymentSchedule, savePaymentEntry, deletePaymentEntry, upsertClientTeamMember, deleteClientTeamMember, type InsightSection, type ClientTeamMember } from "../actions";
+import { extractCallInsights, saveCallInsights, generateClientSummary, sendClientWeeklyDigest, addClientMeeting, deleteClientMeeting, syncFathomMeetingsForClient, addPlaybookAccess, setPlaybookAccessStatus, deletePlaybookAccess, setClientPortalAccess, rebuildClientCompliance, savePaymentPlan, generatePaymentSchedule, savePaymentEntry, deletePaymentEntry, upsertClientTeamMember, deleteClientTeamMember, refreshPlaybookAction, type InsightSection, type ClientTeamMember } from "../actions";
 import { INDUSTRIES, ENTITIES } from "../clients-table";
 
 export interface PlaybookData {
@@ -44,6 +44,7 @@ export interface PlaybookData {
   /** Who can open the onboarding portal: the primary email + invited teammates. */
   portalAccess: { email: string | null; altEmails: string[] };
   driveLink: string | null;
+  driveFiles: { id: string; name: string; mimeType: string; webViewLink: string; modifiedTime: string | null; size: string | null }[];
   meetings: { id: string; title: string; meeting_date: string | null; recording_link: string | null; notes: string | null; summary: string | null; source: string; created_at: string }[];
   /** Latest contract analysis attached to any of this client's runs (run_items kind='contract'). */
   contract: ContractAnalysis | null;
@@ -53,24 +54,39 @@ export interface PlaybookData {
   paymentPlan: Record<string, unknown> | null;
   paymentEntries: Record<string, unknown>[];
   clientTeam: ClientTeamMember[];
+  amlRecord: { status: string; assignedToName: string | null; completedAt: string | null; notes: string | null; signingLink: string | null; signingCompletedLink: string | null } | null;
+  adminTasks: { id: string; kind: string; title: string; body: string | null; status: string; createdAt: string; history: { at?: string; action?: string; notes?: string }[] }[];
 }
 
 const TABS = [
   "Company Overview", "Client Team", "Engagement", "Runs", "Workflows", "Tasks & Projects", "Templates & SOPs",
-  "Compliance Calendar", "Meetings", "Communication", "COA", "Tools & Access", "Escalation History", "Payments",
+  "Compliance Calendar", "Meetings", "Communication", "COA", "Tools & Access", "Action Items", "Escalation History", "Payments",
 ] as const;
 const TAB_ICON: Record<string, string> = {
   "Company Overview": "database", "Client Team": "users", "Engagement": "file-text", "Runs": "activity", "Workflows": "workflow",
   "Tasks & Projects": "folder-kanban", "Templates & SOPs": "layers",
   "Compliance Calendar": "calendar", "Meetings": "video", "Communication": "message-circle",
-  "COA": "list-tree", "Tools & Access": "wrench", "Escalation History": "alert-triangle", "Payments": "credit-card",
+  "COA": "list-tree", "Tools & Access": "wrench", "Action Items": "bell", "Escalation History": "alert-triangle", "Payments": "credit-card",
 };
 
 export function ClientPlaybook({ data }: { data: PlaybookData }) {
   // Server already restricts editing to Master Admin (the security boundary). Also honour the
   // admin's "View as" switcher so previewing another role shows the read-only experience.
   const { effectiveRole } = useIdentity();
+  const router = useRouter();
+  const [refreshing, setRefreshing] = useState(false);
   data = { ...data, canEdit: data.canEdit && isMasterAdmin(effectiveRole) };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    // 1. Sync Fathom meetings into DB (best-effort — works for all team members)
+    await refreshPlaybookAction(data.clientId);
+    // 2. Re-run the server page: re-fetches everything from DB —
+    //    tasks, runs, team, documents, drive folder, payment plan, client team, meetings, etc.
+    router.refresh();
+    setTimeout(() => setRefreshing(false), 1500);
+  };
+
   // Unified-page mode: all sections render simultaneously on a single scrollable
   // page. The top "tabs" act as anchor links that scroll the matching section
   // into view. setTab still tracks active highlight via scroll-spy.
@@ -103,11 +119,25 @@ export function ClientPlaybook({ data }: { data: PlaybookData }) {
   return (
     <div className="scroll">
       <div className="page">
-        <div style={{ fontSize: 12, color: "var(--ink-3)", display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
-          <Link href="/clients" style={{ color: "var(--ink-3)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}><Icon name="arrow-left" size={12} /> Clients</Link>
-          <span>/</span><span>{data.name}</span><span>/</span><span style={{ color: "var(--orange)", fontWeight: 600 }}>Client Playbook</span>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+              <Link href="/clients" style={{ color: "var(--ink-3)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}><Icon name="arrow-left" size={12} /> Clients</Link>
+              <span>/</span><span>{data.name}</span><span>/</span><span style={{ color: "var(--orange)", fontWeight: 600 }}>Client Playbook</span>
+            </div>
+            <h2 style={{ fontSize: 26, margin: 0 }}>{first}<span style={{ color: "var(--orange)" }}>{rest}</span></h2>
+          </div>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="btn-ghost"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, opacity: refreshing ? 0.6 : 1 }}
+            title="Refresh playbook — pulls latest Drive folder, meetings, tasks, and team data"
+          >
+            <Icon name="refresh-cw" size={13} style={refreshing ? { animation: "spin 1s linear infinite" } : undefined} />
+            {refreshing ? "Refreshing…" : "Refresh Playbook"}
+          </button>
         </div>
-        <h2 style={{ fontSize: 26, margin: 0 }}>{first}<span style={{ color: "var(--orange)" }}>{rest}</span></h2>
         <div className="sub" style={{ marginTop: 2 }}>
           {data.industry ?? "—"}{data.am ? ` · AM ${data.am}` : ""}{data.senior ? ` · Sr ${data.senior}` : ""}
         </div>
@@ -150,6 +180,7 @@ export function ClientPlaybook({ data }: { data: PlaybookData }) {
           <div ref={setSectionRef("COA")} data-section="COA"><SectionHeading icon="list-tree" title="COA" /><Coa data={data} /></div>
           <div ref={setSectionRef("Tools & Access")} data-section="Tools & Access"><SectionHeading icon="wrench" title="Tools & Access" /><Tools data={data} /></div>
           <div ref={setSectionRef("Client Team")} data-section="Client Team"><SectionHeading icon="users" title="Client Team" /><ClientTeamSection data={data} /></div>
+          <div ref={setSectionRef("Action Items")} data-section="Action Items"><SectionHeading icon="bell" title="Action Items" /><ActionItemsSection data={data} /></div>
           <div ref={setSectionRef("Escalation History")} data-section="Escalation History"><SectionHeading icon="alert-triangle" title="Escalation History" /><Escalations data={data} /></div>
           <div ref={setSectionRef("Payments")} data-section="Payments"><SectionHeading icon="credit-card" title="Payments" /><PaymentsSection data={data} /></div>
         </div>
@@ -909,11 +940,42 @@ function Tools({ data }: { data: PlaybookData }) {
     <>
       <Panel title="Drive folder">
         {data.driveLink ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <Icon name="folder" size={16} style={{ color: "var(--orange)" }} />
-            <span style={{ fontSize: 13, color: "var(--ink-2)" }}>Client documents auto-file here.</span>
-            <a href={data.driveLink} target="_blank" rel="noreferrer" className="btn-ghost" style={{ textDecoration: "none" }}><Icon name="external-link" size={13} /> Open Drive folder</a>
-          </div>
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: data.driveFiles.length ? 12 : 0 }}>
+              <Icon name="folder" size={16} style={{ color: "var(--orange)" }} />
+              <span style={{ fontSize: 13, color: "var(--ink-2)" }}>Client documents auto-file here.</span>
+              <a href={data.driveLink} target="_blank" rel="noreferrer" className="btn-ghost" style={{ textDecoration: "none" }}><Icon name="external-link" size={13} /> Open Drive folder</a>
+            </div>
+            {data.driveFiles.length > 0 && (
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)", marginBottom: 8 }}>
+                  Files in folder ({data.driveFiles.length})
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {data.driveFiles.map((f) => {
+                    const isFolder = f.mimeType === "application/vnd.google-apps.folder";
+                    const icon = isFolder ? "folder" : f.mimeType.includes("sheet") ? "table-2" : f.mimeType.includes("document") || f.mimeType.includes("pdf") ? "file-text" : f.mimeType.includes("image") ? "image" : "file";
+                    const kb = f.size ? Math.round(Number(f.size) / 1024) : null;
+                    const modified = f.modifiedTime ? new Date(f.modifiedTime).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
+                    return (
+                      <a key={f.id} href={f.webViewLink} target="_blank" rel="noreferrer"
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, textDecoration: "none", color: "inherit", background: "var(--bg)", border: "1px solid var(--border)" }}>
+                        <Icon name={icon} size={14} style={{ color: "var(--orange)", flexShrink: 0 }} />
+                        <span style={{ flex: 1, fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                        {modified && <span style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }}>{modified}</span>}
+                        {kb != null && <span style={{ fontSize: 11, color: "var(--ink-4)", flexShrink: 0 }}>{kb < 1024 ? `${kb} KB` : `${(kb / 1024).toFixed(1)} MB`}</span>}
+                        <Icon name="external-link" size={11} style={{ color: "var(--ink-4)", flexShrink: 0 }} />
+                      </a>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--ink-4)", marginTop: 8 }}>Hit &ldquo;Refresh Playbook&rdquo; to sync latest files from Drive.</div>
+              </div>
+            )}
+            {data.driveFiles.length === 0 && (
+              <div style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 4 }}>No files synced yet — click &ldquo;Refresh Playbook&rdquo; to pull files from Drive.</div>
+            )}
+          </>
         ) : <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No Drive folder linked yet — it&apos;s created when onboarding starts.</div>}
       </Panel>
 
@@ -1039,6 +1101,108 @@ function AccessManager({ data }: { data: PlaybookData }) {
       )}
       <div style={{ fontSize: 11.5, color: "var(--ink-4)", marginTop: 10 }}>If the client already granted access from their portal it shows as &ldquo;Confirmed in onboarding portal&rdquo; — no action needed. Otherwise add it here and mark how it was shared.</div>
       {msg && <div style={{ fontSize: 12.5, color: "var(--red)", marginTop: 6 }}>{msg}</div>}
+    </div>
+  );
+}
+
+const ACTION_KIND_LABEL: Record<string, string> = {
+  zoho_followup: "Zoho setup", ct_reg_followup: "CT registration", vat_reg_followup: "VAT registration",
+  docs_overdue: "Documents", access_overdue: "Access", task_overdue: "Task overdue",
+  weekly_update: "Weekly update", compliance_alert: "Compliance alert", am_weekly_report: "AM report",
+};
+const ACTION_KIND_COLOR: Record<string, string> = {
+  zoho_followup: "#7e3aaf", ct_reg_followup: "#b91c1c", vat_reg_followup: "#b45309",
+  docs_overdue: "#075985", access_overdue: "#15803d", task_overdue: "#92400e",
+  weekly_update: "#ea580c", compliance_alert: "#dc2626", am_weekly_report: "#0369a1",
+};
+
+function ActionItemsSection({ data }: { data: PlaybookData }) {
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const [filter, setFilter] = useState<"all" | "open" | "closed">("open");
+
+  const toggle = (id: string) => setOpenIds((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const tasks = data.adminTasks ?? [];
+  const shown = tasks.filter((t) => filter === "all" || t.status === filter);
+  const openCount = tasks.filter((t) => t.status === "open").length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
+          {tasks.length === 0 ? "No action items for this client yet." : `${tasks.length} total · ${openCount} open`}
+        </span>
+        {tasks.length > 0 && (
+          <div style={{ display: "flex", gap: 3, border: "1px solid var(--border)", borderRadius: 8, padding: 3 }}>
+            {(["open", "closed", "all"] as const).map((f) => (
+              <button key={f} onClick={() => setFilter(f)}
+                style={{ fontSize: 12, padding: "2px 10px", borderRadius: 6, border: "none", cursor: "pointer",
+                  background: filter === f ? "var(--orange)" : "transparent", color: filter === f ? "#fff" : "var(--ink-3)" }}>
+                {f === "all" ? "All" : f === "open" ? "Open" : "Closed"}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {shown.length === 0 && tasks.length > 0 && (
+        <div style={{ color: "var(--ink-3)", fontSize: 13, padding: "12px 0" }}>Nothing in this filter.</div>
+      )}
+
+      <div style={{ display: "grid", gap: 10 }}>
+        {shown.map((t) => {
+          const color = ACTION_KIND_COLOR[t.kind] ?? "#475569";
+          const label = ACTION_KIND_LABEL[t.kind] ?? t.kind;
+          const expanded = openIds.has(t.id);
+          const historyWithNotes = t.history.filter((h) => h.notes);
+          const ms = Date.now() - new Date(t.createdAt).getTime();
+          const age = ms < 86400000 ? `${Math.floor(ms / 3600000)}h ago` : `${Math.floor(ms / 86400000)}d ago`;
+
+          return (
+            <div key={t.id} style={{ background: "#fff", border: "1px solid var(--border)", borderLeft: `3px solid ${color}`, borderRadius: 10, padding: "12px 14px" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 5 }}>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: color, color: "#fff", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
+                    <span style={{ fontSize: 11, color: "var(--ink-3)" }}>{age}</span>
+                    <span className={"pill " + (t.status === "open" ? "amber" : "green")} style={{ fontSize: 10 }}>{t.status}</span>
+                  </div>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink-1)" }}>{t.title}</div>
+                  {t.body && <div style={{ fontSize: 12.5, color: "var(--ink-2)", marginTop: 4, whiteSpace: "pre-wrap" }}>{t.body}</div>}
+                </div>
+                <button
+                  onClick={() => toggle(t.id)}
+                  style={{ flexShrink: 0, fontSize: 12, padding: "3px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "transparent", cursor: "pointer", color: "var(--ink-3)", display: "flex", alignItems: "center", gap: 5 }}
+                >
+                  <Icon name={expanded ? "chevron-up" : "chevron-down"} size={13} />
+                  {historyWithNotes.length > 0 ? `${historyWithNotes.length} update${historyWithNotes.length === 1 ? "" : "s"}` : "Updates"}
+                </button>
+              </div>
+
+              {expanded && (
+                <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                  {t.history.length === 0 ? (
+                    <div style={{ fontSize: 12.5, color: "var(--ink-4)" }}>No updates recorded yet.</div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {t.history.map((h, i) => (
+                        <div key={i} style={{ background: "var(--bg-soft)", borderRadius: 8, padding: "8px 12px" }}>
+                          <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 3, display: "flex", gap: 8 }}>
+                            <span>{h.at ? new Date(h.at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+                            <span style={{ fontWeight: 600, textTransform: "capitalize" }}>{h.action ?? "update"}</span>
+                          </div>
+                          {h.notes && <div style={{ fontSize: 13, color: "var(--ink-1)", whiteSpace: "pre-wrap" }}>{h.notes}</div>}
+                          {!h.notes && <div style={{ fontSize: 12, color: "var(--ink-4)", fontStyle: "italic" }}>No notes added.</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1424,6 +1588,47 @@ function statusFor(days: number, label?: string): { label: string; bg: string; f
   return { label: `Due in ${days}d`, bg: "#DCFCE7", fg: "#15803D" };
 }
 
+const AML_STATUS_COLOR: Record<string, string> = {
+  pending: "#94a3b8", in_review: "#f59e0b", link_sent: "#3b82f6", signed: "#8b5cf6", completed: "#16a34a",
+};
+const AML_STATUS_LABEL: Record<string, string> = {
+  pending: "Pending", in_review: "In Review", link_sent: "Link Sent", signed: "Signed", completed: "Completed",
+};
+
+function AmlStatusCard({ aml }: { aml: PlaybookData["amlRecord"] }) {
+  if (!aml) return null;
+  const color = AML_STATUS_COLOR[aml.status] ?? "#94a3b8";
+  const label = AML_STATUS_LABEL[aml.status] ?? aml.status;
+  return (
+    <div style={{ marginTop: 16, padding: "14px 16px", borderRadius: 10, border: `1px solid ${color}33`, background: `${color}0d`, display: "flex", alignItems: "flex-start", gap: 14 }}>
+      <div style={{ width: 10, height: 10, borderRadius: "50%", background: color, marginTop: 4, flexShrink: 0 }} />
+      <div style={{ flex: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-1)" }}>AML Compliance</span>
+          <span style={{ fontSize: 11, fontWeight: 700, color, background: `${color}20`, padding: "2px 9px", borderRadius: 20 }}>{label}</span>
+          {aml.status === "completed" && aml.completedAt && (
+            <span style={{ fontSize: 11, color: "var(--ink-3)" }}>· Completed {new Date(aml.completedAt).toLocaleDateString()}</span>
+          )}
+        </div>
+        {aml.assignedToName && (
+          <div style={{ fontSize: 12, color: "var(--ink-2)" }}>Assigned to: <strong>{aml.assignedToName}</strong></div>
+        )}
+        {aml.notes && <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3 }}>{aml.notes}</div>}
+        {aml.status === "completed" && aml.signingCompletedLink && (
+          <a href={aml.signingCompletedLink} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "#16a34a", marginTop: 4, display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <Icon name="check-circle" size={12} /> View signed document
+          </a>
+        )}
+        {aml.status !== "completed" && aml.signingLink && (
+          <a href={aml.signingLink} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "#3b82f6", marginTop: 4, display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <Icon name="external-link" size={12} /> Signing link
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ComplianceCalendarPro({ data }: { data: PlaybookData }) {
   const router = useRouter();
   const reg = (data.profile.reg_facts as { incorporationDate?: string; tradeLicenceExpiry?: string; vatFirstFiling?: string; ctFirstFiling?: string } | null) ?? {};
@@ -1470,6 +1675,7 @@ function ComplianceCalendarPro({ data }: { data: PlaybookData }) {
         <div className="cpb-empty">
           No compliance items yet. Click <strong>Rebuild from Drive</strong> above and we&apos;ll read every file in the client&apos;s Drive &ldquo;Company Documents&rdquo; folder, extract expiry / first-filing dates, and append the upcoming statutory VAT + CT filings.
         </div>
+        <AmlStatusCard aml={data.amlRecord} />
       </div>
     );
   }
@@ -1580,6 +1786,9 @@ function ComplianceCalendarPro({ data }: { data: PlaybookData }) {
           })}
         </div>
       </div>
+
+      {/* AML Compliance status */}
+      <AmlStatusCard aml={data.amlRecord} />
 
       <div style={{ marginTop: 18, padding: "12px 16px", borderRadius: 10, background: "var(--bg-soft)", fontSize: 11.5, color: "var(--ink-3)", textAlign: "center" }}>
         Compliance calendar prepared by <strong>Finanshels</strong>. We monitor every date here and send a reminder 30, 14, and 3 days before each deadline.

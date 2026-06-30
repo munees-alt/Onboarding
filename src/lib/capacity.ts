@@ -62,12 +62,29 @@ async function descendantsOf(orgId: string, anchorId: string): Promise<string[]>
 
 /**
  * Resolve the Tax Head. Tries (in order):
+ *   0) orgs.tax_default_assignee_id (admin-configured default)
  *   1) title contains "tax" + ("head" or "lead")
  *   2) dept = "Tax"
  *   3) full_name like "Gautam Sanoj"
  */
 export async function findTaxHead(orgId: string): Promise<{ id: string; name: string } | null> {
   const admin = createAdminClient();
+
+  // Check org-level configured default first.
+  const { data: orgRow } = await admin
+    .from("orgs")
+    .select("tax_default_assignee_id")
+    .eq("id", orgId)
+    .maybeSingle();
+  if (orgRow?.tax_default_assignee_id) {
+    const { data: tm } = await admin
+      .from("team_members")
+      .select("id,full_name")
+      .eq("id", orgRow.tax_default_assignee_id)
+      .eq("active", true)
+      .maybeSingle();
+    if (tm) return { id: tm.id, name: tm.full_name };
+  }
   const { data: byTitle } = await admin
     .from("team_members")
     .select("id,full_name,title,dept")
