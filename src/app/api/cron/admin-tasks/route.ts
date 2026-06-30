@@ -215,11 +215,11 @@ export async function GET(request: NextRequest) {
   // Pull existing task rows once for dedupe per (kind, run, owner).
   const { data: openTasksRaw } = await admin
     .from("admin_tasks")
-    .select("id,kind,run_id,owner_id,closed_at,status,history,notes,org_id,client_id,step_id,title,body")
+    .select("id,kind,run_id,owner_id,closed_at,status,history,notes,org_id,client_id,step_id,title,body,snoozed_until")
     .in("status", ["open", "closed"]);
-  const openByKey = new Map<string, AdminTaskRow & { id: string }>();
+  const openByKey = new Map<string, AdminTaskRow & { id: string; snoozed_until?: string | null }>();
   const lastClosedByKey = new Map<string, AdminTaskRow & { id: string }>();
-  for (const r of (openTasksRaw ?? []) as Array<AdminTaskRow & { id: string }>) {
+  for (const r of (openTasksRaw ?? []) as Array<AdminTaskRow & { id: string; snoozed_until?: string | null }>) {
     const key = `${r.kind}::${r.run_id ?? ""}::${r.owner_id}`;
     if (r.status === "open") openByKey.set(key, r);
     else if (r.status === "closed") {
@@ -241,7 +241,14 @@ export async function GET(request: NextRequest) {
     body: string;
   }) => {
     const key = `${input.kind}::${input.run_id}::${input.owner_id}`;
-    if (openByKey.has(key)) return; // already open for this owner
+    const existing = openByKey.get(key);
+    if (existing) {
+      // Already open — skip. But if it's snoozed and the date has passed, clear the snooze so it resurfaces.
+      if (existing.snoozed_until && new Date(existing.snoozed_until).getTime() <= now) {
+        await admin.from("admin_tasks").update({ snoozed_until: null }).eq("id", existing.id);
+      }
+      return;
+    }
     const prior = lastClosedByKey.get(key);
     if (prior?.closed_at) {
       const age = now - new Date(prior.closed_at).getTime();

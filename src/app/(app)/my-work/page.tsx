@@ -60,7 +60,7 @@ export default async function MyWorkPage() {
   if (memberId) {
     const { data: rows } = await supabase
       .from("admin_tasks")
-      .select("id,kind,run_id,client_id,step_id,title,body,status,history,notes,created_at,owner_id")
+      .select("id,kind,run_id,client_id,step_id,title,body,status,history,notes,created_at,owner_id,snoozed_until,hold_note")
       .eq("owner_id", memberId)
       .order("created_at", { ascending: false })
       .limit(200);
@@ -82,6 +82,8 @@ export default async function MyWorkPage() {
       status: r.status,
       history: Array.isArray(r.history) ? r.history : [],
       notes: r.notes,
+      snoozedUntil: r.snoozed_until ?? null,
+      holdNote: r.hold_note ?? null,
     }));
   }
 
@@ -181,7 +183,7 @@ export default async function MyWorkPage() {
     <div className="scroll">
       <div className="page">
         {(adminTasks.length > 0 || canScan) && (
-          <MyTasksSection items={adminTasks} canScan={canScan} canDelete={role === "admin"} />
+          <MyTasksSection items={adminTasks} canScan={canScan} canDelete={role === "admin"} canSnooze={role === "admin"} />
         )}
 
         {hasAmlAccess && amlClients.length > 0 && (

@@ -86,6 +86,27 @@ export async function bulkCloseAdminTasks(ids: string[], notes: string): Promise
   return { ok: true };
 }
 
+// Snooze a task until a future date — master admin only. Task disappears from
+// the active view and won't be re-created by the cron until the date passes.
+export async function snoozeAdminTask(id: string, until: string, note: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await requireSession();
+  if (session.profile.role !== "admin") return { ok: false, error: "Master admin only." };
+  const supabase = await createClient();
+  const { data: row } = await supabase.from("admin_tasks").select("history").eq("id", id).maybeSingle();
+  if (!row) return { ok: false, error: "not_found" };
+  const history = Array.isArray(row.history) ? row.history : [];
+  await supabase
+    .from("admin_tasks")
+    .update({
+      snoozed_until: new Date(until).toISOString(),
+      hold_note: note.trim() || null,
+      history: [...history, { at: new Date().toISOString(), action: "snoozed", notes: `Until ${until}${note.trim() ? ` — ${note.trim()}` : ""}` }],
+    })
+    .eq("id", id);
+  revalidatePath("/my-work");
+  return { ok: true };
+}
+
 // Hard-delete an admin task — master admin only.
 export async function deleteAdminTask(id: string): Promise<{ ok: boolean; error?: string }> {
   const session = await requireSession();

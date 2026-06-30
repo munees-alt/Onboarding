@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/icon";
-import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks, deleteAdminTask } from "./actions";
+import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks, deleteAdminTask, snoozeAdminTask } from "./actions";
 
 export type AdminTaskItem = {
   id: string;
@@ -17,6 +17,8 @@ export type AdminTaskItem = {
   status: "open" | "closed" | string;
   history: Array<{ at?: string; action?: string; notes?: string }>;
   notes: string | null;
+  snoozedUntil: string | null;
+  holdNote: string | null;
 };
 
 const KIND_LABEL: Record<string, string> = {
@@ -59,12 +61,15 @@ export function MyTasksSection({
   items,
   canScan,
   canDelete,
+  canSnooze,
 }: {
   items: AdminTaskItem[];
   canScan: boolean;
   canDelete?: boolean;
+  canSnooze?: boolean;
 }) {
   const [showClosed, setShowClosed] = useState(false);
+  const [showSnoozed, setShowSnoozed] = useState(false);
   const [pending, start] = useTransition();
   const [scanning, setScanning] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
@@ -72,7 +77,9 @@ export function MyTasksSection({
   const [bulkNotes, setBulkNotes] = useState("");
   const [bulkSaving, startBulk] = useTransition();
 
-  const openItems = items.filter((t) => t.status === "open");
+  const now = Date.now();
+  const openItems = items.filter((t) => t.status === "open" && !(t.snoozedUntil && new Date(t.snoozedUntil).getTime() > now));
+  const snoozedItems = items.filter((t) => t.status === "open" && t.snoozedUntil && new Date(t.snoozedUntil).getTime() > now);
   const closedItems = items.filter((t) => t.status === "closed");
   const overdue = openItems.filter((t) => ageMs(t.createdAt) >= DAY_MS);
   const today = openItems.filter((t) => ageMs(t.createdAt) < DAY_MS);
@@ -301,6 +308,7 @@ export function MyTasksSection({
                     selected={selected.has(t.id)}
                     onToggle={() => toggleItem(t.id)}
                     canDelete={canDelete}
+                    canSnooze={canSnooze}
                     isOverdue
                   />
                 ))}
@@ -370,12 +378,52 @@ export function MyTasksSection({
                     selected={selected.has(t.id)}
                     onToggle={() => toggleItem(t.id)}
                     canDelete={canDelete}
+                    canSnooze={canSnooze}
                   />
                 ))}
               </div>
             </div>
           )}
         </>
+      )}
+
+      {/* SNOOZED — on hold until a future date */}
+      {snoozedItems.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <button
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              color: "#6b21a8",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "4px 0",
+              marginBottom: showSnoozed ? 8 : 0,
+            }}
+            onClick={() => setShowSnoozed((v) => !v)}
+          >
+            <Icon name={showSnoozed ? "chevron-down" : "chevron-right"} size={13} />
+            On hold — {snoozedItems.length} item{snoozedItems.length !== 1 ? "s" : ""} (waiting)
+          </button>
+          {showSnoozed && (
+            <div style={{ display: "grid", gap: 6 }}>
+              {snoozedItems.map((t) => (
+                <TaskCard
+                  key={t.id}
+                  t={t}
+                  pending={pending}
+                  start={start}
+                  canDelete={canDelete}
+                  canSnooze={canSnooze}
+                  isSnoozed
+                />
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {/* RESOLVED — collapsed by default */}
@@ -419,7 +467,9 @@ function TaskCard({
   selected,
   onToggle,
   canDelete,
+  canSnooze,
   isOverdue,
+  isSnoozed,
 }: {
   t: AdminTaskItem;
   pending: boolean;
@@ -427,19 +477,29 @@ function TaskCard({
   selected?: boolean;
   onToggle?: () => void;
   canDelete?: boolean;
+  canSnooze?: boolean;
   isOverdue?: boolean;
+  isSnoozed?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [notes, setNotes] = useState("");
   const [deleting, startDelete] = useTransition();
   const [confirmDel, setConfirmDel] = useState(false);
+  const [showHoldForm, setShowHoldForm] = useState(false);
+  const [holdDate, setHoldDate] = useState("");
+  const [holdComment, setHoldComment] = useState(t.holdNote ?? "");
+  const [holdSaving, startHold] = useTransition();
 
   const color = KIND_COLOR[t.kind] ?? "#475569";
   const label = KIND_LABEL[t.kind] ?? t.kind;
   const age = ageLabel(t.createdAt);
   const isOpen = t.status === "open";
-  const borderColor = isOverdue ? "#dc2626" : color;
+  const borderColor = isSnoozed ? "#7e22ce" : isOverdue ? "#dc2626" : color;
   const priorNotes = t.history.filter((h) => h.notes);
+
+  const snoozeUntilDisplay = t.snoozedUntil
+    ? new Date(t.snoozedUntil).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
+    : null;
 
   // Extract escalation prefix if present
   const isEscalated = t.title.startsWith("[Escalated]") || t.title.startsWith("[1 week");
@@ -552,6 +612,15 @@ function TaskCard({
             >
               {expanded ? "Hide" : "Note"}
             </button>
+            {canSnooze && (
+              <button
+                className="btn ghost"
+                style={{ fontSize: 11.5, padding: "3px 10px", color: "#7e22ce", borderColor: "#c4b5fd" }}
+                onClick={() => { setShowHoldForm((v) => !v); setExpanded(false); }}
+              >
+                {isSnoozed ? "Edit hold" : "Hold"}
+              </button>
+            )}
             {(t.runId || t.stepId) && (
               <Link
                 href={
@@ -625,6 +694,115 @@ function TaskCard({
           }}
         >
           {displayTitle}
+        </div>
+      )}
+
+      {/* Snoozed badge + hold note */}
+      {isSnoozed && snoozeUntilDisplay && (
+        <div
+          style={{
+            marginTop: 6,
+            paddingLeft: isOpen && onToggle ? 20 : 0,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 10.5,
+              fontWeight: 700,
+              padding: "2px 8px",
+              borderRadius: 999,
+              background: "#ede9fe",
+              color: "#7e22ce",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+            }}
+          >
+            ⏸ On hold until {snoozeUntilDisplay}
+          </span>
+          {t.holdNote && (
+            <span style={{ fontSize: 11.5, color: "var(--ink-2)", fontStyle: "italic" }}>
+              {t.holdNote}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Hold / snooze form — admin only */}
+      {showHoldForm && isOpen && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: "12px 14px",
+            background: "#faf5ff",
+            border: "1px solid #c4b5fd",
+            borderRadius: 8,
+          }}
+        >
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7e22ce", marginBottom: 8 }}>
+            Put on hold — next action date
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div>
+              <label style={{ fontSize: 11.5, color: "var(--ink-2)", display: "block", marginBottom: 3 }}>
+                Remind me / resurface on
+              </label>
+              <input
+                type="date"
+                value={holdDate}
+                min={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => setHoldDate(e.target.value)}
+                style={{
+                  padding: "5px 9px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  fontSize: 12.5,
+                  fontFamily: "inherit",
+                  width: "100%",
+                }}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: 11.5, color: "var(--ink-2)", display: "block", marginBottom: 3 }}>
+                Reason / comment
+              </label>
+              <textarea
+                placeholder="e.g. Government needs to confirm before we proceed — follow up on 10 Jul"
+                value={holdComment}
+                onChange={(e) => setHoldComment(e.target.value)}
+                style={{
+                  width: "100%",
+                  minHeight: 56,
+                  padding: 9,
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  fontSize: 12.5,
+                  fontFamily: "inherit",
+                  resize: "vertical",
+                }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="btn primary"
+                style={{ background: "#7e22ce", borderColor: "#7e22ce" }}
+                disabled={holdSaving || !holdDate}
+                onClick={() =>
+                  startHold(async () => {
+                    const res = await snoozeAdminTask(t.id, holdDate, holdComment);
+                    if (res.ok) setShowHoldForm(false);
+                  })
+                }
+              >
+                {holdSaving ? "Saving…" : "Save hold"}
+              </button>
+              <button className="btn ghost" onClick={() => setShowHoldForm(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
