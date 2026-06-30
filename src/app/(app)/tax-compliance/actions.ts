@@ -93,13 +93,26 @@ export async function getTaxComplianceClients(): Promise<{
   if (!session?.profile.org_id) return { error: "Not signed in.", clients: [], taxTeam: [], taxHeadId: null, taxLeadId: null };
   const admin = createAdminClient();
   const orgId = session.profile.org_id;
+  const role = session.teamMember?.role ?? session.profile.role ?? "";
+  const myMemberId = session.teamMember?.id ?? null;
 
-  const [{ data: rows }, taxTeam] = await Promise.all([
+  const [{ data: rowsRaw }, taxTeam] = await Promise.all([
     admin.from("tax_compliance_records").select("*").eq("org_id", orgId),
     getTaxTeam(orgId),
   ]);
 
-  if (!rows?.length) {
+  // Scope: admin / ops_head / Tax Head / Tax Team Lead see everything.
+  // Everyone else (junior / senior / intern / associate under the Tax Lead — and
+  // any other viewer) sees only cards where they are listed in assigned_to.
+  const fullView =
+    role === "admin" ||
+    role === "ops_head" ||
+    (myMemberId !== null && (myMemberId === taxTeam.taxHeadId || myMemberId === taxTeam.taxLeadId));
+  const rows = !fullView && myMemberId
+    ? (rowsRaw ?? []).filter((r) => Array.isArray(r.assigned_to) && (r.assigned_to as string[]).includes(myMemberId))
+    : (rowsRaw ?? []);
+
+  if (!rows.length) {
     return { clients: [], taxTeam: taxTeam.team, taxHeadId: taxTeam.taxHeadId, taxLeadId: taxTeam.taxLeadId };
   }
 
