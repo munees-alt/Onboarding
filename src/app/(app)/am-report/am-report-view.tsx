@@ -256,8 +256,8 @@ function PersonBody({
   );
 }
 
-function TeamMemberSection({ node, taskFilter, search }: { node: PersonNode; taskFilter: TaskFilter; search: string }) {
-  const [open, setOpen] = useState(false);
+function TeamMemberSection({ node, taskFilter, search, defaultOpen = false }: { node: PersonNode; taskFilter: TaskFilter; search: string; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const headlineBg = node.totalOverdue > 0 ? "#fef2f2" : "#fafaf9";
   return (
     <div style={{ marginTop: 8, border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden", background: "#fff" }}>
@@ -278,8 +278,8 @@ function TeamMemberSection({ node, taskFilter, search }: { node: PersonNode; tas
   );
 }
 
-function TeamLeadSection({ node, taskFilter, search }: { node: TeamLeadNode; taskFilter: TaskFilter; search: string }) {
-  const [open, setOpen] = useState(false);
+function TeamLeadSection({ node, taskFilter, search, defaultOpen = false }: { node: TeamLeadNode; taskFilter: TaskFilter; search: string; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div style={{ marginTop: 10, border: "1px solid #c4b5fd", borderRadius: 10, overflow: "hidden", background: "#faf5ff" }}>
       <div
@@ -359,11 +359,50 @@ export function AmReportView({
   viewerName: string | null;
   loadError: string | null;
 }) {
-  const [selectedAm, setSelectedAm] = useState<string>("all");
+  const [selectedPerson, setSelectedPerson] = useState<string>("all");
   const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
   const [search, setSearch] = useState("");
 
-  const afterAmFilter = selectedAm === "all" ? ams : ams.filter((a) => a.amId === selectedAm);
+  // Flat list of everyone in scope, grouped by role for the dropdown.
+  const peopleOptions: { id: string; label: string; group: string; node: PersonNode | AmReportEntry | TeamLeadNode; kind: "am" | "team_lead" | "team_member" }[] = [];
+  for (const am of ams) {
+    peopleOptions.push({
+      id: am.personId,
+      label: `${am.name} — ${am.totalClients} client${am.totalClients !== 1 ? "s" : ""}, ${am.totalOpen} open${am.totalOverdue > 0 ? `, ${am.totalOverdue} overdue` : ""}${am.totalActions > 0 ? `, ${am.totalActions} actions` : ""}`,
+      group: "Account Managers",
+      node: am,
+      kind: "am",
+    });
+    for (const tl of am.teamLeads) {
+      peopleOptions.push({
+        id: tl.personId,
+        label: `${tl.name} (TL · under ${am.name})${tl.totalActions > 0 ? ` — ${tl.totalActions} actions` : ""}${tl.totalOverdue > 0 ? `, ${tl.totalOverdue} overdue` : ""}`,
+        group: "Team Leads",
+        node: tl,
+        kind: "team_lead",
+      });
+      for (const tm of tl.teamMembers) {
+        peopleOptions.push({
+          id: tm.personId,
+          label: `${tm.name} (${tm.role.replace(/_/g, " ")} · under ${tl.name})${tm.totalActions > 0 ? ` — ${tm.totalActions} actions` : ""}${tm.totalOverdue > 0 ? `, ${tm.totalOverdue} overdue` : ""}`,
+          group: "Team Members",
+          node: tm,
+          kind: "team_member",
+        });
+      }
+    }
+  }
+
+  const selectedOption = peopleOptions.find((p) => p.id === selectedPerson) ?? null;
+
+  // When an AM is selected we use the existing AmSection.
+  // For TL / TM we render a single focused section below.
+  const afterAmFilter: AmReportEntry[] =
+    selectedPerson === "all"
+      ? ams
+      : selectedOption?.kind === "am"
+        ? ams.filter((a) => a.amId === selectedPerson)
+        : [];
 
   function exportCsv() {
     const rows: string[][] = [
@@ -492,14 +531,28 @@ export function AmReportView({
         {/* Filter bar */}
         <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "center", padding: "12px 14px", background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            <label style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>Account Manager</label>
-            <select value={selectedAm} onChange={(e) => setSelectedAm(e.target.value)} style={selectStyle}>
-              <option value="all">All AMs ({ams.length})</option>
-              {ams.map((a) => (
-                <option key={a.amId} value={a.amId}>
-                  {a.amName} — {a.totalClients} client{a.totalClients !== 1 ? "s" : ""}, {a.totalOpen} open{a.totalOverdue > 0 ? `, ${a.totalOverdue} overdue` : ""}
-                </option>
-              ))}
+            <label style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>Drill into person</label>
+            <select value={selectedPerson} onChange={(e) => setSelectedPerson(e.target.value)} style={{ ...selectStyle, minWidth: 280 }}>
+              <option value="all">All ({peopleOptions.length} people)</option>
+              <optgroup label="Account Managers">
+                {peopleOptions.filter((p) => p.kind === "am").map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </optgroup>
+              {peopleOptions.some((p) => p.kind === "team_lead") && (
+                <optgroup label="Team Leads">
+                  {peopleOptions.filter((p) => p.kind === "team_lead").map((p) => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </optgroup>
+              )}
+              {peopleOptions.some((p) => p.kind === "team_member") && (
+                <optgroup label="Team Members">
+                  {peopleOptions.filter((p) => p.kind === "team_member").map((p) => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
 
@@ -528,22 +581,33 @@ export function AmReportView({
             </div>
           </div>
 
-          {(selectedAm !== "all" || search || taskFilter !== "all") && (
+          {(selectedPerson !== "all" || search || taskFilter !== "all") && (
             <button
               style={{ marginTop: 18, padding: "5px 12px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#fff", color: "#64748b", fontSize: 12, cursor: "pointer" }}
-              onClick={() => { setSelectedAm("all"); setSearch(""); setTaskFilter("all"); }}
+              onClick={() => { setSelectedPerson("all"); setSearch(""); setTaskFilter("all"); }}
             >
               Reset filters
             </button>
           )}
         </div>
 
-        {afterAmFilter.length === 0 ? (
-          <div style={{ padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>
-            No results match your filters.
-          </div>
-        ) : (
-          afterAmFilter.map((am) => <AmSection key={am.amId} am={am} taskFilter={taskFilter} search={search} />)
+        {/* Focused drill: a TL or TM was picked — render just their section */}
+        {selectedOption && selectedOption.kind === "team_lead" && (
+          <TeamLeadSection node={selectedOption.node as TeamLeadNode} taskFilter={taskFilter} search={search} defaultOpen={true} />
+        )}
+        {selectedOption && selectedOption.kind === "team_member" && (
+          <TeamMemberSection node={selectedOption.node as PersonNode} taskFilter={taskFilter} search={search} defaultOpen={true} />
+        )}
+
+        {/* AM sections (all-mode and AM-selected) */}
+        {(selectedPerson === "all" || (selectedOption?.kind === "am")) && (
+          afterAmFilter.length === 0 ? (
+            <div style={{ padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>
+              No results match your filters.
+            </div>
+          ) : (
+            afterAmFilter.map((am) => <AmSection key={am.amId} am={am} taskFilter={taskFilter} search={search} />)
+          )
         )}
       </div>
     </div>

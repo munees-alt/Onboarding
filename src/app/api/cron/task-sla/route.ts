@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createRunFromTemplate } from "@/lib/runs";
+import { upsertConsolidatedComplianceTask } from "@/lib/compliance-tasks";
 
 // Daily scan: for every run with task-board SLA reminders configured, notify the
 // AM about tasks that haven't been started or finished in time. Deduped via
@@ -136,36 +137,24 @@ export async function GET(request: NextRequest) {
       }
 
       // ALSO surface to Action Items (My Tasks) — fan out to master admin + run AM.
-      // Dedupe against any open admin_task with (kind=compliance_alert, run_id, owner_id).
+      // Consolidated: append to the single open kind=compliance chip per owner;
+      // create the chip only when none exists.
       const infoForAdmin = await resolve(row.run_id);
       if (infoForAdmin) {
         const masterId = await resolveMaster(infoForAdmin.org);
         const ownerIds = Array.from(new Set([masterId, infoForAdmin.am].filter((v): v is string => !!v)));
+        const daysCeil = Math.ceil(daysToDue);
+        const lineForChip = `${infoForAdmin.name} · ${label} — due ${d.date} (${daysCeil}d)`;
         for (const ownerId of ownerIds) {
-          const { data: existing } = await admin
-            .from("admin_tasks")
-            .select("id")
-            .eq("kind", "compliance_alert")
-            .eq("run_id", row.run_id)
-            .eq("owner_id", ownerId)
-            .eq("status", "open")
-            .limit(1)
-            .maybeSingle();
-          if (existing) continue;
-          const daysCeil = Math.ceil(daysToDue);
-          const title = `Compliance expiry approaching · ${label} for ${infoForAdmin.name}`;
-          const body = `${label} is due ${d.date} (in ${daysCeil} day(s)). Type: ${d.type ?? "compliance"}.`;
-          await admin.from("admin_tasks").insert({
-            org_id: infoForAdmin.org,
-            owner_id: ownerId,
-            kind: "compliance_alert",
-            run_id: row.run_id,
-            client_id: infoForAdmin.clientId,
-            step_id: null,
-            title,
-            body,
+          const res = await upsertConsolidatedComplianceTask(admin, {
+            orgId: infoForAdmin.org,
+            ownerId,
+            line: lineForChip,
+            clientId: infoForAdmin.clientId,
+            runId: row.run_id,
+            source: "compliance_alert",
           });
-          complianceAdminTasks++;
+          if (res.mode === "created" || res.mode === "appended") complianceAdminTasks++;
         }
       }
     }

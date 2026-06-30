@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { upsertConsolidatedComplianceTask } from "@/lib/compliance-tasks";
 
 export type TaxStatus = "open_item" | "pending" | "awaiting" | "application_submitted" | "completed";
 export type TaxService = "ct_reg" | "vat_reg" | "ct_fil" | "vat_fil";
@@ -260,18 +261,15 @@ export async function assignTaxMembers(clientId: string, memberIds: string[]): P
     );
   if (upsertErr) return { error: upsertErr.message };
 
-  // Action-item chip for each assignee
-  if (memberIds.length) {
-    await supabase.from("admin_tasks").insert(
-      memberIds.map((memberId) => ({
-        org_id: session.profile.org_id,
-        owner_id: memberId,
-        kind: "tax_compliance_assignment",
-        client_id: clientId,
-        title: `Tax compliance assigned — ${client.name}`,
-        body: `You have been assigned to the tax compliance card for ${client.name}. Open Tax Compliance to view services, status and notes.`,
-      })),
-    );
+  // Append to each assignee's consolidated Compliance chip.
+  for (const memberId of memberIds) {
+    await upsertConsolidatedComplianceTask(admin, {
+      orgId: session.profile.org_id,
+      ownerId: memberId,
+      clientId,
+      line: `${client.name} — assigned to you on Tax Compliance`,
+      source: "tax_compliance_assignment",
+    });
   }
 
   revalidatePath("/tax-compliance");
@@ -310,16 +308,15 @@ export async function requestToTaxTeam(clientId: string, note: string): Promise<
   if (!assignees.length) return { error: "No tax team assignees found." };
 
   const requester = session.teamMember?.full_name ?? "Onboarding team";
-  await supabase.from("admin_tasks").insert(
-    assignees.map((memberId) => ({
-      org_id: session.profile.org_id,
-      owner_id: memberId,
-      kind: "tax_compliance_request",
-      client_id: clientId,
-      title: `Tax request — ${client.name}`,
-      body: `${requester} requested: ${trimmed}`,
-    })),
-  );
+  for (const memberId of assignees) {
+    await upsertConsolidatedComplianceTask(admin, {
+      orgId: session.profile.org_id,
+      ownerId: memberId,
+      clientId,
+      line: `${client.name} — request from ${requester}: ${trimmed}`,
+      source: "tax_compliance_request",
+    });
+  }
 
   revalidatePath("/my-work");
   return { ok: true };
@@ -364,21 +361,21 @@ export async function escalateToTaxCompliance(input: {
   );
   if (error) return { error: error.message };
 
-  // Action-item chip on each of (Gautam, Nafila)
+  // Append to Gautam + Nafila's consolidated Compliance chip.
   if (defaults.length) {
     const serviceList = services.length ? services.map((s) => SERVICE_LABEL[s]).join(", ") : "unspecified";
-    await supabase.from("admin_tasks").insert(
-      defaults.map((memberId) => ({
-        org_id: session.profile.org_id,
-        owner_id: memberId,
-        kind: "tax_compliance_new",
-        client_id: input.clientId,
-        run_id: input.sourceRunId ?? null,
-        step_id: input.sourceStepId ?? null,
-        title: `New tax compliance item — ${client.name}`,
-        body: `Services needed: ${serviceList}. ${input.notes ? `Notes: ${input.notes}` : ""}\nAssign a team member and update the card on Tax Compliance.`,
-      })),
-    );
+    const line = `${client.name} — new tax case (${serviceList})${input.notes ? `; ${input.notes}` : ""}`;
+    for (const memberId of defaults) {
+      await upsertConsolidatedComplianceTask(admin, {
+        orgId: session.profile.org_id,
+        ownerId: memberId,
+        clientId: input.clientId,
+        runId: input.sourceRunId ?? null,
+        stepId: input.sourceStepId ?? null,
+        line,
+        source: "tax_compliance_new",
+      });
+    }
   }
 
   revalidatePath("/tax-compliance");

@@ -11,6 +11,7 @@ import { createClientDriveTree, sendGmailAs, uploadClientDocToDrive, getDriveCap
 import { getTemplate, getAllTemplates } from "@/lib/templates-store";
 import { createRunFromTemplate } from "@/lib/runs";
 import { findTaxHead, findTaxTeamLead, suggestNextAm, findAlcHead, suggestNextAlc, suggestNextByRole, getAmCapacityList } from "@/lib/capacity";
+import { upsertConsolidatedComplianceTask } from "@/lib/compliance-tasks";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const KIND_TO_TYPE: Record<string, string> = { ai: "ai", link: "link", doc: "form", check: "manual", person: "manual" };
@@ -1123,18 +1124,18 @@ export async function escalateUrgentComplianceServices(
       if (p === "vat-filing") return "VAT Filing";
       return "Statutory Audit";
     });
-    await supabase.from("admin_tasks").insert(
-      defaults.map((memberId) => ({
-        org_id: run.org_id,
-        owner_id: memberId,
-        kind: "tax_compliance_new",
-        client_id: run.client_id,
-        run_id: runId,
-        step_id: stepId,
-        title: `New tax compliance — ${client?.name ?? "Client"}`,
-        body: `Services needed: ${serviceLabels.join(", ")}. Open Tax Compliance to assign a team member and update the card.`,
-      })),
-    );
+    const taxLine = `${client?.name ?? "Client"} — new tax case (${serviceLabels.join(", ")})`;
+    for (const memberId of defaults) {
+      await upsertConsolidatedComplianceTask(admin, {
+        orgId: run.org_id,
+        ownerId: memberId,
+        clientId: run.client_id,
+        runId,
+        stepId,
+        line: taxLine,
+        source: "tax_compliance_new",
+      });
+    }
     await supabase.from("notifications").insert(
       defaults.map((id) => ({
         org_id: run.org_id, run_id: runId, recipient_id: id, kind: "escalation",
