@@ -411,7 +411,7 @@ function TaxCardBody({
             <Icon name="users" size={11} /> Team
           </button>
           {teamOpen && (
-            <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", minWidth: 240, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}>
+            <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 10, padding: "12px 16px", minWidth: 280, boxShadow: "0 10px 32px rgba(15,23,42,0.18), 0 2px 6px rgba(15,23,42,0.08)" }}>
               <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--ink-3)", marginBottom: 8 }}>Onboarding team</div>
               {c.teamMembers.length === 0 ? (
                 <div style={{ fontSize: 12, color: "var(--ink-3)" }}>No onboarding team yet.</div>

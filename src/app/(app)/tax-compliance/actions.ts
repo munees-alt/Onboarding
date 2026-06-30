@@ -127,20 +127,27 @@ export async function getTaxComplianceClients(): Promise<{
 
   const membersById = new Map((allMembers ?? []).map((m) => [m.id as string, m as { id: string; full_name: string; email: string | null; role: string; title: string | null }]));
   const driveByClient = new Map((drive ?? []).map((d) => [d.client_id as string, ((d.tree as { link?: string } | null)?.link) ?? null]));
+  // Prefer active runs; fall back to the most recent run regardless of status —
+  // tax compliance is often opened AFTER onboarding completes, but we still
+  // want to show the original onboarding team that worked the client.
   const runByClient = new Map<string, { id: string; am_id: string | null }>();
   for (const r of runsRows ?? []) {
     if (r.status === "complete" || r.status === "closed") continue;
     if (!runByClient.has(r.client_id as string)) runByClient.set(r.client_id as string, { id: r.id as string, am_id: r.am_id as string | null });
   }
+  for (const r of runsRows ?? []) {
+    if (runByClient.has(r.client_id as string)) continue;
+    runByClient.set(r.client_id as string, { id: r.id as string, am_id: r.am_id as string | null });
+  }
 
-  // For each run, pull run_team
+  // For each run, pull run_team (column is role_in_run, not role)
   const runIds = [...runByClient.values()].map((r) => r.id);
   const teamByRun = new Map<string, { team_member_id: string; role: string }[]>();
   if (runIds.length) {
-    const { data: rt } = await admin.from("run_team").select("run_id,team_member_id,role").in("run_id", runIds);
+    const { data: rt } = await admin.from("run_team").select("run_id,team_member_id,role_in_run").in("run_id", runIds);
     for (const r of rt ?? []) {
       const list = teamByRun.get(r.run_id as string) ?? [];
-      list.push({ team_member_id: r.team_member_id as string, role: r.role as string });
+      list.push({ team_member_id: r.team_member_id as string, role: (r.role_in_run as string) ?? "" });
       teamByRun.set(r.run_id as string, list);
     }
   }
