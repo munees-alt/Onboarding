@@ -141,6 +141,52 @@ export async function GET(request: NextRequest) {
   const winFor = (orgId: string, k: Kind) => (cfgByOrg.get(orgId)?.window[k] ?? DEFAULT_WINDOW_DAYS[k] * DAY);
   const noteExt = (orgId: string) => (cfgByOrg.get(orgId)?.noteExtMs ?? 2 * DAY);
 
+  // ── 0) Auto-close open tasks for runs that are now blocked / on hold ──
+  // The cron skips blocked runs when creating tasks, but existing open tasks
+  // created before the run was blocked stay open. Sweep and close them now.
+  const { data: openRunTasks } = await admin
+    .from("admin_tasks")
+    .select("id,run_id,history,notes")
+    .eq("status", "open")
+    .not("run_id", "is", null);
+  if (openRunTasks?.length) {
+    const runIdsToCheck = [...new Set(openRunTasks.map((t) => t.run_id as string))];
+    const { data: blockedRuns } = await admin
+      .from("onboarding_runs")
+      .select("id,blocked_reason")
+      .in("id", runIdsToCheck)
+      .not("blocked_reason", "is", null);
+    const blockedRunIds = new Set((blockedRuns ?? []).map((r) => r.id as string));
+    const blockedReasonById = new Map((blockedRuns ?? []).map((r) => [r.id as string, r.blocked_reason as string]));
+    // Also close tasks for completed / archived runs
+    const { data: doneRuns } = await admin
+      .from("onboarding_runs")
+      .select("id,status")
+      .in("id", runIdsToCheck)
+      .in("status", ["complete", "closed", "archived"]);
+    const doneRunIds = new Set((doneRuns ?? []).map((r) => r.id as string));
+
+    const tasksToClose = openRunTasks.filter(
+      (t) => blockedRunIds.has(t.run_id as string) || doneRunIds.has(t.run_id as string)
+    );
+    for (const t of tasksToClose) {
+      const isBlocked = blockedRunIds.has(t.run_id as string);
+      const reason = isBlocked
+        ? `Run paused: ${blockedReasonById.get(t.run_id as string) ?? "on hold"}`
+        : "Run completed / closed";
+      const history = Array.isArray(t.history) ? t.history : [];
+      await admin
+        .from("admin_tasks")
+        .update({
+          status: "closed",
+          closed_at: new Date().toISOString(),
+          notes: `Auto-closed: ${reason}`,
+          history: [...history, { at: new Date().toISOString(), action: "auto_closed", notes: reason }],
+        })
+        .eq("id", t.id);
+    }
+  }
+
   // Pull existing task rows once for dedupe per (kind, run, owner).
   const { data: openTasksRaw } = await admin
     .from("admin_tasks")
