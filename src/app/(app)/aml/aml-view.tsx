@@ -262,6 +262,7 @@ export function AmlView({
                       canEdit={canEdit}
                       isHead={!!isHead}
                       onAssign={amlTeam.length > 0 ? () => setAssignPanel(c.clientId) : undefined}
+                      onSendMessage={() => setMessageFor(c)}
                     />
                     {isAdmin && (
                       <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
@@ -312,6 +313,7 @@ export function AmlView({
                       canEdit={canEdit}
                       isHead={!!isHead}
                       onAssign={amlTeam.length > 0 ? () => setAssignPanel(c.clientId) : undefined}
+                      onSendMessage={() => setMessageFor(c)}
                     />
                     {isAdmin && (
                       <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
