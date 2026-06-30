@@ -141,39 +141,64 @@ export async function GET(request: NextRequest) {
   const winFor = (orgId: string, k: Kind) => (cfgByOrg.get(orgId)?.window[k] ?? DEFAULT_WINDOW_DAYS[k] * DAY);
   const noteExt = (orgId: string) => (cfgByOrg.get(orgId)?.noteExtMs ?? 2 * DAY);
 
-  // ── 0) Auto-close open tasks for runs that are now blocked / on hold ──
-  // The cron skips blocked runs when creating tasks, but existing open tasks
-  // created before the run was blocked stay open. Sweep and close them now.
+  // ── 0) Auto-close open tasks for runs/clients that are blocked, on hold, paused, or done ──
+  // Covers both run-level blocked_reason AND client-level status = 'hold' | 'paused'.
   const { data: openRunTasks } = await admin
     .from("admin_tasks")
-    .select("id,run_id,history,notes")
-    .eq("status", "open")
-    .not("run_id", "is", null);
+    .select("id,run_id,client_id,history,notes")
+    .eq("status", "open");
   if (openRunTasks?.length) {
-    const runIdsToCheck = [...new Set(openRunTasks.map((t) => t.run_id as string))];
-    const { data: blockedRuns } = await admin
-      .from("onboarding_runs")
-      .select("id,blocked_reason")
-      .in("id", runIdsToCheck)
-      .not("blocked_reason", "is", null);
-    const blockedRunIds = new Set((blockedRuns ?? []).map((r) => r.id as string));
-    const blockedReasonById = new Map((blockedRuns ?? []).map((r) => [r.id as string, r.blocked_reason as string]));
-    // Also close tasks for completed / archived runs
-    const { data: doneRuns } = await admin
-      .from("onboarding_runs")
-      .select("id,status")
-      .in("id", runIdsToCheck)
-      .in("status", ["complete", "closed", "archived"]);
-    const doneRunIds = new Set((doneRuns ?? []).map((r) => r.id as string));
+    const runIdsToCheck = [...new Set(openRunTasks.map((t) => t.run_id as string).filter(Boolean))];
+    const clientIdsToCheck = [...new Set(openRunTasks.map((t) => t.client_id as string).filter(Boolean))];
 
-    const tasksToClose = openRunTasks.filter(
-      (t) => blockedRunIds.has(t.run_id as string) || doneRunIds.has(t.run_id as string)
+    // Run-level: blocked_reason set
+    const blockedRunIds = new Set<string>();
+    const blockedReasonById = new Map<string, string>();
+    if (runIdsToCheck.length) {
+      const { data: blockedRuns } = await admin
+        .from("onboarding_runs")
+        .select("id,blocked_reason")
+        .in("id", runIdsToCheck)
+        .not("blocked_reason", "is", null);
+      for (const r of blockedRuns ?? []) {
+        blockedRunIds.add(r.id as string);
+        blockedReasonById.set(r.id as string, r.blocked_reason as string);
+      }
+    }
+
+    // Run-level: completed / archived
+    const doneRunIds = new Set<string>();
+    if (runIdsToCheck.length) {
+      const { data: doneRuns } = await admin
+        .from("onboarding_runs")
+        .select("id")
+        .in("id", runIdsToCheck)
+        .in("status", ["complete", "closed", "archived"]);
+      for (const r of doneRuns ?? []) doneRunIds.add(r.id as string);
+    }
+
+    // Client-level: status = 'hold' | 'paused' — catches clients marked on hold without a run-level block
+    const heldClientIds = new Set<string>();
+    if (clientIdsToCheck.length) {
+      const { data: heldClients } = await admin
+        .from("clients")
+        .select("id")
+        .in("id", clientIdsToCheck)
+        .in("status", ["hold", "paused"]);
+      for (const c of heldClients ?? []) heldClientIds.add(c.id as string);
+    }
+
+    const tasksToClose = openRunTasks.filter((t) =>
+      (t.run_id && (blockedRunIds.has(t.run_id as string) || doneRunIds.has(t.run_id as string))) ||
+      (t.client_id && heldClientIds.has(t.client_id as string))
     );
     for (const t of tasksToClose) {
-      const isBlocked = blockedRunIds.has(t.run_id as string);
-      const reason = isBlocked
-        ? `Run paused: ${blockedReasonById.get(t.run_id as string) ?? "on hold"}`
-        : "Run completed / closed";
+      const reason =
+        t.run_id && blockedRunIds.has(t.run_id as string)
+          ? `Run paused: ${blockedReasonById.get(t.run_id as string) ?? "on hold"}`
+          : t.client_id && heldClientIds.has(t.client_id as string)
+          ? "Client is on hold / paused"
+          : "Run completed / closed";
       const history = Array.isArray(t.history) ? t.history : [];
       await admin
         .from("admin_tasks")
