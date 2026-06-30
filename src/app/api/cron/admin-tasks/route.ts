@@ -63,6 +63,7 @@ type AdminTaskRow = {
   notes: string | null;
   history: unknown;
   closed_at: string | null;
+  created_at: string;
 };
 
 export async function GET(request: NextRequest) {
