@@ -17,7 +17,7 @@ export const NAV: NavItem[] = [
 
   { id: "pulse", label: "Weekly Pulse", icon: "activity", href: "/pulse", group: "admin", roles: ["admin"] },
   { id: "weekly-updates", label: "Weekly Client Updates", icon: "send", href: "/weekly-updates", group: "admin", roles: ["admin"] },
-  { id: "am-report", label: "AM Weekly Report", icon: "bar-chart-2", href: "/am-report", group: "admin", roles: ["admin", "ops_head", "am"] },
+  { id: "am-report", label: "Weekly Report", icon: "bar-chart-2", href: "/am-report", group: "admin", roles: ["admin", "ops_head", "am", "team_lead"] },
   { id: "master-coa", label: "Master COA", icon: "book-open", href: "/master-coa", group: "admin", roles: ["admin", "ops_head", "am"] },
   { id: "master-tax-codes", label: "Master Tax Codes", icon: "percent", href: "/master-tax-codes", group: "admin", roles: ["admin", "ops_head", "am"] },
   { id: "org-chart", label: "Org Chart", icon: "network", href: "/org-chart", group: "admin", roles: ["admin", "ops_head"] },
