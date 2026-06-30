@@ -24,7 +24,7 @@ const STATUS_LABEL: Record<string, string> = {
 const STATUS_COLOR: Record<string, string> = {
   pending: "#94a3b8", in_review: "var(--orange)", link_sent: "#3b82f6", signed: "#8b5cf6", document_created: "#06b6d4", completed: "#16a34a",
 };
-const ALL_STATUSES = ["pending", "in_review", "link_sent", "signed", "document_created", "completed"] as const;
+const ALL_STATUSES = ["pending", "in_review", "document_created", "link_sent", "signed", "completed"] as const;
 
 export function AmlView({
   clients, canEdit, isAdmin, isHead, amlTeam,
@@ -46,6 +46,7 @@ export function AmlView({
   const [adminBusy, setAdminBusy] = useState(false);
   const [assignPanel, setAssignPanel] = useState<string | null>(null);
   const [assignBusy, setAssignBusy] = useState(false);
+  const [messageFor, setMessageFor] = useState<AmlClient | null>(null);
 
   const ACTIVE_STATUSES = ["pending", "in_review", "link_sent", "signed"];
   const searched = localClients.filter((c) =>
@@ -198,6 +199,7 @@ export function AmlView({
                   canEdit={canEdit}
                   isHead={!!isHead}
                   onAssign={amlTeam.length > 0 ? () => setAssignPanel(c.clientId) : undefined}
+                  onSendMessage={() => setMessageFor(c)}
                 />
                 {isAdmin && (
                   <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
@@ -325,14 +327,119 @@ export function AmlView({
         </div>
 
       </div>
+
+      {messageFor && (
+        <AmlMessageModal
+          client={messageFor}
+          onClose={() => setMessageFor(null)}
+        />
+      )}
     </>
   );
 }
 
+function AmlMessageModal({ client, onClose }: { client: AmlClient; onClose: () => void }) {
+  const link = client.signingLink ?? "";
+  const plainText = `Hi ${client.clientName.split(" ")[0] ?? "there"},
+
+As part of our standard onboarding and compliance process, could you please review and sign our AML (Anti-Money Laundering) document?
+
+You can easily complete the digital signature through this secure link:
+
+🔗 Complete Your AML Sign-off Here: ${link}
+
+It should only take a couple of minutes. Please let us know if you run into any issues or have any questions!`;
+  const htmlText = `<p>Hi ${client.clientName.split(" ")[0] ?? "there"},</p>
+<p>As part of our standard onboarding and compliance process, could you please review and sign our AML (Anti-Money Laundering) document?</p>
+<p>You can easily complete the digital signature through this secure link:</p>
+<p>🔗 <a href="${link}">Complete Your AML Sign-off Here</a></p>
+<p>It should only take a couple of minutes. Please let us know if you run into any issues or have any questions!</p>`;
+  const [copied, setCopied] = useState<"plain" | "html" | null>(null);
+
+  async function copy(kind: "plain" | "html") {
+    const value = kind === "plain" ? plainText : htmlText;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(kind);
+      setTimeout(() => setCopied(null), 1800);
+    } catch {
+      alert("Copy failed — select the text and copy manually.");
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: "var(--card)", borderRadius: 12, maxWidth: 640, width: "100%", maxHeight: "90vh", overflow: "auto", padding: 24, boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink-1)" }}>AML sign-off message</div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>For {client.clientName}</div>
+          </div>
+          <button onClick={onClose} className="btn-ghost" style={{ fontSize: 12 }}>Close</button>
+        </div>
+
+        {!link && (
+          <div style={{ padding: 12, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 8, fontSize: 13, color: "#92400e", marginBottom: 16 }}>
+            No signing link saved yet. Hit Update on the card and paste the AML signing link first.
+          </div>
+        )}
+
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: 16, fontSize: 13.5, lineHeight: 1.55, color: "var(--ink-1)", whiteSpace: "pre-wrap", marginBottom: 16 }}>
+          Hi {client.clientName.split(" ")[0] ?? "there"},
+          {"\n\n"}As part of our standard onboarding and compliance process, could you please review and sign our AML (Anti-Money Laundering) document?
+          {"\n\n"}You can easily complete the digital signature through this secure link:
+          {"\n\n"}🔗 {link ? (
+            <a href={link} target="_blank" rel="noreferrer" style={{ color: "var(--orange)", fontWeight: 600 }}>
+              Complete Your AML Sign-off Here
+            </a>
+          ) : <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>[signing link will appear here]</span>}
+          {"\n\n"}It should only take a couple of minutes. Please let us know if you run into any issues or have any questions!
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            className="btn-primary"
+            disabled={!link}
+            onClick={() => copy("plain")}
+            style={{ fontSize: 13 }}
+          >
+            {copied === "plain" ? "Copied ✓" : "Copy text (WhatsApp / chat)"}
+          </button>
+          <button
+            className="btn-ghost"
+            disabled={!link}
+            onClick={() => copy("html")}
+            style={{ fontSize: 13 }}
+          >
+            {copied === "html" ? "Copied ✓" : "Copy as HTML (email)"}
+          </button>
+          {link && (
+            <a
+              href={link}
+              target="_blank"
+              rel="noreferrer"
+              className="btn-ghost"
+              style={{ fontSize: 13, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              <Icon name="external-link" size={12} /> Open signing link
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AmlClientRow({
-  c, onEdit, canEdit, isHead, onAssign,
+  c, onEdit, canEdit, isHead, onAssign, onSendMessage,
 }: {
-  c: AmlClient; onEdit: () => void; canEdit: boolean; isHead: boolean; onAssign?: () => void;
+  c: AmlClient; onEdit: () => void; canEdit: boolean; isHead: boolean; onAssign?: () => void; onSendMessage?: () => void;
 }) {
   const [teamOpen, setTeamOpen] = useState(false);
 
@@ -445,6 +552,15 @@ function AmlClientRow({
             </div>
           )}
         </div>
+        {c.signingLink && onSendMessage && (
+          <button
+            onClick={onSendMessage}
+            title="Copy the client-ready AML sign-off message"
+            style={{ fontSize: 12, padding: "3px 10px", color: "var(--orange)", background: "var(--orange-soft, #fff7ed)", border: "1px solid var(--orange)", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+          >
+            <Icon name="mail" size={11} /> Send message
+          </button>
+        )}
         {canEdit && (
           <button className="btn-ghost" style={{ fontSize: 12, padding: "3px 10px" }} onClick={onEdit}>Update</button>
         )}
