@@ -19,12 +19,12 @@ type AmlClient = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "Pending", in_review: "In Review", link_sent: "Link Sent", signed: "Signed", completed: "Completed",
+  pending: "Pending", in_review: "In Review", link_sent: "Link Sent", signed: "Signed", document_created: "Document Created", completed: "Completed",
 };
 const STATUS_COLOR: Record<string, string> = {
-  pending: "#94a3b8", in_review: "var(--orange)", link_sent: "#3b82f6", signed: "#8b5cf6", completed: "#16a34a",
+  pending: "#94a3b8", in_review: "var(--orange)", link_sent: "#3b82f6", signed: "#8b5cf6", document_created: "#06b6d4", completed: "#16a34a",
 };
-const ALL_STATUSES = ["pending", "in_review", "link_sent", "signed", "completed"] as const;
+const ALL_STATUSES = ["pending", "in_review", "link_sent", "signed", "document_created", "completed"] as const;
 
 export function AmlView({
   clients, canEdit, isAdmin, isHead, amlTeam,
@@ -52,6 +52,7 @@ export function AmlView({
     !search || c.clientName.toLowerCase().includes(search.toLowerCase()),
   );
   const activeClients = searched.filter((c) => ACTIVE_STATUSES.includes(c.status));
+  const documentCreatedClients = searched.filter((c) => c.status === "document_created");
   const completedClients = searched.filter((c) => c.status === "completed");
   // legacy: keep visible for compatibility with tab filter if used
   const visible = searched.filter((c) => filter === "all" || c.status === filter);
@@ -105,12 +106,12 @@ export function AmlView({
           style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 13, width: 240 }}
         />
         <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
-          {activeClients.length} pending · {completedClients.length} completed
+          {activeClients.length} pending · {documentCreatedClients.length} doc created · {completedClients.length} completed
         </span>
       </div>
 
-      {/* Split layout: two panels side by side */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "start" }}>
+      {/* Split layout: three panels side by side */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20, alignItems: "start" }}>
 
         {/* ── Pending / Active panel ── */}
         <div>
@@ -208,6 +209,68 @@ export function AmlView({
             )}
           </div>
         ))}
+          </div>
+        </div>
+
+        {/* ── Document Created panel ── */}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-1)" }}>Document Created</span>
+            <span style={{ fontSize: 11, fontWeight: 700, background: "#cffafe", color: "#0891b2", padding: "2px 8px", borderRadius: 20 }}>
+              {documentCreatedClients.length}
+            </span>
+          </div>
+          {documentCreatedClients.length === 0 && (
+            <div style={{ padding: "28px 16px", textAlign: "center", color: "var(--ink-3)", fontSize: 12.5, background: "var(--card)", border: "1px dashed var(--border)", borderRadius: 10 }}>
+              No documents awaiting completion.
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {documentCreatedClients.map((c) => (
+              <div key={c.clientId} style={{ background: "var(--card)", border: "1px solid #a5f3fc", borderRadius: 10, padding: "14px 18px" }}>
+                {editing === c.clientId ? (
+                  <AmlEditForm
+                    clientId={c.clientId}
+                    clientName={c.clientName}
+                    form={forms[c.clientId] ?? {}}
+                    onChange={(patch) => setForms((f) => ({ ...f, [c.clientId]: { ...f[c.clientId], ...patch } }))}
+                    onSave={() => doSave(c.clientId)}
+                    onCancel={() => setEditing(null)}
+                    saving={saving === c.clientId}
+                    driveLink={c.driveLink}
+                    runId={c.runId}
+                  />
+                ) : assignPanel === c.clientId ? (
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>{c.clientName} — Assign team member</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                      {amlTeam.map((m) => (
+                        <button key={m.id} className={c.assignedTo === m.id ? "btn-primary" : "btn-ghost"} disabled={assignBusy} style={{ fontSize: 13 }} onClick={() => doAssign(c.clientId, m.id)}>
+                          {m.name}
+                        </button>
+                      ))}
+                    </div>
+                    <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAssignPanel(null)}>Cancel</button>
+                  </div>
+                ) : (
+                  <div>
+                    <AmlClientRow
+                      c={c}
+                      onEdit={() => startEdit(c)}
+                      canEdit={canEdit}
+                      isHead={!!isHead}
+                      onAssign={amlTeam.length > 0 ? () => setAssignPanel(c.clientId) : undefined}
+                    />
+                    {isAdmin && (
+                      <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
+                        onClick={() => setAdminPanel(c.clientId)}>
+                        Admin actions
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
 

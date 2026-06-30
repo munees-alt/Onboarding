@@ -1989,23 +1989,28 @@ export async function saveAmlRecord(input: {
     { onConflict: "client_id" },
   );
   if (error) return { error: error.message };
-  // If link_sent or signed, create an admin_tasks chip so the AM/team knows to follow up.
-  if (input.status === "link_sent" || input.status === "signed") {
+  // If link_sent / signed / document_created, create an admin_tasks chip so the AM/team knows to follow up.
+  if (input.status === "link_sent" || input.status === "signed" || input.status === "document_created") {
     const { data: client } = await supabase.from("clients").select("name,am_id").eq("id", input.clientId).maybeSingle();
     const ownerId = (client as { am_id?: string | null } | null)?.am_id ?? session.teamMember?.id ?? null;
     if (ownerId) {
       const taskTitle = input.status === "link_sent"
         ? `AML: Share signing link — ${client?.name ?? "Client"}`
-        : `AML: Signing completed — update & close — ${client?.name ?? "Client"}`;
+        : input.status === "signed"
+          ? `AML: Signing completed — update & close — ${client?.name ?? "Client"}`
+          : `AML: Document created — confirm & mark complete — ${client?.name ?? "Client"}`;
+      const taskBody = input.status === "link_sent"
+        ? `Send the AML signing link to the client: ${input.signingLink ?? "(link not yet set)"}`
+        : input.status === "signed"
+          ? `Signing completed. Confirm with the client and mark AML as completed. Link: ${input.signingCompletedLink ?? "(link not set)"}`
+          : `Signed document on file: ${input.signingCompletedLink ?? "(link not set)"}. Final review, then mark AML as completed.`;
       await supabase.from("admin_tasks").insert({
         org_id: session.profile.org_id,
         owner_id: ownerId,
         kind: "aml_followup",
         client_id: input.clientId,
         title: taskTitle,
-        body: input.status === "link_sent"
-          ? `Send the AML signing link to the client: ${input.signingLink ?? "(link not yet set)"}`
-          : `Signing completed. Confirm with the client and mark AML as completed. Link: ${input.signingCompletedLink ?? "(link not set)"}`,
+        body: taskBody,
       });
     }
   }
