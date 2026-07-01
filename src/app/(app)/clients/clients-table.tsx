@@ -164,6 +164,7 @@ export function ClientsTable({
   const [fEntity, setFEntity] = useState("all");
   const [fMonth, setFMonth] = useState("all");
   const [fAuthority, setFAuthority] = useState("all");
+  const [fTeamLead, setFTeamLead] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
   const [picking, setPicking] = useState<{ clientId: string; name: string; amId: string; patch?: { ownerName?: string | null; industry?: string | null; entityType?: string | null; services?: string[]; email?: string | null; phone?: string | null; proposalId?: string | null; tradeAuthority?: string | null; tradeLicenceNo?: string | null; contractStart?: string | null; targetGoLive?: string | null; expectedDays?: number | null } } | null>(null);
   const [signing, setSigning] = useState<{ name: string; step: number } | null>(null);
@@ -263,6 +264,7 @@ export function ClientsTable({
       if (fEntity !== "all" && c.entity_type !== fEntity) return false;
       if (fMonth !== "all" && (c.contract_start_date ?? "").slice(0, 7) !== fMonth) return false;
       if (fAuthority !== "all" && c.trade_licence_authority !== fAuthority) return false;
+      if (fTeamLead !== "all" && !(teamByClient[c.id]?.teamLeads ?? []).includes(fTeamLead)) return false;
       return true;
     };
 
@@ -280,7 +282,7 @@ export function ClientsTable({
           seenGroups.add(c.group_id);
           const allGroupChildren = groupedClients[c.group_id] ?? [];
           const children = allGroupChildren.filter((ch) => matchesTab(ch) && matchesSearch(ch) && matchesFilters(ch));
-          const hasFilter = tab !== "All" || q || fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all";
+          const hasFilter = tab !== "All" || q || fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all" || fTeamLead !== "all";
           if (children.length === 0 && hasFilter) continue;
           rows.push({ kind: "group-header", groupId: c.group_id, groupName: groupMap[c.group_id]?.name ?? "Group", children: allGroupChildren });
         }
@@ -460,8 +462,9 @@ export function ClientsTable({
             const industryOpts = [...new Set(clients.map((c) => c.industry).filter(Boolean) as string[])].sort();
             const monthOpts = [...new Set(clients.map((c) => c.contract_start_date?.slice(0, 7)).filter(Boolean) as string[])].sort().reverse();
             const authorityOpts = [...new Set(clients.map((c) => c.trade_licence_authority).filter(Boolean) as string[])].sort();
-            const hasFilters = fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all";
-            if (!industryOpts.length && !monthOpts.length && !authorityOpts.length) return null;
+            const teamLeadOpts = [...new Set(Object.values(teamByClient).flatMap((t) => t.teamLeads))].sort();
+            const hasFilters = fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all" || fTeamLead !== "all";
+            if (!industryOpts.length && !monthOpts.length && !authorityOpts.length && !teamLeadOpts.length) return null;
             const ctrl: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 12, background: "#fff", height: 30 };
             return (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid var(--border)", background: "var(--bg-soft)" }}>
@@ -488,8 +491,14 @@ export function ClientsTable({
                     {authorityOpts.map((a) => <option key={a} value={a}>{a}</option>)}
                   </select>
                 )}
+                {teamLeadOpts.length > 0 && (
+                  <select value={fTeamLead} onChange={(e) => setFTeamLead(e.target.value)} style={ctrl}>
+                    <option value="all">All team leads</option>
+                    {teamLeadOpts.map((tl) => <option key={tl} value={tl}>{tl}</option>)}
+                  </select>
+                )}
                 {hasFilters && (
-                  <button className="btn-ghost" style={{ height: 30, fontSize: 12 }} onClick={() => { setFIndustry("all"); setFEntity("all"); setFMonth("all"); setFAuthority("all"); }}>
+                  <button className="btn-ghost" style={{ height: 30, fontSize: 12 }} onClick={() => { setFIndustry("all"); setFEntity("all"); setFMonth("all"); setFAuthority("all"); setFTeamLead("all"); }}>
                     <Icon name="x" size={12} /> Clear
                   </button>
                 )}

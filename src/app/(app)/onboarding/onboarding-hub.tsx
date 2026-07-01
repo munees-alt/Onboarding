@@ -4,11 +4,11 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { stepCount, type OnbTemplate } from "@/lib/onboarding-templates";
+import { ARCHIVED_TEMPLATE_IDS, type OnbTemplate } from "@/lib/onboarding-templates";
 import type { RunCardData } from "@/lib/data/runs";
 import { markSignedAction, deleteRunAction, setClientAm, createComplianceRun } from "../clients/actions";
 import { forceCompleteRun, deleteRun as hardDeleteRun } from "./[runId]/actions";
-import { createTemplateFromText, forkTemplate, saveTemplateAction } from "../templates/actions";
+import { forkTemplate, saveTemplateAction } from "../templates/actions";
 import { syncLeadsNow } from "../settings/actions";
 
 export type LeadRow = { id: string; name: string; industry: string | null; proposal_id?: string | null; services?: string[] | null; am_id?: string | null; status?: string };
@@ -21,7 +21,6 @@ const TABS = [
   { id: "pipeline", label: "Pipeline", icon: "git-branch" },
   { id: "clients", label: "Clients", icon: "users" },
   { id: "done", label: "Done", icon: "check-circle" },
-  { id: "templates", label: "Templates", icon: "file-text" },
 ] as const;
 
 const isDone = (s: string) => s === "complete" || s === "closed";
@@ -34,6 +33,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   const [fSearch, setFSearch] = useState("");
   const [fStage, setFStage] = useState<string>("all");
   const [fAm, setFAm] = useState<string>("all");
+  const [fTeamLead, setFTeamLead] = useState<string>("all");
   const [fTemplate, setFTemplate] = useState<string>("all");
   const [fStatus, setFStatus] = useState<string>("all");
   const [fIndustry, setFIndustry] = useState<string>("all");
@@ -60,6 +60,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   // Build dropdown options from the actual run set so filters never offer dead values.
   const stageOptions = [...new Map(rawRuns.map((r) => [`${r.currentStage}|${r.currentStageName ?? ""}`, { value: String(r.currentStage), label: `${r.currentStage}. ${r.currentStageName ?? "—"}` }])).values()].sort((a, b) => Number(a.value) - Number(b.value));
   const amOptions = [...new Map(rawRuns.filter((r) => r.amName).map((r) => [r.amName!, r.amName!])).values()].sort();
+  const teamLeadOptions = [...new Map(rawRuns.filter((r) => r.teamLeadName).map((r) => [r.teamLeadName!, r.teamLeadName!])).values()].sort();
   const tplOptions = [...new Map(rawRuns.map((r) => [r.templateName ?? "—", r.templateName ?? "—"])).values()].sort();
   const industryOptions = [...new Set(rawRuns.map((r) => r.industry).filter(Boolean) as string[])].sort();
   const monthOptions = [...new Set(rawRuns.map((r) => r.contractStartDate?.slice(0, 7)).filter(Boolean) as string[])].sort().reverse();
@@ -72,6 +73,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
     }
     if (fStage !== "all" && String(r.currentStage) !== fStage) return false;
     if (fAm !== "all" && r.amName !== fAm) return false;
+    if (fTeamLead !== "all" && r.teamLeadName !== fTeamLead) return false;
     if (fTemplate !== "all" && r.templateName !== fTemplate) return false;
     if (fStatus !== "all") {
       if (fStatus === "not_started" && r.progress > 0) return false;
@@ -82,8 +84,8 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
     if (fMonth !== "all" && (r.contractStartDate ?? "").slice(0, 7) !== fMonth) return false;
     return true;
   });
-  const filtersActive = !!fSearch.trim() || fStage !== "all" || fAm !== "all" || fTemplate !== "all" || fStatus !== "all" || fIndustry !== "all" || fMonth !== "all";
-  const resetFilters = () => { setFSearch(""); setFStage("all"); setFAm("all"); setFTemplate("all"); setFStatus("all"); setFIndustry("all"); setFMonth("all"); };
+  const filtersActive = !!fSearch.trim() || fStage !== "all" || fAm !== "all" || fTeamLead !== "all" || fTemplate !== "all" || fStatus !== "all" || fIndustry !== "all" || fMonth !== "all";
+  const resetFilters = () => { setFSearch(""); setFStage("all"); setFAm("all"); setFTeamLead("all"); setFTemplate("all"); setFStatus("all"); setFIndustry("all"); setFMonth("all"); };
 
   const doDeleteRun = () => {
     if (!confirmDel) return;
@@ -154,6 +156,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
               search={fSearch} onSearch={setFSearch}
               stage={fStage} onStage={setFStage} stageOptions={stageOptions}
               am={fAm} onAm={setFAm} amOptions={amOptions}
+              teamLead={fTeamLead} onTeamLead={setFTeamLead} teamLeadOptions={teamLeadOptions}
               template={fTemplate} onTemplate={setFTemplate} tplOptions={tplOptions}
               status={fStatus} onStatus={setFStatus}
               industry={fIndustry} onIndustry={setFIndustry} industryOptions={industryOptions}
@@ -245,8 +248,6 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
           </div>
         )}
 
-        {tab === "templates" && <Templates templates={templates} />}
-
         {confirmDel && (
           <div className="modal-overlay open" style={{ zIndex: 90 }} onClick={() => !busy && setConfirmDel(null)}>
             <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
@@ -283,11 +284,12 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
 }
 
 function RunFilterBar({
-  search, onSearch, stage, onStage, stageOptions, am, onAm, amOptions, template, onTemplate, tplOptions, status, onStatus, industry, onIndustry, industryOptions, month, onMonth, monthOptions, filtersActive, onReset,
+  search, onSearch, stage, onStage, stageOptions, am, onAm, amOptions, teamLead, onTeamLead, teamLeadOptions, template, onTemplate, tplOptions, status, onStatus, industry, onIndustry, industryOptions, month, onMonth, monthOptions, filtersActive, onReset,
 }: {
   search: string; onSearch: (s: string) => void;
   stage: string; onStage: (s: string) => void; stageOptions: { value: string; label: string }[];
   am: string; onAm: (s: string) => void; amOptions: string[];
+  teamLead: string; onTeamLead: (s: string) => void; teamLeadOptions: string[];
   template: string; onTemplate: (s: string) => void; tplOptions: string[];
   status: string; onStatus: (s: string) => void;
   industry: string; onIndustry: (s: string) => void; industryOptions: string[];
@@ -317,6 +319,12 @@ function RunFilterBar({
         <option value="all">All AMs</option>
         {amOptions.map((a) => <option key={a} value={a}>{a}</option>)}
       </select>
+      {teamLeadOptions.length > 0 && (
+        <select value={teamLead} onChange={(e) => onTeamLead(e.target.value)} style={ctrl} title="Filter by Team Lead">
+          <option value="all">All Team Leads</option>
+          {teamLeadOptions.map((tl) => <option key={tl} value={tl}>{tl}</option>)}
+        </select>
+      )}
       <select value={template} onChange={(e) => onTemplate(e.target.value)} style={ctrl} title="Filter by template">
         <option value="all">All templates</option>
         {tplOptions.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -461,122 +469,6 @@ function LeadRow({ lead, ams, first }: { lead: LeadRow; ams: AmRow[]; first: boo
   );
 }
 
-function Templates({ templates }: { templates: OnbTemplate[] }) {
-  const router = useRouter();
-  const [open, setOpen] = useState<string | null>(null);
-  const [genOpen, setGenOpen] = useState(false);
-  const [text, setText] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, start] = useTransition();
-  const [forking, setForking] = useState<string | null>(null);
-  const [forkErr, setForkErr] = useState<string | null>(null);
-
-  const generate = () =>
-    start(async () => {
-      setErr(null);
-      const r = await createTemplateFromText(text);
-      if (r.error) { setErr(r.error); return; }
-      if (r.id) router.push(`/templates/${r.id}`);
-    });
-
-  const fork = (id: string) => {
-    setForkErr(null);
-    setForking(id);
-    start(async () => {
-      const r = await forkTemplate(id);
-      if (r.error) { setForkErr(r.error); setForking(null); return; }
-      if (r.id) router.push(`/templates/${r.id}`);
-    });
-  };
-
-  return (
-    <>
-      <div className="section-head" style={{ marginTop: 4 }}>
-        <div><div className="sub">{templates.length} onboarding templates · all editable · fork any to start from a copy</div></div>
-        <button className="btn-primary" onClick={() => { setGenOpen(true); setErr(null); }}>
-          <Icon name="sparkles" size={14} /> Create from description
-        </button>
-      </div>
-      {forkErr && <div style={{ fontSize: 12.5, color: "var(--red)", background: "var(--red-soft)", padding: "8px 10px", borderRadius: 8, marginTop: 8 }}>{forkErr}</div>}
-
-      {genOpen && (
-        <div className="modal-overlay open" onClick={() => !busy && setGenOpen(false)}>
-          <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
-            <div className="hd">
-              <h3>Create a template from a description</h3>
-              <div className="sub">Describe your onboarding process in plain words. AI drafts the stages and steps — real, based on what you write, fully editable after.</div>
-            </div>
-            <div className="bd">
-              <textarea className="notes" value={text} onChange={(e) => setText(e.target.value)} style={{ minHeight: 160 }}
-                placeholder={"e.g. When a new VAT client signs, the AM assigns a senior and junior. We collect the trade licence and bank statements, set up the books in Zoho, hold a kickoff call, then run a monthly close with a handover to the delivery team."} />
-              {err && <div style={{ fontSize: 12.5, color: "var(--red)", background: "var(--red-soft)", padding: "8px 10px", borderRadius: 8 }}>{err}</div>}
-            </div>
-            <div className="ft">
-              <button className="btn-ghost" onClick={() => setGenOpen(false)} disabled={busy}>Cancel</button>
-              <button className="btn-ai" onClick={generate} disabled={busy || text.trim().length < 20}>
-                <Icon name="sparkles" size={14} /> {busy ? "Generating…" : "Generate template"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {(() => {
-        const ORDER = ["Onboarding", "Accounting", "Taxation", "Auditing"];
-        const catOf = (t: OnbTemplate) => t.category || "Onboarding";
-        const cats = [...new Set(templates.map(catOf))].sort((a, b) => {
-          const ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
-          return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-        });
-        return cats.map((cat) => (
-          <div key={cat} style={{ marginTop: 18 }}>
-            <div style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", marginBottom: 10 }}>{cat}</div>
-            <div className="tmpl-grid">
-              {templates.filter((t) => catOf(t) === cat).map((t) => (
-                <div key={t.id} className="tmpl-card" style={{ cursor: "default" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <div className="ic"><Icon name={t.id === "medium-enterprise" ? "building-2" : t.id.startsWith("micro") ? "zap" : t.category === "Accounting" ? "calculator" : "users"} size={17} /></div>
-                    {t.live && <span className="pill green" style={{ fontSize: 10 }}><span className="dot" /> Live</span>}
-                  </div>
-                  <h4>{t.name}</h4>
-                  <div className="meta" style={{ fontWeight: 600, color: "var(--ink-2)" }}>{t.teamLabel}</div>
-                  <div className="meta" style={{ marginTop: 6, lineHeight: 1.5 }}>{t.desc}</div>
-                  <div className="ft">
-                    <span className="meta">{t.stages.length} stages · {stepCount(t)} steps · {t.usedBy} live run{t.usedBy === 1 ? "" : "s"}</span>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button className="btn-ghost" onClick={() => fork(t.id)} disabled={busy && forking === t.id} title="Duplicate this template as a new editable copy">
-                        <Icon name="copy" size={13} /> {busy && forking === t.id ? "Forking…" : "Fork"}
-                      </button>
-                      <button className="btn-ghost" onClick={() => setOpen(open === t.id ? null : t.id)}>{open === t.id ? "Hide" : "View"} <Icon name={open === t.id ? "chevron-up" : "chevron-down"} size={13} /></button>
-                    </div>
-                  </div>
-                  {open === t.id && (
-                    <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
-                      {t.stages.map((s, i) => (
-                        <div key={s.id}>
-                          <div style={{ fontSize: 12.5, fontWeight: 700 }}>{i + 1}. {s.name}</div>
-                          <ul style={{ margin: "4px 0 0", paddingLeft: 16 }}>
-                            {s.steps.map((st) => <li key={st.id} style={{ fontSize: 12, color: "var(--ink-3)", margin: "2px 0" }}>{st.title}</li>)}
-                          </ul>
-                        </div>
-                      ))}
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <Link href={`/templates/${t.id}`} className="btn-ghost" style={{ textDecoration: "none" }}><Icon name="pencil" size={13} /> Edit template</Link>
-                        <button className="btn-ghost" onClick={() => fork(t.id)} disabled={busy && forking === t.id}>
-                          <Icon name="copy" size={13} /> {busy && forking === t.id ? "Forking…" : "Fork as new"}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        ));
-      })()}
-    </>
-  );
-}
-
 function NewComplianceRunModal({
   templates, clients, ams, onClose, onStarted,
 }: {
@@ -688,9 +580,9 @@ function NewOnboardingModal({
   onClose: () => void;
   onStarted: (runId: string) => void;
 }) {
-  const pickable = templates.filter((t) => !["urgent-compliance", "catchup", "compliance-renewal", "lead-intake"].includes(t.id) && (!t.category || t.category === "Onboarding"));
+  const pickable = templates.filter((t) => !ARCHIVED_TEMPLATE_IDS.has(t.id) && !["urgent-compliance", "catchup", "compliance-renewal", "lead-intake"].includes(t.id) && (!t.category || t.category === "Onboarding"));
   const [clientId, setClientId] = useState(leads[0]?.id ?? "");
-  const [tplId, setTplId] = useState(pickable.find((t) => t.id === "medium-team")?.id ?? pickable[0]?.id ?? "");
+  const [tplId, setTplId] = useState(pickable.find((t) => t.id === "micro-team")?.id ?? pickable[0]?.id ?? "");
   const [customize, setCustomize] = useState(false);
   const [busy, start] = useTransition();
   const [error, setError] = useState<string | null>(null);

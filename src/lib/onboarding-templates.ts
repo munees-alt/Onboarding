@@ -76,6 +76,9 @@ export interface OnbTemplate {
   live: boolean;
   usedBy: number;
   category?: string; // department: Onboarding | Accounting | Taxation | Auditing (defaults to Onboarding)
+  event?: string; // e.g. "onboarding" — top-level grouping shown in the Templates section
+  flow?: string; // e.g. "client-onboarding-master" — which flow this template belongs to
+  industry?: string; // set only for industry-specific variants; omitted = applies to any industry
   stages: TemplateStage[];
   intake: { id: string; label: string; source: string; hint?: string; suggested?: boolean }[];
   uploads: { id: string; label: string; who: string; suggested?: boolean }[];
@@ -255,6 +258,7 @@ const MICRO_TEAM: OnbTemplate = {
   teamLabel: "Micro team (Lead + Team Lead + assigned senior)",
   desc: "Fast onboarding for smaller clients — same disciplined flow as Medium Team PLUS a branded, contract-scoped onboarding deck for the call and urgent-compliance routing.",
   color: "orange", live: true, usedBy: 0,
+  event: "onboarding", flow: "client-onboarding-master",
   stages: [
     { id: "m1", name: "Assign Roles", targetDays: 1, desc: "AM assigns the Team Lead, Senior and Junior who will run this onboarding.", steps: [
       { id: "m1.1", title: "Run auto-created from template", kind: "ai", who: ["System"], pre: true, note: "Created the moment the client was marked signed — the Drive folder is auto-provisioned at the same time." },
@@ -389,6 +393,7 @@ const CATCHUP_RUN: OnbTemplate = {
   live: true,
   usedBy: 0,
   category: "Catch-up",
+  event: "onboarding", flow: "client-onboarding-master",
   stages: [
     // 1. Role assignment ────────────────────────────────────────────────────
     { id: "cu1", name: "Assign Roles", desc: "Assign the Team Lead (default: Aarju K) and the team members under her who will work this catch-up.", steps: [
@@ -929,6 +934,27 @@ const COMPLIANCE_DOC_COLLECTION: OnbTemplate = {
 
 export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, COMPLIANCE_RENEWAL, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT, AML_REVIEW, COMPLIANCE_DOC_COLLECTION];
 export const templateById = (id: string) => ONB_TEMPLATES.find((t) => t.id === id);
+
+// Templates hidden from the Templates gallery and the "new onboarding run" picker
+// (platform cleanup, 2026-07) — only Client Onboarding · Micro and Catch-up
+// Accounting remain browsable/pickable there. Nothing is deleted: these templates
+// still resolve via getTemplate()/templateById() for existing runs and for the
+// dedicated compliance-run / renewal / escalation flows that create runs from
+// them directly (those aren't gated by this list).
+export const ARCHIVED_TEMPLATE_IDS = new Set<string>([
+  "medium-enterprise",
+  "medium-team",
+  "urgent-compliance",
+  "compliance-renewal",
+  "monthly-accounting",
+  "ct-registration",
+  "ct-filing",
+  "vat-registration",
+  "vat-filing",
+  "fta-amendment",
+  "aml-review",
+  "compliance-doc-collection",
+]);
 
 export function stepCount(t: OnbTemplate) {
   return t.stages.reduce((n, s) => n + s.steps.length, 0);

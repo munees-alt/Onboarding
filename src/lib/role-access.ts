@@ -5,6 +5,28 @@ import type { NavItem, Role } from "./types";
 
 const ALL_ROLES: Role[] = ["admin", "ops_head", "am", "team_lead", "senior", "junior", "associate", "intern", "other"];
 
+// Canonical department list (platform cleanup, 2026-07) — shown in the Access ·
+// By Department tab even before any team member is assigned to them, so the
+// Master Admin can pre-configure access instead of waiting for team_members.dept
+// to be populated. Team members are still assigned a department in Org Chart.
+export const CANONICAL_DEPTS: string[] = [
+  "AML",
+  "COE",
+  "Center of Excellence",
+  "Clients and Team Health",
+  "Engineering",
+  "FinOps and Finance Operations and Onboarding",
+  "Management",
+  "HR and TA",
+  "Marketing",
+  "Office Admin and IT",
+  "Partnership",
+  "Sales",
+  "Tax",
+  "Tax External",
+  "Tax SPC",
+];
+
 export interface AccessMatrix {
   /** All nav modules the org might toggle. */
   modules: { id: string; label: string; defaultRoles: Role[] | null }[];
@@ -57,7 +79,7 @@ export async function getAccessMatrix(orgId: string): Promise<AccessMatrix> {
     dept: (m.dept as string | null) ?? null,
   }));
 
-  const depts = [...new Set(members.map((m) => m.dept).filter(Boolean) as string[])].sort();
+  const depts = [...new Set([...CANONICAL_DEPTS, ...members.map((m) => m.dept).filter(Boolean) as string[]])].sort();
 
   return {
     modules: NAV.map((n) => ({ id: n.id, label: n.label, defaultRoles: n.roles ?? null })),
@@ -79,3 +101,27 @@ export function roleCanOpen(matrix: AccessMatrix, role: Role, item: Pick<NavItem
 
 export const ACCESS_ROLES: Role[] = ["admin", "ops_head", "am", "team_lead", "senior", "junior"];
 export const ALL_NAV_ROLES = ALL_ROLES;
+
+/**
+ * Resolves whether a specific person can open `navId`, honoring the same
+ * priority order the sidebar uses: user override → department override → role
+ * override → `fallbackDefault` (whatever the page's own default logic decides,
+ * e.g. a reporting-hierarchy check). This is what makes the Access · By
+ * Department / By User / By Role settings actually gate the PAGE, not just
+ * hide the sidebar link. Master Admin can never be locked out of their own org.
+ */
+export function resolveNavAccess(
+  matrix: AccessMatrix,
+  ctx: { role: Role; memberId: string | null; dept: string | null },
+  navId: string,
+  fallbackDefault: boolean,
+): boolean {
+  if (ctx.role === "admin") return true;
+  const userOverride = ctx.memberId ? matrix.userOverrides[ctx.memberId]?.[navId] : undefined;
+  if (typeof userOverride === "boolean") return userOverride;
+  const deptOverride = ctx.dept ? matrix.deptOverrides[ctx.dept]?.[navId] : undefined;
+  if (typeof deptOverride === "boolean") return deptOverride;
+  const roleOverride = matrix.overrides[ctx.role]?.[navId];
+  if (typeof roleOverride === "boolean") return roleOverride;
+  return fallbackDefault;
+}

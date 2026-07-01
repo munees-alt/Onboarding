@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getAccessMatrix, resolveNavAccess } from "@/lib/role-access";
 import { getAmlClients } from "../clients/actions";
 import { AmlView } from "./aml-view";
 
@@ -54,6 +55,11 @@ export default async function AmlPage() {
   // Also allow admin / ops_head override
   const role = session.teamMember?.role ?? session.profile.role;
   if (role === "admin" || role === "ops_head") hasAccess = true;
+
+  // Access · By Department / By User / By Role in Settings can explicitly grant or
+  // block this module — that always wins over the reporting-hierarchy default above.
+  const matrix = await getAccessMatrix(orgId);
+  hasAccess = resolveNavAccess(matrix, { role, memberId: currentMemberId, dept: session.teamMember?.dept ?? null }, "aml", hasAccess);
 
   if (!hasAccess) {
     return (

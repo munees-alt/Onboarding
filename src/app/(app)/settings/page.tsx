@@ -44,8 +44,8 @@ export default async function SettingsPage() {
       : Promise.resolve({ data: [] }),
   ]);
   const [{ data: orgRow }, { data: fuRow }] = await Promise.all([
-    admin.from("orgs").select("feedback_form_url,tax_capacity_default,tax_default_assignee_id").eq("id", s.profile.org_id).maybeSingle(),
-    admin.from("followup_config").select("docs_overdue_days,access_overdue_days,task_overdue_days,note_extension_days,task_pending_sla_days,compliance_reminder_days,team_escalation_days").eq("org_id", s.profile.org_id).maybeSingle(),
+    admin.from("orgs").select("tax_capacity_default,tax_default_assignee_id").eq("id", s.profile.org_id).maybeSingle(),
+    admin.from("followup_config").select("task_pending_sla_days,compliance_reminder_days,client_data_refire_days,tl_escalation_days,am_escalation_days").eq("org_id", s.profile.org_id).maybeSingle(),
   ]);
   const conns = (gconn ?? []) as { provider: string; account_email: string | null; connected: boolean }[];
   const google = conns.find((c) => c.provider === "google");
@@ -88,13 +88,11 @@ export default async function SettingsPage() {
     <div className="scroll">
       <div className="page">
         <TaskPendingSlaCard
+          clientDataRefireDays={(fuRow?.client_data_refire_days as number | null) ?? 3}
           taskPendingSLADays={(fuRow?.task_pending_sla_days as number | null) ?? 3}
-          docsOverdueDays={fuRow?.docs_overdue_days ?? 2}
-          accessOverdueDays={fuRow?.access_overdue_days ?? 2}
-          taskOverdueDays={fuRow?.task_overdue_days ?? 0}
-          noteExtensionDays={fuRow?.note_extension_days ?? 2}
+          tlEscalationDays={(fuRow?.tl_escalation_days as number | null) ?? 2}
+          amEscalationDays={(fuRow?.am_escalation_days as number | null) ?? 1}
           complianceReminderDays={(fuRow?.compliance_reminder_days as number | null) ?? 30}
-          teamEscalationDays={(fuRow?.team_escalation_days as number | null) ?? 2}
         />
         <TaxCapacityCard
           headName={taxHead?.name ?? null}
@@ -118,13 +116,6 @@ export default async function SettingsPage() {
           accessRoles={ACCESS_ROLES}
           team={team}
           recentPoints={points.slice(0, 20)}
-          followup={{
-            docsOverdueDays: fuRow?.docs_overdue_days ?? 2,
-            accessOverdueDays: fuRow?.access_overdue_days ?? 2,
-            taskOverdueDays: fuRow?.task_overdue_days ?? 0,
-            noteExtensionDays: fuRow?.note_extension_days ?? 2,
-          }}
-          feedbackFormUrl={(orgRow?.feedback_form_url as string | null) ?? null}
           taxDefaultAssigneeId={(orgRow?.tax_default_assignee_id as string | null) ?? null}
         />
       </div>

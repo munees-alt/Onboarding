@@ -353,31 +353,36 @@ export async function awardUserPoints(input: {
   return { ok: true };
 }
 
-/** Master-Admin: save the org-wide follow-up SLA windows used by the
- *  admin_tasks cron (docs/access/task overdue thresholds + the note-extension
- *  grace window). All four are clamped to >= 0 days. */
+/** Master-Admin: save the Action Item Configuration timelines — Client data
+ *  (docs/access re-fire cadence), Team tasks (pending alert), TL (team member →
+ *  team lead escalation), and AM (team lead → AM escalation). Everything is
+ *  clamped to >= 1 day. Docs/access no longer have an initial waiting window —
+ *  they fire the moment they're pending — so those two legacy fields are no
+ *  longer accepted; existing columns keep their DB default (0) going forward. */
 export async function saveFollowupConfig(input: {
-  docsOverdueDays: number;
-  accessOverdueDays: number;
-  taskOverdueDays: number;
-  noteExtensionDays: number;
+  taskOverdueDays?: number;
+  noteExtensionDays?: number;
   taskPendingSLADays?: number;
   complianceReminderDays?: number;
-  teamEscalationDays?: number;
+  clientDataRefireDays?: number;
+  tlEscalationDays?: number;
+  amEscalationDays?: number;
 }): Promise<{ error?: string; ok?: boolean }> {
   const orgId = await masterGuard();
-  if (!orgId) return { error: "Only the Master Admin can change SLA windows." };
-  const clamp = (n: unknown) => Math.max(1, Math.floor(Number(n) || 1));
+  if (!orgId) return { error: "Only the Master Admin can change Action Item timelines." };
+  const clamp = (n: unknown, fallback: number) => Math.max(1, Math.floor(Number(n) || fallback));
   const admin = createAdminClient();
   const { error } = await admin.from("followup_config").upsert({
     org_id: orgId,
-    docs_overdue_days: clamp(input.docsOverdueDays),
-    access_overdue_days: clamp(input.accessOverdueDays),
-    task_overdue_days: clamp(input.taskOverdueDays),
-    note_extension_days: clamp(input.noteExtensionDays),
-    task_pending_sla_days: clamp(input.taskPendingSLADays ?? 3),
-    compliance_reminder_days: clamp(input.complianceReminderDays ?? 30),
-    team_escalation_days: clamp(input.teamEscalationDays ?? 2),
+    docs_overdue_days: 0,
+    access_overdue_days: 0,
+    task_overdue_days: clamp(input.taskOverdueDays, 0),
+    note_extension_days: clamp(input.noteExtensionDays, 2),
+    task_pending_sla_days: clamp(input.taskPendingSLADays, 3),
+    compliance_reminder_days: clamp(input.complianceReminderDays, 30),
+    client_data_refire_days: clamp(input.clientDataRefireDays, 3),
+    tl_escalation_days: clamp(input.tlEscalationDays, 2),
+    am_escalation_days: clamp(input.amEscalationDays, 1),
     updated_at: new Date().toISOString(),
   }, { onConflict: "org_id" });
   if (error) return { error: error.message };

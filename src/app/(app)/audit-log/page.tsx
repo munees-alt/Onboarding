@@ -2,6 +2,7 @@ import { requireSession } from "@/lib/auth";
 import { canOpenAudit } from "@/lib/roles";
 import { Restricted } from "@/components/restricted";
 import { createClient } from "@/lib/supabase/server";
+import { getAccessMatrix, resolveNavAccess } from "@/lib/role-access";
 import { Icon } from "@/components/icon";
 
 const ACTION_ICON: Record<string, string> = {
@@ -22,7 +23,11 @@ function ago(iso: string): string {
 
 export default async function AuditLogPage() {
   const s = await requireSession();
-  if (!canOpenAudit(s.profile.role))
+  const matrix = s.profile.org_id ? await getAccessMatrix(s.profile.org_id) : null;
+  const hasAccess = matrix
+    ? resolveNavAccess(matrix, { role: s.profile.role, memberId: s.teamMember?.id ?? null, dept: s.teamMember?.dept ?? null }, "audit-log", canOpenAudit(s.profile.role))
+    : canOpenAudit(s.profile.role);
+  if (!hasAccess)
     return <Restricted message="The audit log is only visible to the Master Admin and Ops Head." />;
 
   const supabase = await createClient();

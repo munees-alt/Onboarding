@@ -115,31 +115,43 @@ export async function GET(request: NextRequest) {
   }
 
   // Per-org config (windows in ms + note-extension window in ms).
-  const cfgByOrg = new Map<string, { window: Record<Kind, number>; noteExtMs: number }>();
+  // Action Item Configuration (Settings → Action Item Configuration → Client data):
+  // docs/access items no longer wait before their first action item — they fire the
+  // moment they're pending. Once closed, they only re-fire after `client_data_refire_days`
+  // if still unresolved.
+  const cfgByOrg = new Map<string, { window: Record<Kind, number>; noteExtMs: number; clientDataRefireMs: number; tlEscalationMs: number; amEscalationMs: number }>();
   for (const orgId of orgIds) {
     const { data } = await admin
       .from("followup_config")
-      .select("docs_overdue_days,access_overdue_days,task_overdue_days,note_extension_days")
+      .select("task_overdue_days,note_extension_days,client_data_refire_days,tl_escalation_days,am_escalation_days")
       .eq("org_id", orgId)
       .maybeSingle();
-    const docsDays = data?.docs_overdue_days ?? DEFAULT_WINDOW_DAYS.docs_overdue;
-    const accessDays = data?.access_overdue_days ?? DEFAULT_WINDOW_DAYS.access_overdue;
     const taskDays = data?.task_overdue_days ?? DEFAULT_WINDOW_DAYS.task_overdue;
     const noteExtDays = data?.note_extension_days ?? 2;
+    const clientDataRefireDays = (data as { client_data_refire_days?: number } | null)?.client_data_refire_days ?? 3;
+    const tlEscalationDays = (data as { tl_escalation_days?: number } | null)?.tl_escalation_days ?? 2;
+    const amEscalationDays = (data as { am_escalation_days?: number } | null)?.am_escalation_days ?? 1;
     cfgByOrg.set(orgId, {
       window: {
         zoho_followup: DEFAULT_WINDOW_DAYS.zoho_followup * DAY,
         ct_reg_followup: DEFAULT_WINDOW_DAYS.ct_reg_followup * DAY,
         vat_reg_followup: DEFAULT_WINDOW_DAYS.vat_reg_followup * DAY,
-        docs_overdue: docsDays * DAY,
-        access_overdue: accessDays * DAY,
+        // Client data (docs/access) — fire immediately, no waiting window.
+        docs_overdue: 0,
+        access_overdue: 0,
         task_overdue: taskDays * DAY,
       },
       noteExtMs: noteExtDays * DAY,
+      clientDataRefireMs: clientDataRefireDays * DAY,
+      tlEscalationMs: tlEscalationDays * DAY,
+      amEscalationMs: amEscalationDays * DAY,
     });
   }
   const winFor = (orgId: string, k: Kind) => (cfgByOrg.get(orgId)?.window[k] ?? DEFAULT_WINDOW_DAYS[k] * DAY);
   const noteExt = (orgId: string) => (cfgByOrg.get(orgId)?.noteExtMs ?? 2 * DAY);
+  // Client data (docs/access) re-fire cadence once an item has been closed but is still pending.
+  const clientDataRefire = (orgId: string) => (cfgByOrg.get(orgId)?.clientDataRefireMs ?? 3 * DAY);
+  const CLIENT_DATA_KINDS = new Set<Kind>(["docs_overdue", "access_overdue"]);
 
   // ── 0) Auto-close open tasks for runs/clients that are blocked, on hold, paused, or done ──
   // Covers both run-level blocked_reason AND client-level status = 'hold' | 'paused'.
@@ -252,7 +264,8 @@ export async function GET(request: NextRequest) {
     const prior = lastClosedByKey.get(key);
     if (prior?.closed_at) {
       const age = now - new Date(prior.closed_at).getTime();
-      if (age < winFor(input.org_id, input.kind)) return; // wait out the window
+      const refireWindow = CLIENT_DATA_KINDS.has(input.kind) ? clientDataRefire(input.org_id) : winFor(input.org_id, input.kind);
+      if (age < refireWindow) return; // wait out the re-fire window
     }
     const history = Array.isArray(prior?.history) ? prior!.history : [];
     const carry = prior?.notes ? [...history, { at: prior.closed_at, action: "closed_with_notes", notes: prior.notes }] : history;
@@ -477,9 +490,21 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // ── 6) Escalation: open tasks > 2 days → next level; > 7 days → master admin ──
-  const TWO_DAYS = 2 * DAY;
+  // ── 6) Escalation ──
+  // Action Item Configuration → TL: team member unactioned → escalate to Team Lead
+  // after `tl_escalation_days` (default 2). → AM: Team Lead unactioned → escalate to
+  // AM after `am_escalation_days` (default 1). AM/ops_head steps keep the 2-day default
+  // (not part of the configurable Action Item timelines). Anything open 7+ days always
+  // jumps straight to the master admin regardless of chain position.
+  const DEFAULT_ESCALATION_MS = 2 * DAY;
   const ONE_WEEK = 7 * DAY;
+  const escalationThresholdFor = (orgId: string, ownerRole: string): number => {
+    const cfg = cfgByOrg.get(orgId);
+    if (!cfg) return DEFAULT_ESCALATION_MS;
+    if (ownerRole === "team_lead") return cfg.amEscalationMs;
+    if ((ROLE_RANK[ownerRole] ?? 0) <= 2) return cfg.tlEscalationMs;
+    return DEFAULT_ESCALATION_MS;
+  };
 
   // Re-use the open tasks we already fetched for dedup.
   const openForEscalation = (openTasksRaw ?? []) as Array<AdminTaskRow & { id: string }>;
@@ -573,7 +598,9 @@ export async function GET(request: NextRequest) {
 
   for (const task of openForEscalation) {
     const age = now - new Date(task.created_at).getTime();
-    if (age < TWO_DAYS) continue;
+    const owner = memberById.get(task.owner_id);
+    const threshold = owner ? escalationThresholdFor(task.org_id, owner.role) : DEFAULT_ESCALATION_MS;
+    if (age < threshold) continue;
 
     // Week escalation: jump straight to master admin regardless of chain position.
     if (age >= ONE_WEEK) {

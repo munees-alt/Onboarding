@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getAccessMatrix, resolveNavAccess } from "@/lib/role-access";
 import { getTaxComplianceClients } from "./actions";
 import { TaxComplianceView } from "./tax-compliance-view";
 
@@ -57,6 +58,11 @@ export default async function TaxCompliancePage() {
   // AM and team_lead can also view (they need to see / request) — read-only unless tax member.
   const canEdit = hasAccess;
   if (!hasAccess && (role === "am" || role === "team_lead")) hasAccess = true;
+
+  // Access · By Department / By User / By Role in Settings can explicitly grant or
+  // block this module — that always wins over the reporting-hierarchy default above.
+  const matrix = await getAccessMatrix(orgId);
+  hasAccess = resolveNavAccess(matrix, { role, memberId: currentMemberId, dept: session.teamMember?.dept ?? null }, "tax-compliance", hasAccess);
 
   if (!hasAccess) {
     return (

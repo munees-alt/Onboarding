@@ -383,17 +383,20 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Team task escalation ──
-  //   For every open admin_task whose owner is a junior/associate/intern/senior
-  //   that has been open longer than the org's team_escalation_days threshold,
-  //   create an escalation admin_task for the owner's manager (reports_to).
-  //   If the owner is a team_lead, escalate to the run's AM.
+  //   Action Item Configuration → TL: for every open admin_task whose owner is a
+  //   junior/associate/intern/senior that has been open longer than
+  //   `tl_escalation_days` (default 2), create an escalation admin_task for the
+  //   owner's manager (reports_to) — normally the Team Lead.
+  //   → AM: if the owner IS the team_lead, escalate to the run's AM after
+  //   `am_escalation_days` (default 1) instead.
   //   Deduped via step_id = "escalation_<original_task_id>".
   let escalationAlerts = 0;
-  const orgEscalDays = new Map<string, number>();
-  const getEscalDays = async (orgId: string): Promise<number> => {
+  const orgEscalDays = new Map<string, { tl: number; am: number }>();
+  const getEscalDays = async (orgId: string): Promise<{ tl: number; am: number }> => {
     if (orgEscalDays.has(orgId)) return orgEscalDays.get(orgId)!;
-    const { data: cfg } = await admin.from("followup_config").select("team_escalation_days").eq("org_id", orgId).maybeSingle();
-    const d = (cfg as { team_escalation_days?: number | null } | null)?.team_escalation_days ?? 2;
+    const { data: cfg } = await admin.from("followup_config").select("tl_escalation_days,am_escalation_days").eq("org_id", orgId).maybeSingle();
+    const row = cfg as { tl_escalation_days?: number | null; am_escalation_days?: number | null } | null;
+    const d = { tl: row?.tl_escalation_days ?? 2, am: row?.am_escalation_days ?? 1 };
     orgEscalDays.set(orgId, d);
     return d;
   };
@@ -412,14 +415,15 @@ export async function GET(request: NextRequest) {
 
   for (const task of openAdminTasks ?? []) {
     if (!task.owner_id || !task.org_id) continue;
-    const escalDays = await getEscalDays(task.org_id as string);
-    const cutoffEscal = new Date(now - escalDays * DAY).toISOString();
-    if ((task.created_at as string) >= cutoffEscal) continue; // not stale yet
-
     const owner = memberMapEscal.get(task.owner_id as string);
     if (!owner) continue;
     // Only escalate operational roles — skip admin/ops_head (they're already at the top)
     if (["admin", "ops_head", "am"].includes(owner.role)) continue;
+
+    const { tl: tlDays, am: amDays } = await getEscalDays(task.org_id as string);
+    const escalDays = owner.role === "team_lead" ? amDays : tlDays;
+    const cutoffEscal = new Date(now - escalDays * DAY).toISOString();
+    if ((task.created_at as string) >= cutoffEscal) continue; // not stale yet
 
     const escalStepId = `escalation_${task.id}`;
     const { data: alreadyEscalated } = await admin

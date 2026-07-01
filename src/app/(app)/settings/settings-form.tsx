@@ -3,8 +3,7 @@
 import { useState, useTransition } from "react";
 import { Icon } from "@/components/icon";
 import { PROVIDER_MODELS, AI_FEATURES, type AiFeature, type FeatureModel, type Provider } from "@/lib/ai-config";
-import { saveAiKeys, saveFeatureModels, saveIntegrations, saveLeadSyncConfig, syncLeadsNow, saveRoleOverride, saveDeptOverride, saveUserNavOverride, saveDeptOverrideBulk, saveUserNavOverrideBulk, awardUserPoints, saveFollowupConfig, saveTaxDefaultAssignee } from "./actions";
-import { setFeedbackFormUrl } from "../weekly-updates/actions";
+import { saveAiKeys, saveFeatureModels, saveIntegrations, saveLeadSyncConfig, syncLeadsNow, saveRoleOverride, saveDeptOverride, saveUserNavOverride, saveDeptOverrideBulk, saveUserNavOverrideBulk, awardUserPoints, saveTaxDefaultAssignee } from "./actions";
 import type { AccessMatrix } from "@/lib/role-access";
 import type { Role } from "@/lib/types";
 import { ROLE_LABEL } from "@/lib/roles";
@@ -24,12 +23,11 @@ interface LeadCfg {
 
 export interface TeamMemberRow { id: string; name: string; role: string; title: string | null; points: number }
 export interface RecentPointEntry { member_id: string; points: number; reason: string; created_at: string }
-export interface FollowupCfg { docsOverdueDays: number; accessOverdueDays: number; taskOverdueDays: number; noteExtensionDays: number }
 
 export function SettingsForm({
   keysSet, models, fathomSet, pmsName, pmsSet, googleEmail, zohoConnected, slackWorkspace = null,
   isAdmin = false, lead, mailboxes = [],
-  accessMatrix = null, accessRoles = [], team = [], recentPoints = [], followup, feedbackFormUrl = null,
+  accessMatrix = null, accessRoles = [], team = [], recentPoints = [],
   taxDefaultAssigneeId = null,
 }: {
   keysSet: Record<Provider, boolean>;
@@ -47,8 +45,6 @@ export function SettingsForm({
   accessRoles?: Role[];
   team?: TeamMemberRow[];
   recentPoints?: RecentPointEntry[];
-  followup?: FollowupCfg;
-  feedbackFormUrl?: string | null;
   taxDefaultAssigneeId?: string | null;
 }) {
   const [busy, start] = useTransition();
@@ -68,10 +64,6 @@ export function SettingsForm({
   const [newSvc, setNewSvc] = useState("");
   const setL = <K extends keyof LeadCfg>(k: K, v: LeadCfg[K]) => setLc((c) => ({ ...c, [k]: v }));
 
-  const [fu, setFu] = useState<FollowupCfg>(followup ?? { docsOverdueDays: 2, accessOverdueDays: 2, taskOverdueDays: 0, noteExtensionDays: 2 });
-  const setF = <K extends keyof FollowupCfg>(k: K, v: FollowupCfg[K]) => setFu((c) => ({ ...c, [k]: v }));
-
-  const [feedbackUrl, setFeedbackUrl] = useState<string>(feedbackFormUrl ?? "");
   const [taxAssigneeId, setTaxAssigneeId] = useState<string>(taxDefaultAssigneeId ?? "");
 
   const allCombos = PROVIDERS.flatMap((p) => PROVIDER_MODELS[p].models.map((m) => ({ provider: p, model: m })));
@@ -213,20 +205,6 @@ export function SettingsForm({
           </Card>
         )}
 
-        {/* ── Follow-up SLA (Master Admin only) ── */}
-        {isAdmin && (
-          <Card title="Follow-up SLA" icon="clock" desc="When the daily scan auto-creates a follow-up task for the master admin and AM. Adding a follow-up note inside a run extends the next auto-task by the note-extension window.">
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div className="field"><label>Docs received within (days)</label><input type="number" min={0} value={fu.docsOverdueDays} onChange={(e) => setF("docsOverdueDays", Number(e.target.value))} /></div>
-              <div className="field"><label>Access shared within (days)</label><input type="number" min={0} value={fu.accessOverdueDays} onChange={(e) => setF("accessOverdueDays", Number(e.target.value))} /></div>
-              <div className="field"><label>Task escalation (days past due)</label><input type="number" min={0} value={fu.taskOverdueDays} onChange={(e) => setF("taskOverdueDays", Number(e.target.value))} /></div>
-              <div className="field"><label>Note extension (days)</label><input type="number" min={0} value={fu.noteExtensionDays} onChange={(e) => setF("noteExtensionDays", Number(e.target.value))} /></div>
-            </div>
-            <div><button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await saveFollowupConfig(fu); note(r.error ?? "Follow-up SLA saved"); })}>Save follow-up SLA</button></div>
-            <div style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Defaults: 2 / 2 / 0 / 2. Task escalation 0 fires as soon as a task is past its due date.</div>
-          </Card>
-        )}
-
         {/* ── Client feedback form URL (Master Admin only) ── */}
         {/* ── Tax Assignments (Master Admin only) ── */}
         {isAdmin && (
@@ -249,18 +227,6 @@ export function SettingsForm({
             </div>
             <div>
               <button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await saveTaxDefaultAssignee(taxAssigneeId || null); note(r.error ?? "Tax assignee saved"); })}>Save</button>
-            </div>
-          </Card>
-        )}
-
-        {isAdmin && (
-          <Card title="Client feedback form" icon="message-square" desc="A single feedback form link used by the Weekly Client Updates module. When set, the weekly draft includes a ‘share quick feedback’ link to the client.">
-            <div className="field">
-              <label>Feedback form URL</label>
-              <input value={feedbackUrl} onChange={(e) => setFeedbackUrl(e.target.value)} placeholder="https://forms.gle/…" />
-            </div>
-            <div>
-              <button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await setFeedbackFormUrl(feedbackUrl); note(r.error ?? "Feedback URL saved"); })}>Save feedback URL</button>
             </div>
           </Card>
         )}

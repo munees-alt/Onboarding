@@ -10,6 +10,7 @@ export interface RunCardData {
   templateName: string;
   templateKey: string;
   amName: string | null;
+  teamLeadName: string | null;
   progress: number;
   currentStage: number;
   currentStageName: string | null;
@@ -61,12 +62,13 @@ export async function getRunCards(
   const amIds = [...new Set(runs.map((r) => r.am_id).filter(Boolean))] as string[];
   const ids = runs.map((r) => r.id);
 
-  const [{ data: clients }, ams, { data: stages }] = await Promise.all([
+  const [{ data: clients }, ams, { data: stages }, { data: rt }] = await Promise.all([
     supabase.from("clients").select("id,name,industry,contract_start_date").in("id", clientIds),
     amIds.length
       ? supabase.from("team_members").select("id,full_name").in("id", amIds)
       : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
     supabase.from("run_stages").select("run_id,stage_no,name,status").in("run_id", ids),
+    supabase.from("run_team").select("run_id, team_members(full_name, role)").in("run_id", ids),
   ]);
 
   const clientMap = Object.fromEntries((clients ?? []).map((c) => [c.id, c]));
@@ -75,6 +77,13 @@ export async function getRunCards(
   (stages ?? []).forEach((s) => {
     (byRun[s.run_id] ||= []).push(s);
   });
+
+  type RunTeamRow = { run_id: string; team_members: { full_name: string; role: string } | { full_name: string; role: string }[] | null };
+  const teamLeadByRun: Record<string, string> = {};
+  for (const r of (rt ?? []) as RunTeamRow[]) {
+    const tm = Array.isArray(r.team_members) ? r.team_members[0] : r.team_members;
+    if (tm?.role === "team_lead") teamLeadByRun[r.run_id] = tm.full_name;
+  }
 
   return runs.map((r) => {
     const st = (byRun[r.id] ?? []).sort((a, b) => a.stage_no - b.stage_no);
@@ -88,6 +97,7 @@ export async function getRunCards(
       templateName: templateById(r.template_key)?.name ?? "Onboarding",
       templateKey: r.template_key,
       amName: r.am_id ? aName[r.am_id] ?? null : null,
+      teamLeadName: teamLeadByRun[r.id] ?? null,
       progress: r.progress,
       currentStage: r.current_stage,
       currentStageName: cur?.name ?? null,
