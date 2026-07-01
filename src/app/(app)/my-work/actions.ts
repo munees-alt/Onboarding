@@ -107,6 +107,31 @@ export async function snoozeAdminTask(id: string, until: string, note: string): 
   return { ok: true };
 }
 
+// Correct an admin task's title/body — master admin only. Used to override a
+// compliance alert the system got wrong (e.g. wrong entity, already handled,
+// wrong wording) without deleting the whole item. The correction is recorded
+// in history for the audit trail.
+export async function editAdminTask(id: string, title: string, body: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await requireSession();
+  if (session.profile.role !== "admin") return { ok: false, error: "Master admin only." };
+  const supabase = await createClient();
+  const t = (title ?? "").trim();
+  if (!t) return { ok: false, error: "Title required." };
+  const { data: row } = await supabase.from("admin_tasks").select("history,title").eq("id", id).maybeSingle();
+  if (!row) return { ok: false, error: "not_found" };
+  const history = Array.isArray(row.history) ? row.history : [];
+  await supabase
+    .from("admin_tasks")
+    .update({
+      title: t,
+      body: (body ?? "").trim() || null,
+      history: [...history, { at: new Date().toISOString(), action: "corrected", notes: `Master admin corrected (was: "${row.title ?? ""}")` }],
+    })
+    .eq("id", id);
+  revalidatePath("/my-work");
+  return { ok: true };
+}
+
 // Hard-delete an admin task — master admin only.
 export async function deleteAdminTask(id: string): Promise<{ ok: boolean; error?: string }> {
   const session = await requireSession();

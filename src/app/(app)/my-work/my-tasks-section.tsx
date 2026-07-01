@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/icon";
-import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks, deleteAdminTask, snoozeAdminTask } from "./actions";
+import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks, deleteAdminTask, snoozeAdminTask, editAdminTask } from "./actions";
 
 export type AdminTaskItem = {
   id: string;
@@ -71,16 +71,31 @@ function isOverdueTask(t: AdminTaskItem) {
   return ageMs(t.createdAt) >= DAY_MS;
 }
 
-type TabKey = "all" | "overdue" | "escalated" | "access" | "documents";
+// Kinds grouped into the four "what's pending" buckets shown on the collapsed card.
+const COMPLIANCE_KINDS = ["compliance_alert", "ct_reg_followup", "vat_reg_followup", "aml_unassigned"];
+const DATA_KINDS = ["docs_overdue"];
+const ACCESS_KINDS = ["access_overdue"];
+function isComplianceKind(kind: string) {
+  return COMPLIANCE_KINDS.includes(kind);
+}
+function bucketOf(kind: string): "compliance" | "data" | "access" | "task" {
+  if (COMPLIANCE_KINDS.includes(kind)) return "compliance";
+  if (DATA_KINDS.includes(kind)) return "data";
+  if (ACCESS_KINDS.includes(kind)) return "access";
+  return "task";
+}
+
+type TabKey = "all" | "overdue" | "escalated" | "access" | "documents" | "compliance";
 
 const CATEGORY_META: Record<
-  "overdue" | "escalated" | "access" | "documents" | "other",
+  "overdue" | "escalated" | "access" | "documents" | "compliance" | "other",
   { label: string; dot: string; headBg: string; headBorder: string; headText: string; rowBorder: string; accent: string }
 > = {
   overdue: { label: "Overdue", dot: "#dc2626", headBg: "#fef2f2", headBorder: "#fecaca", headText: "#dc2626", rowBorder: "#f97316", accent: "#f97316" },
   escalated: { label: "Escalated", dot: "#dc2626", headBg: "#fef2f2", headBorder: "#fecaca", headText: "#dc2626", rowBorder: "#dc2626", accent: "#dc2626" },
   access: { label: "Access", dot: "#16a34a", headBg: "#f0fdf4", headBorder: "#bbf7d0", headText: "#15803d", rowBorder: "#16a34a", accent: "#16a34a" },
   documents: { label: "Documents", dot: "#0f766e", headBg: "#f0fdfa", headBorder: "#99f6e4", headText: "#0f766e", rowBorder: "#0f766e", accent: "#0f766e" },
+  compliance: { label: "Compliance", dot: "#9333ea", headBg: "#faf5ff", headBorder: "#e9d5ff", headText: "#7e22ce", rowBorder: "#9333ea", accent: "#9333ea" },
   other: { label: "New", dot: "#78716c", headBg: "#fafaf9", headBorder: "#e7e5e4", headText: "#57534e", rowBorder: "#a8a29e", accent: "#a8a29e" },
 };
 
@@ -123,11 +138,13 @@ export function MyTasksSection({
   const catEscalated = useMemo(() => searchedOpen.filter((t) => isEscalatedTitle(t.title)), [searchedOpen]);
   const catAccess = useMemo(() => searchedOpen.filter((t) => t.kind === "access_overdue"), [searchedOpen]);
   const catDocuments = useMemo(() => searchedOpen.filter((t) => t.kind === "docs_overdue"), [searchedOpen]);
+  const catCompliance = useMemo(() => searchedOpen.filter((t) => isComplianceKind(t.kind)), [searchedOpen]);
 
   const tabs: { key: TabKey; label: string; count: number; dot: string | null }[] = [
     { key: "all", label: "All", count: searchedOpen.length, dot: null },
     { key: "overdue", label: "Overdue", count: catOverdue.length, dot: CATEGORY_META.overdue.dot },
     { key: "escalated", label: "Escalated", count: catEscalated.length, dot: CATEGORY_META.escalated.dot },
+    { key: "compliance", label: "Compliance", count: catCompliance.length, dot: CATEGORY_META.compliance.dot },
     { key: "access", label: "Access", count: catAccess.length, dot: CATEGORY_META.access.dot },
     { key: "documents", label: "Documents", count: catDocuments.length, dot: CATEGORY_META.documents.dot },
   ];
@@ -139,9 +156,10 @@ export function MyTasksSection({
       case "escalated": return catEscalated;
       case "access": return catAccess;
       case "documents": return catDocuments;
+      case "compliance": return catCompliance;
       default: return searchedOpen;
     }
-  }, [tab, searchedOpen, catOverdue, catEscalated, catAccess, catDocuments]);
+  }, [tab, searchedOpen, catOverdue, catEscalated, catAccess, catDocuments, catCompliance]);
 
   // One card per client instead of one row per task — a client with 3 open items
   // used to repeat its name across 3 separate category sections.
@@ -464,16 +482,20 @@ function ClientGroup({
 }) {
   const escalatedCount = useMemo(() => group.items.filter((t) => isEscalatedTitle(t.title)).length, [group.items]);
   const overdueCount = useMemo(() => group.items.filter(isOverdueTask).length, [group.items]);
-  const [open, setOpen] = useState(group.items.length === 1 || escalatedCount > 0);
+  // Collapsed by default — the summary line below gives the gist; click to expand.
+  const [open, setOpen] = useState(false);
 
-  const kindCounts = useMemo(() => {
-    const m = new Map<string, number>();
-    group.items.forEach((t) => m.set(t.kind, (m.get(t.kind) ?? 0) + 1));
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  // "What's pending" buckets shown on the collapsed card so the user gets the idea at a glance.
+  const buckets = useMemo(() => {
+    const b = { task: 0, data: 0, access: 0, compliance: 0 };
+    group.items.forEach((t) => { b[bucketOf(t.kind)] += 1; });
+    return b;
   }, [group.items]);
-  const MAX_CHIPS = 2;
-  const visibleKinds = kindCounts.slice(0, MAX_CHIPS);
-  const hiddenKindCount = kindCounts.length - visibleKinds.length;
+  const summaryChips: { label: string; color: string }[] = [];
+  if (buckets.task) summaryChips.push({ label: `${buckets.task} task${buckets.task > 1 ? "s" : ""} pending`, color: "#b45309" });
+  if (buckets.data) summaryChips.push({ label: `${buckets.data} doc${buckets.data > 1 ? "s" : ""} pending`, color: "#0f766e" });
+  if (buckets.access) summaryChips.push({ label: `${buckets.access} access pending`, color: "#16a34a" });
+  if (buckets.compliance) summaryChips.push({ label: `${buckets.compliance} compliance due`, color: "#9333ea" });
 
   const oldest = useMemo(
     () => group.items.reduce((max, t) => (ageMs(t.createdAt) > ageMs(max.createdAt) ? t : max), group.items[0]),
@@ -530,17 +552,11 @@ function ClientGroup({
               ↑ Escalated{escalatedCount > 1 ? ` ×${escalatedCount}` : ""}
             </span>
           )}
-          {visibleKinds.map(([kind, count]) => (
-            <span key={kind} className="bk-chip" style={{ background: `${KIND_COLOR[kind] ?? "#475569"}14`, color: KIND_COLOR[kind] ?? "#475569", flexShrink: 0 }}>
-              {KIND_LABEL[kind] ?? kind}
-              {count > 1 ? ` ×${count}` : ""}
+          {summaryChips.map((chip) => (
+            <span key={chip.label} className="bk-chip" style={{ background: `${chip.color}14`, color: chip.color, flexShrink: 0 }}>
+              {chip.label}
             </span>
           ))}
-          {hiddenKindCount > 0 && (
-            <span className="bk-chip" style={{ background: "#f5f5f4", color: "#78716c", flexShrink: 0 }}>
-              +{hiddenKindCount} more
-            </span>
-          )}
         </div>
         <span style={{ fontSize: 11, color: overdueCount ? "#ea580c" : "#78716c", fontWeight: 600, flexShrink: 0, whiteSpace: "nowrap" }}>
           {ageLabel(oldest.createdAt)} oldest
@@ -613,7 +629,12 @@ function TaskCard({
   const [holdDate, setHoldDate] = useState("");
   const [holdComment, setHoldComment] = useState(t.holdNote ?? "");
   const [holdSaving, startHold] = useTransition();
+  const [showEditForm, setShowEditForm] = useState(false);
+  const [editTitle, setEditTitle] = useState(t.title);
+  const [editBody, setEditBody] = useState(t.body ?? "");
+  const [editSaving, startEdit] = useTransition();
 
+  const isCompliance = isComplianceKind(t.kind);
   const color = KIND_COLOR[t.kind] ?? "#475569";
   const label = KIND_LABEL[t.kind] ?? t.kind;
   const age = ageLabel(t.createdAt);
@@ -677,6 +698,16 @@ function TaskCard({
                   onClick={() => { setShowHoldForm((v) => !v); setExpanded(false); }}
                 >
                   {isSnoozed ? "Edit hold" : "Hold"}
+                </button>
+              )}
+              {canSnooze && isCompliance && (
+                <button
+                  className="bk-row-link"
+                  style={{ color: "#7e22ce" }}
+                  onClick={() => { setShowEditForm((v) => !v); setShowHoldForm(false); setExpanded(false); }}
+                  title="Master admin: correct this compliance item"
+                >
+                  Correct
                 </button>
               )}
               {(t.runId || t.stepId) && (
@@ -747,6 +778,47 @@ function TaskCard({
               {t.holdNote}
             </span>
           )}
+        </div>
+      )}
+
+      {/* Correct compliance — master admin only. Fix a wrong/misworded compliance alert in place. */}
+      {showEditForm && isOpen && (
+        <div style={{ marginTop: 10, padding: "12px 14px", background: "#faf5ff", border: "1px solid #c4b5fd", borderRadius: 8 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7e22ce", marginBottom: 8 }}>
+            Correct this compliance item
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div>
+              <label style={{ fontSize: 11.5, color: "#57534e", display: "block", marginBottom: 3 }}>Title</label>
+              <input
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                style={{ padding: "6px 9px", border: "1px solid #e7e5e4", borderRadius: 6, fontSize: 12.5, fontFamily: "inherit", width: "100%" }}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: 11.5, color: "#57534e", display: "block", marginBottom: 3 }}>Details / correction</label>
+              <textarea
+                value={editBody}
+                onChange={(e) => setEditBody(e.target.value)}
+                placeholder="e.g. CT already registered on 10 Jun — this alert is wrong; corrected."
+                style={{ width: "100%", minHeight: 56, padding: 9, border: "1px solid #e7e5e4", borderRadius: 6, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="bk-btn-primary"
+                style={{ background: "#7e22ce" }}
+                disabled={editSaving || !editTitle.trim()}
+                onClick={() => startEdit(async () => { const res = await editAdminTask(t.id, editTitle, editBody); if (res.ok) setShowEditForm(false); })}
+              >
+                {editSaving ? "Saving…" : "Save correction"}
+              </button>
+              <button className="bk-btn-secondary" style={{ borderColor: "#e7e5e4", color: "#57534e" }} onClick={() => setShowEditForm(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
