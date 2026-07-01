@@ -30,6 +30,9 @@ const KIND_LABEL: Record<string, string> = {
   task_overdue: "Task overdue",
   weekly_update: "Weekly update",
   compliance_alert: "Compliance",
+  task_pending_alert: "Task pending",
+  aml_unassigned: "AML not added",
+  task_escalation: "Task escalation",
 };
 
 const KIND_COLOR: Record<string, string> = {
@@ -41,6 +44,9 @@ const KIND_COLOR: Record<string, string> = {
   task_overdue: "#92400e",
   weekly_update: "#ea580c",
   compliance_alert: "#dc2626",
+  task_pending_alert: "#0369a1",
+  aml_unassigned: "#9333ea",
+  task_escalation: "#dc2626",
 };
 
 const DAY_MS = 86_400_000;
@@ -117,10 +123,6 @@ export function MyTasksSection({
   const catEscalated = useMemo(() => searchedOpen.filter((t) => isEscalatedTitle(t.title)), [searchedOpen]);
   const catAccess = useMemo(() => searchedOpen.filter((t) => t.kind === "access_overdue"), [searchedOpen]);
   const catDocuments = useMemo(() => searchedOpen.filter((t) => t.kind === "docs_overdue"), [searchedOpen]);
-  const catOther = useMemo(
-    () => searchedOpen.filter((t) => !isOverdueTask(t) && !isEscalatedTitle(t.title) && t.kind !== "access_overdue" && t.kind !== "docs_overdue"),
-    [searchedOpen],
-  );
 
   const tabs: { key: TabKey; label: string; count: number; dot: string | null }[] = [
     { key: "all", label: "All", count: searchedOpen.length, dot: null },
@@ -130,14 +132,40 @@ export function MyTasksSection({
     { key: "documents", label: "Documents", count: catDocuments.length, dot: CATEGORY_META.documents.dot },
   ];
 
-  const allSections = [
-    { key: "overdue" as const, meta: CATEGORY_META.overdue, list: catOverdue },
-    { key: "escalated" as const, meta: CATEGORY_META.escalated, list: catEscalated },
-    { key: "access" as const, meta: CATEGORY_META.access, list: catAccess },
-    { key: "documents" as const, meta: CATEGORY_META.documents, list: catDocuments },
-    { key: "other" as const, meta: CATEGORY_META.other, list: catOther },
-  ];
-  const visibleSections = allSections.filter((s) => (tab === "all" ? s.list.length > 0 : s.key === tab));
+  // Same task set the tabs already count above — just picks which one feeds the grouped view below.
+  const tabFiltered = useMemo(() => {
+    switch (tab) {
+      case "overdue": return catOverdue;
+      case "escalated": return catEscalated;
+      case "access": return catAccess;
+      case "documents": return catDocuments;
+      default: return searchedOpen;
+    }
+  }, [tab, searchedOpen, catOverdue, catEscalated, catAccess, catDocuments]);
+
+  // One card per client instead of one row per task — a client with 3 open items
+  // used to repeat its name across 3 separate category sections.
+  const clientGroups = useMemo(() => {
+    const map = new Map<string, { key: string; name: string; items: AdminTaskItem[] }>();
+    for (const t of tabFiltered) {
+      const key = t.clientName ?? `task:${t.id}`;
+      const name = t.clientName ?? t.title.replace(/^\[Escalated\]\s*/, "").replace(/^\[1 week unresolved\]\s*/, "");
+      if (!map.has(key)) map.set(key, { key, name, items: [] });
+      map.get(key)!.items.push(t);
+    }
+    const groups = [...map.values()];
+    groups.sort((a, b) => {
+      const aEsc = a.items.some((t) => isEscalatedTitle(t.title));
+      const bEsc = b.items.some((t) => isEscalatedTitle(t.title));
+      if (aEsc !== bEsc) return aEsc ? -1 : 1;
+      const aOver = a.items.filter(isOverdueTask).length;
+      const bOver = b.items.filter(isOverdueTask).length;
+      if (aOver !== bOver) return bOver - aOver;
+      if (a.items.length !== b.items.length) return b.items.length - a.items.length;
+      return a.name.localeCompare(b.name);
+    });
+    return groups;
+  }, [tabFiltered]);
 
   const selectedOpen = [...selected].filter((id) => openItems.some((t) => t.id === id));
 
@@ -310,7 +338,7 @@ export function MyTasksSection({
         >
           Nothing assigned to you right now.
         </div>
-      ) : visibleSections.length === 0 ? (
+      ) : clientGroups.length === 0 ? (
         <div
           style={{
             background: "#fff",
@@ -325,32 +353,18 @@ export function MyTasksSection({
           No action items match your filters.
         </div>
       ) : (
-        visibleSections.map((section) => (
-          <div key={section.key} className="bk-action-section" style={{ borderLeftColor: section.meta.accent }}>
-            <div className="bk-action-section-head" style={{ background: section.meta.headBg, borderBottomColor: section.meta.headBorder }}>
-              <span className="bk-action-section-dot" style={{ background: section.meta.dot }} />
-              <span className="bk-action-section-label" style={{ color: section.meta.headText }}>
-                {section.meta.label} — {section.list.length} item{section.list.length !== 1 ? "s" : ""}
-              </span>
-              <button className="bk-action-section-select" style={{ color: section.meta.headText }} onClick={() => selectGroup(section.list)}>
-                Select all
-              </button>
-            </div>
-            <div className="bk-action-list">
-              {section.list.map((t) => (
-                <TaskCard
-                  key={`${section.key}-${t.id}`}
-                  t={t}
-                  pending={pending}
-                  start={start}
-                  selected={selected.has(t.id)}
-                  onToggle={() => toggleItem(t.id)}
-                  canDelete={canDelete}
-                  canSnooze={canSnooze}
-                />
-              ))}
-            </div>
-          </div>
+        clientGroups.map((group) => (
+          <ClientGroup
+            key={group.key}
+            group={group}
+            pending={pending}
+            start={start}
+            selected={selected}
+            onToggle={toggleItem}
+            onSelectGroup={selectGroup}
+            canDelete={canDelete}
+            canSnooze={canSnooze}
+          />
         ))
       )}
 
@@ -423,6 +437,149 @@ export function MyTasksSection({
               ))}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClientGroup({
+  group,
+  pending,
+  start,
+  selected,
+  onToggle,
+  onSelectGroup,
+  canDelete,
+  canSnooze,
+}: {
+  group: { key: string; name: string; items: AdminTaskItem[] };
+  pending: boolean;
+  start: (cb: () => void) => void;
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+  onSelectGroup: (items: AdminTaskItem[]) => void;
+  canDelete?: boolean;
+  canSnooze?: boolean;
+}) {
+  const escalatedCount = useMemo(() => group.items.filter((t) => isEscalatedTitle(t.title)).length, [group.items]);
+  const overdueCount = useMemo(() => group.items.filter(isOverdueTask).length, [group.items]);
+  const [open, setOpen] = useState(group.items.length === 1 || escalatedCount > 0);
+
+  const kindCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    group.items.forEach((t) => m.set(t.kind, (m.get(t.kind) ?? 0) + 1));
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [group.items]);
+  const MAX_CHIPS = 2;
+  const visibleKinds = kindCounts.slice(0, MAX_CHIPS);
+  const hiddenKindCount = kindCounts.length - visibleKinds.length;
+
+  const oldest = useMemo(
+    () => group.items.reduce((max, t) => (ageMs(t.createdAt) > ageMs(max.createdAt) ? t : max), group.items[0]),
+    [group.items],
+  );
+  const allSelected = group.items.every((t) => selected.has(t.id));
+
+  return (
+    <div
+      className="bk-group"
+      style={{
+        background: "#fff",
+        border: "1px solid #f0efec",
+        borderLeft: `3px solid ${escalatedCount ? "#dc2626" : overdueCount ? "#f97316" : "#d6d3d1"}`,
+        borderRadius: 10,
+        marginBottom: 10,
+        overflow: "hidden",
+      }}
+    >
+      <button
+        className="bk-group-toggle"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "11px 14px",
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          textAlign: "left",
+          fontFamily: "inherit",
+        }}
+      >
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={14} style={{ flexShrink: 0, color: "#a8a29e" }} />
+        <span
+          style={{
+            fontSize: 13.5,
+            fontWeight: 700,
+            color: "#1c1917",
+            flexShrink: 0,
+            maxWidth: 220,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {group.name}
+        </span>
+        <div style={{ display: "flex", gap: 5, flex: 1, minWidth: 0, overflow: "hidden" }}>
+          {escalatedCount > 0 && (
+            <span className="bk-chip" style={{ background: "#fef2f2", color: "#dc2626", flexShrink: 0 }}>
+              ↑ Escalated{escalatedCount > 1 ? ` ×${escalatedCount}` : ""}
+            </span>
+          )}
+          {visibleKinds.map(([kind, count]) => (
+            <span key={kind} className="bk-chip" style={{ background: `${KIND_COLOR[kind] ?? "#475569"}14`, color: KIND_COLOR[kind] ?? "#475569", flexShrink: 0 }}>
+              {KIND_LABEL[kind] ?? kind}
+              {count > 1 ? ` ×${count}` : ""}
+            </span>
+          ))}
+          {hiddenKindCount > 0 && (
+            <span className="bk-chip" style={{ background: "#f5f5f4", color: "#78716c", flexShrink: 0 }}>
+              +{hiddenKindCount} more
+            </span>
+          )}
+        </div>
+        <span style={{ fontSize: 11, color: overdueCount ? "#ea580c" : "#78716c", fontWeight: 600, flexShrink: 0, whiteSpace: "nowrap" }}>
+          {ageLabel(oldest.createdAt)} oldest
+        </span>
+        <span
+          style={{
+            fontSize: 10.5,
+            fontWeight: 700,
+            color: "#57534e",
+            background: "#f5f5f4",
+            padding: "2px 8px",
+            borderRadius: 999,
+            flexShrink: 0,
+          }}
+        >
+          {group.items.length}
+        </span>
+      </button>
+      {open && (
+        <div className="bk-action-list" style={{ borderTop: "1px solid #f0efec" }}>
+          {group.items.length > 1 && (
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button className="bk-action-section-select" style={{ color: "#78716c" }} onClick={() => onSelectGroup(group.items)}>
+                {allSelected ? "Selected" : "Select all"}
+              </button>
+            </div>
+          )}
+          {group.items.map((t) => (
+            <TaskCard
+              key={t.id}
+              t={t}
+              pending={pending}
+              start={start}
+              selected={selected.has(t.id)}
+              onToggle={() => onToggle(t.id)}
+              canDelete={canDelete}
+              canSnooze={canSnooze}
+            />
+          ))}
         </div>
       )}
     </div>

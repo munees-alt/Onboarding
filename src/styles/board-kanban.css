@@ -64,6 +64,8 @@
 .bk-card-name { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 700; color: #1c1917; line-height: 1.35; text-decoration: none; }
 .bk-card-name:hover { text-decoration: underline; }
 .bk-pill { display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+.bk-chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+.bk-group-toggle:hover { background: #fafaf9; }
 .bk-card-note { font-size: 11.5px; color: #a8a29e; margin-top: 7px; line-height: 1.4; }
 .bk-card-assignee { display: flex; align-items: center; gap: 8px; margin-top: 11px; flex-wrap: wrap; }
 .bk-avatar { flex-shrink: 0; border-radius: 50%; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; }
