@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
 import { ARCHIVED_TEMPLATE_IDS, type OnbTemplate } from "@/lib/onboarding-templates";
@@ -16,36 +15,56 @@ export type AmRow = { id: string; full_name: string; role: string };
 export type ComplianceAmRow = { id: string; name: string; role: string; currentLoad: number; maxTasks: number | null; isHead?: boolean; isLead?: boolean };
 export type ComplianceClientRow = { id: string; name: string; status: string | null };
 
-const TABS = [
-  { id: "dashboard", label: "Dashboard", icon: "layout-dashboard" },
-  { id: "pipeline", label: "Pipeline", icon: "git-branch" },
-  { id: "clients", label: "Clients", icon: "users" },
-  { id: "done", label: "Done", icon: "check-circle" },
-] as const;
-
 const isDone = (s: string) => s === "complete" || s === "closed";
+
+// The two live client-onboarding flows (Micro Team, and legacy Medium Team /
+// Medium Enterprise runs still in progress) share the same first 7 stage names —
+// that fixed order is the board's column set. Anything outside it (e.g. an old
+// Medium Enterprise run, which uses a different stage set) lands in a trailing
+// "Other stage" column rather than being silently dropped.
+const CANONICAL_STAGES = [
+  "Assign Roles",
+  "Send Magic Link",
+  "Call with Client",
+  "COA Prep · Zoho Books",
+  "Optional Operations",
+  "Project & Tasks — Internal Team",
+  "Handover",
+];
+
+// A small deterministic color so any AM name gets a stable avatar tint without
+// a hardcoded roster.
+const AVATAR_HUES = [12, 165, 265, 210, 35, 340, 190];
+function avatarColor(name: string) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return `hsl(${AVATAR_HUES[h % AVATAR_HUES.length]}, 62%, 45%)`;
+}
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "—";
+}
 
 export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDelete = false, isAdmin = false, complianceAms = [], complianceClients = [] }: { runs: RunCardData[]; templates: OnbTemplate[]; leads: LeadRow[]; ams?: AmRow[]; canDelete?: boolean; isAdmin?: boolean; complianceAms?: ComplianceAmRow[]; complianceClients?: ComplianceClientRow[] }) {
   const router = useRouter();
-  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("dashboard");
   const [newOpen, setNewOpen] = useState(false);
-  // Active-runs filters (Dashboard + Clients tabs).
   const [fSearch, setFSearch] = useState("");
-  const [fStage, setFStage] = useState<string>("all");
   const [fAm, setFAm] = useState<string>("all");
-  const [fTeamLead, setFTeamLead] = useState<string>("all");
-  const [fTemplate, setFTemplate] = useState<string>("all");
-  const [fStatus, setFStatus] = useState<string>("all");
   const [fIndustry, setFIndustry] = useState<string>("all");
+  const [fTeamLead, setFTeamLead] = useState<string>("all");
   const [fMonth, setFMonth] = useState<string>("all"); // YYYY-MM
   const [fFrequency, setFFrequency] = useState<string>("all");
+  const [leadAmDraft, setLeadAmDraft] = useState<Record<string, string>>({});
   const [confirmDel, setConfirmDel] = useState<{ id: string; name: string } | null>(null);
   const [confirmComplete, setConfirmComplete] = useState<{ id: string; name: string } | null>(null);
   const [busy, startDel] = useTransition();
   const [busyComplete, startComplete] = useTransition();
   const [syncing, startSync] = useTransition();
+  const [signingId, setSigningId] = useState<string | null>(null);
+  const [busySign, startSign] = useTransition();
   const [toast, setToast] = useState<string | null>(null);
   const note = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3500); };
+
   const doSync = () => startSync(async () => {
     const r = await syncLeadsNow();
     if (r.error) { note(r.error); return; }
@@ -54,40 +73,79 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
     router.refresh();
   });
 
-  // Active onboardings vs completed ones (the Done section).
-  const rawRuns = allRuns.filter((r) => !isDone(r.status));
-  const doneRuns = allRuns.filter((r) => isDone(r.status));
+  // Onboarding hub = client-onboarding flows only (no category, e.g. Micro/Medium
+  // Team). Taxation/Compliance/Audit/Liquidation/Catch-up runs have their own boards.
+  const onboardingTemplateIds = new Set(templates.filter((t) => !t.category).map((t) => t.id));
 
-  // Build dropdown options from the actual run set so filters never offer dead values.
-  const stageOptions = [...new Map(rawRuns.map((r) => [`${r.currentStage}|${r.currentStageName ?? ""}`, { value: String(r.currentStage), label: `${r.currentStage}. ${r.currentStageName ?? "—"}` }])).values()].sort((a, b) => Number(a.value) - Number(b.value));
-  const amOptions = [...new Map(rawRuns.filter((r) => r.amName).map((r) => [r.amName!, r.amName!])).values()].sort();
-  const teamLeadOptions = [...new Map(rawRuns.filter((r) => r.teamLeadName).map((r) => [r.teamLeadName!, r.teamLeadName!])).values()].sort();
-  const tplOptions = [...new Map(rawRuns.map((r) => [r.templateName ?? "—", r.templateName ?? "—"])).values()].sort();
-  const industryOptions = [...new Set(rawRuns.map((r) => r.industry).filter(Boolean) as string[])].sort();
-  const monthOptions = [...new Set(rawRuns.map((r) => r.contractStartDate?.slice(0, 7)).filter(Boolean) as string[])].sort().reverse();
-
-  // Apply filters.
-  const runs = rawRuns.filter((r) => {
+  const matchesFilters = (r: RunCardData) => {
     if (fSearch.trim()) {
       const q = fSearch.trim().toLowerCase();
       if (!r.clientName.toLowerCase().includes(q) && !(r.amName ?? "").toLowerCase().includes(q) && !(r.templateName ?? "").toLowerCase().includes(q)) return false;
     }
-    if (fStage !== "all" && String(r.currentStage) !== fStage) return false;
     if (fAm !== "all" && r.amName !== fAm) return false;
-    if (fTeamLead !== "all" && r.teamLeadName !== fTeamLead) return false;
-    if (fTemplate !== "all" && r.templateName !== fTemplate) return false;
-    if (fStatus !== "all") {
-      if (fStatus === "not_started" && r.progress > 0) return false;
-      if (fStatus === "in_progress" && (r.progress === 0 || r.progress >= 100)) return false;
-      if (fStatus === "awaiting_client" && r.currentStage > 3) return false;
-    }
     if (fIndustry !== "all" && r.industry !== fIndustry) return false;
+    if (fTeamLead !== "all" && r.teamLeadName !== fTeamLead) return false;
     if (fMonth !== "all" && (r.contractStartDate ?? "").slice(0, 7) !== fMonth) return false;
     if (fFrequency !== "all" && (r.reportFrequency ?? "monthly") !== fFrequency) return false;
     return true;
-  });
-  const filtersActive = !!fSearch.trim() || fStage !== "all" || fAm !== "all" || fTeamLead !== "all" || fTemplate !== "all" || fStatus !== "all" || fIndustry !== "all" || fMonth !== "all" || fFrequency !== "all";
-  const resetFilters = () => { setFSearch(""); setFStage("all"); setFAm("all"); setFTeamLead("all"); setFTemplate("all"); setFStatus("all"); setFIndustry("all"); setFMonth("all"); setFFrequency("all"); };
+  };
+
+  const scopedRuns = allRuns.filter((r) => r.status !== "archived" && onboardingTemplateIds.has(r.templateKey) && matchesFilters(r));
+  const activeRuns = scopedRuns.filter((r) => !isDone(r.status));
+  const doneRuns = scopedRuns.filter((r) => isDone(r.status));
+
+  const openLeads = leads.filter((l) => l.status === "lead");
+  // Leads carry no AM/team-lead/month/frequency yet — an active filter on any of
+  // those simply hides them, same as an active run that doesn't match.
+  const matchesLead = (l: LeadRow) => {
+    if (fSearch.trim() && !l.name.toLowerCase().includes(fSearch.trim().toLowerCase())) return false;
+    if (fAm !== "all" || fTeamLead !== "all" || fMonth !== "all" || fFrequency !== "all") return false;
+    if (fIndustry !== "all" && l.industry !== fIndustry) return false;
+    return true;
+  };
+  const leadCards = openLeads.filter(matchesLead);
+
+  // Dropdown options built from the actual (unfiltered, in-scope) run set.
+  const scopeUnfiltered = allRuns.filter((r) => r.status !== "archived" && onboardingTemplateIds.has(r.templateKey));
+  const amOptions = [...new Map(scopeUnfiltered.filter((r) => r.amName).map((r) => [r.amName!, r.amName!])).values()].sort();
+  const industryOptions = [...new Set([...scopeUnfiltered.map((r) => r.industry), ...openLeads.map((l) => l.industry)].filter(Boolean) as string[])].sort();
+  const teamLeadOptions = [...new Map(scopeUnfiltered.filter((r) => r.teamLeadName).map((r) => [r.teamLeadName!, r.teamLeadName!])).values()].sort();
+  const monthOptions = [...new Set(scopeUnfiltered.map((r) => r.contractStartDate?.slice(0, 7)).filter(Boolean) as string[])].sort().reverse();
+
+  const filtersActive = !!fSearch.trim() || fAm !== "all" || fIndustry !== "all" || fTeamLead !== "all" || fMonth !== "all" || fFrequency !== "all";
+  const resetFilters = () => { setFSearch(""); setFAm("all"); setFIndustry("all"); setFTeamLead("all"); setFMonth("all"); setFFrequency("all"); };
+
+  const statActive = activeRuns.length;
+  const statAvg = activeRuns.length ? Math.round(activeRuns.reduce((n, r) => n + r.progress, 0) / activeRuns.length) : 0;
+  const statAwaiting = leadCards.length + activeRuns.filter((r) => r.currentStage <= 3).length;
+
+  // Columns: Leads, the 7 canonical stages, an overflow column for any stage
+  // name outside that set (only shown if it's actually in use), then Completed.
+  const extraStageNames = [...new Set(activeRuns.map((r) => r.currentStageName).filter((n): n is string => !!n && !CANONICAL_STAGES.includes(n)))];
+  const stageColumns = [...CANONICAL_STAGES, ...extraStageNames];
+
+  const columns: { id: string; label: string; tone: "lead" | "stage" | "done"; cards: RunCardData[] | LeadRow[] }[] = [
+    { id: "leads", label: "Leads", tone: "lead", cards: leadCards },
+    ...stageColumns.map((name) => ({ id: name, label: name, tone: "stage" as const, cards: activeRuns.filter((r) => (r.currentStageName ?? "") === name) })),
+    { id: "done", label: "Completed", tone: "done" as const, cards: doneRuns },
+  ];
+
+  const assignLead = (id: string, amId: string) => {
+    setLeadAmDraft((d) => ({ ...d, [id]: amId }));
+    startSign(async () => { await setClientAm(id, amId); router.refresh(); });
+  };
+  const signLead = (lead: LeadRow) => {
+    const amId = leadAmDraft[lead.id] || lead.am_id;
+    if (!amId) { note("Pick an Account Manager first"); return; }
+    setSigningId(lead.id);
+    startSign(async () => {
+      const r = await markSignedAction(lead.id);
+      setSigningId(null);
+      if (r.error) { note(r.error); return; }
+      note(`${lead.name} — assigned and moved to Assign Roles`);
+      router.refresh();
+    });
+  };
 
   const doDeleteRun = () => {
     if (!confirmDel) return;
@@ -98,7 +156,6 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
       router.refresh();
     });
   };
-
   const doForceComplete = () => {
     if (!confirmComplete) return;
     startComplete(async () => {
@@ -110,15 +167,13 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
     });
   };
 
-  const avg = runs.length ? Math.round(runs.reduce((n, r) => n + r.progress, 0) / runs.length) : 0;
-
   return (
     <div className="scroll">
-      <div className="page">
+      <div className="page" style={{ maxWidth: "none", display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
         <div className="section-head">
           <div>
             <h2>Onboarding</h2>
-            <div className="sub">Every signed client — added or synced from PMS. New clients land with the Ops Head to assign an Account Manager.</div>
+            <div className="sub">Every signed client — added or synced from PMS. New clients land with the Ops Head to assign an Account Manager, then move stage by stage to go-live.</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             {isAdmin && (
@@ -126,132 +181,69 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
                 <Icon name="refresh-cw" size={15} /> {syncing ? "Syncing…" : "Sync from email"}
               </button>
             )}
-            {/* Tax/compliance runs are now handled in /tax-compliance — the "New compliance run" button is retired. */}
             <button className="btn-primary" onClick={() => setNewOpen(true)}><Icon name="plus" size={15} /> New onboarding</button>
           </div>
         </div>
         {newOpen && <NewOnboardingModal leads={leads} templates={templates} onClose={() => setNewOpen(false)} onStarted={(runId) => router.push(`/onboarding/${runId}`)} />}
 
-        <div className="tabs-row">
-          {TABS.map((t) => (
-            <button key={t.id} className={"tab-btn" + (tab === t.id ? " active" : "")} onClick={() => setTab(t.id)}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name={t.icon} size={14} /> {t.label}</span>
-            </button>
-          ))}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,200px))", gap: 10, marginTop: 14 }}>
+          <Stat label="Active runs" value={String(statActive)} icon="activity" />
+          <Stat label="Avg progress" value={`${statAvg}%`} icon="trending-up" tone="teal" />
+          <Stat label="Awaiting client" value={String(statAwaiting)} icon="clock" tone="amber" />
         </div>
 
-        {tab === "dashboard" && (
-          <>
-            <div className="stats" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
-              <Stat label="Active runs" value={String(runs.length)} icon="activity" />
-              <Stat label="Avg progress" value={`${avg}%`} icon="trending-up" tone="teal" />
-              <Stat label="Awaiting client" value={String(runs.filter((r) => r.currentStage <= 3).length)} icon="clock" tone="amber" />
-              <Stat label="Templates" value={String(templates.length)} icon="file-text" tone="purple" />
-            </div>
-            <div className="section-head" style={{ marginTop: 24, alignItems: "flex-end" }}>
-              <div>
-                <h2 style={{ fontSize: 16 }}>Active runs</h2>
-                <div className="sub" style={{ fontSize: 12 }}>{runs.length} of {rawRuns.length}{filtersActive ? " · filters applied" : ""}</div>
-              </div>
-            </div>
-            <RunFilterBar
-              search={fSearch} onSearch={setFSearch}
-              stage={fStage} onStage={setFStage} stageOptions={stageOptions}
-              am={fAm} onAm={setFAm} amOptions={amOptions}
-              teamLead={fTeamLead} onTeamLead={setFTeamLead} teamLeadOptions={teamLeadOptions}
-              template={fTemplate} onTemplate={setFTemplate} tplOptions={tplOptions}
-              status={fStatus} onStatus={setFStatus}
-              industry={fIndustry} onIndustry={setFIndustry} industryOptions={industryOptions}
-              month={fMonth} onMonth={setFMonth} monthOptions={monthOptions}
-              frequency={fFrequency} onFrequency={setFFrequency}
-              filtersActive={filtersActive} onReset={resetFilters}
-            />
-            {runs.length ? (
-              <div className="runs-card" style={{ marginTop: 4 }}>
-                <table className="runs-table">
-                  <thead><tr><th>Client</th><th>Template</th><th>Frequency</th><th>Current stage</th><th>Progress</th><th>SLA</th><th></th></tr></thead>
-                  <tbody>
-                    {runs.map((r) => (
-                      <tr key={r.id} onClick={() => router.push(`/onboarding/${r.id}`)}>
-                        <td><div className="client-cell"><div className="client">{r.clientName}</div><div className="wf">AM {r.amName ?? "—"}</div></div></td>
-                        <td>{r.templateName}</td>
-                        <td style={{ textTransform: "capitalize" }}>{r.reportFrequency ?? "monthly"}</td>
-                        <td>{r.currentStage}. {r.currentStageName ?? "—"}</td>
-                        <td><div className="progress-wrap"><div className="progress orange"><i style={{ width: `${r.progress}%` }} /></div><span className="progress-pct">{r.progress}%</span></div></td>
-                        <td><SlaPill sla={r.sla} days={r.daysToTarget} /></td>
-                        <td onClick={(e) => e.stopPropagation()}>
-                          <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
-                            <button className="btn-ghost" onClick={() => router.push(`/onboarding/${r.id}`)}>Open <Icon name="arrow-right" size={13} /></button>
-                            {canDelete && <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>}
-                          </div>
-                        </td>
-                      </tr>
+        <KanbanFilterBar
+          search={fSearch} onSearch={setFSearch}
+          am={fAm} onAm={setFAm} amOptions={amOptions}
+          industry={fIndustry} onIndustry={setFIndustry} industryOptions={industryOptions}
+          teamLead={fTeamLead} onTeamLead={setFTeamLead} teamLeadOptions={teamLeadOptions}
+          month={fMonth} onMonth={setFMonth} monthOptions={monthOptions}
+          frequency={fFrequency} onFrequency={setFFrequency}
+          filtersActive={filtersActive} onReset={resetFilters}
+        />
+
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", paddingBottom: 8 }}>
+          <div style={{ display: "flex", gap: 8, width: "max-content", alignItems: "flex-start" }}>
+            {columns.map((col) => (
+              <div key={col.id} style={{ width: col.tone === "lead" ? 208 : 192, flexShrink: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, padding: "6px 8px", background: "var(--bg-soft)", border: "1px solid var(--border)", borderRadius: 7, position: "sticky", top: 0, zIndex: 5 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <span style={{ width: 7, height: 7, borderRadius: 999, flexShrink: 0, background: col.tone === "lead" ? "var(--orange)" : col.tone === "done" ? "var(--green, #16a34a)" : "var(--ink-4)" }} />
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{col.label}</span>
+                  </div>
+                  <span style={{ fontSize: 9.5, fontWeight: 700, color: "var(--ink-3)", background: "#fff", border: "1px solid var(--border)", borderRadius: 999, padding: "1px 6px", minWidth: 18, textAlign: "center" }}>{col.cards.length}</span>
+                </div>
+                {col.tone === "lead"
+                  ? (col.cards as LeadRow[]).map((l) => (
+                      <LeadCard
+                        key={l.id}
+                        lead={l}
+                        ams={ams}
+                        draftAmId={leadAmDraft[l.id] ?? l.am_id ?? ""}
+                        onAssign={(amId) => assignLead(l.id, amId)}
+                        onSign={() => signLead(l)}
+                        signing={busySign && signingId === l.id}
+                      />
+                    ))
+                  : (col.cards as RunCardData[]).map((r) => (
+                      <RunCard
+                        key={r.id}
+                        run={r}
+                        done={col.tone === "done"}
+                        canDelete={canDelete}
+                        isAdmin={isAdmin}
+                        onOpen={() => router.push(`/onboarding/${r.id}`)}
+                        onDelete={() => setConfirmDel({ id: r.id, name: r.clientName })}
+                        onForceComplete={() => setConfirmComplete({ id: r.id, name: r.clientName })}
+                      />
                     ))}
-                  </tbody>
-                </table>
+                {col.cards.length === 0 && (
+                  <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: "16px 8px", textAlign: "center", fontSize: 10.5, color: "var(--ink-4)" }}>No clients here</div>
+                )}
               </div>
-            ) : <Empty msg="No active onboarding runs." />}
-          </>
-        )}
-
-        {tab === "pipeline" && <Pipeline runs={runs} leads={leads.filter((l) => l.status === "lead")} ams={ams} canDelete={isAdmin} onDelete={(id, name) => setConfirmDel({ id, name })} />}
-
-        {tab === "clients" && (
-          <div className="runs-card" style={{ marginTop: 4 }}>
-            <table className="runs-table">
-              <thead><tr><th>Client</th><th>Template</th><th>Frequency</th><th>Current stage</th><th>Progress</th><th></th></tr></thead>
-              <tbody>
-                {runs.map((r) => (
-                  <tr key={r.id} onClick={() => router.push(`/onboarding/${r.id}`)}>
-                    <td><div className="client-cell"><div className="client">{r.clientName}</div><div className="wf">AM {r.amName ?? "—"}</div></div></td>
-                    <td>{r.templateName}</td>
-                    <td style={{ textTransform: "capitalize" }}>{r.reportFrequency ?? "monthly"}</td>
-                    <td>{r.currentStage}. {r.currentStageName}</td>
-                    <td><div className="progress-wrap"><div className="progress orange"><i style={{ width: `${r.progress}%` }} /></div><span className="progress-pct">{r.progress}%</span></div></td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                        <button className="btn-ghost" onClick={() => router.push(`/onboarding/${r.id}`)}>Open <Icon name="arrow-right" size={13} /></button>
-                        {isAdmin && (
-                          <>
-                            <button className="btn-ghost" style={{ fontSize: 12, color: "#15803d", padding: "3px 8px" }} title="Force complete all steps for this run" onClick={() => setConfirmComplete({ id: r.id, name: r.clientName })}>
-                              <Icon name="check-circle" size={13} /> Complete
-                            </button>
-                            <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {!runs.length && <tr><td colSpan={5} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No onboarding clients.</td></tr>}
-              </tbody>
-            </table>
+            ))}
           </div>
-        )}
-
-        {tab === "done" && (
-          <div className="runs-card" style={{ marginTop: 4 }}>
-            <table className="runs-table">
-              <thead><tr><th>Client</th><th>Template</th><th>Completed</th><th></th></tr></thead>
-              <tbody>
-                {doneRuns.map((r) => (
-                  <tr key={r.id} onClick={() => router.push(`/onboarding/${r.id}`)}>
-                    <td><div className="client-cell"><div className="client">{r.clientName}</div><div className="wf">AM {r.amName ?? "—"}</div></div></td>
-                    <td>{r.templateName}</td>
-                    <td><span className="pill green" style={{ fontSize: 10 }}><span className="dot" /> Completed</span></td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
-                        <button className="btn-ghost" onClick={() => router.push(`/onboarding/${r.id}`)}>Open <Icon name="arrow-right" size={13} /></button>
-                        {isAdmin && <button className="icon-btn" style={{ color: "var(--red)" }} aria-label="Delete run" onClick={() => setConfirmDel({ id: r.id, name: r.clientName })}><Icon name="trash-2" size={15} /></button>}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {!doneRuns.length && <tr><td colSpan={4} style={{ textAlign: "center", padding: 40, color: "var(--ink-3)" }}>No completed onboardings yet. They move here automatically when finished.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        )}
+        </div>
 
         {confirmDel && (
           <div className="modal-overlay open" style={{ zIndex: 90 }} onClick={() => !busy && setConfirmDel(null)}>
@@ -273,7 +265,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
             <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
               <div className="hd">
                 <h3>Force complete this run?</h3>
-                <div className="sub">This marks every step as complete for <strong>{confirmComplete.name}</strong> regardless of their current state, and closes the onboarding. The client moves to the Done tab. Use this only when work is genuinely finished but the system hasn&apos;t caught up.</div>
+                <div className="sub">This marks every step as complete for <strong>{confirmComplete.name}</strong> regardless of their current state, and closes the onboarding. The client moves to the Completed column. Use this only when work is genuinely finished but the system hasn&apos;t caught up.</div>
               </div>
               <div className="ft">
                 <button className="btn-ghost" onClick={() => setConfirmComplete(null)} disabled={busyComplete}>Cancel</button>
@@ -288,68 +280,49 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   );
 }
 
-function RunFilterBar({
-  search, onSearch, stage, onStage, stageOptions, am, onAm, amOptions, teamLead, onTeamLead, teamLeadOptions, template, onTemplate, tplOptions, status, onStatus, industry, onIndustry, industryOptions, month, onMonth, monthOptions, frequency, onFrequency, filtersActive, onReset,
+function KanbanFilterBar({
+  search, onSearch, am, onAm, amOptions, industry, onIndustry, industryOptions, teamLead, onTeamLead, teamLeadOptions, month, onMonth, monthOptions, frequency, onFrequency, filtersActive, onReset,
 }: {
   search: string; onSearch: (s: string) => void;
-  stage: string; onStage: (s: string) => void; stageOptions: { value: string; label: string }[];
   am: string; onAm: (s: string) => void; amOptions: string[];
-  teamLead: string; onTeamLead: (s: string) => void; teamLeadOptions: string[];
-  template: string; onTemplate: (s: string) => void; tplOptions: string[];
-  status: string; onStatus: (s: string) => void;
   industry: string; onIndustry: (s: string) => void; industryOptions: string[];
+  teamLead: string; onTeamLead: (s: string) => void; teamLeadOptions: string[];
   month: string; onMonth: (s: string) => void; monthOptions: string[];
   frequency: string; onFrequency: (s: string) => void;
   filtersActive: boolean; onReset: () => void;
 }) {
-  const ctrl: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px", fontSize: 12.5, background: "#fff", height: 32 };
+  const ctrl: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 7, padding: "0 7px", fontSize: 11, background: "#fff", height: 30 };
   return (
-    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "10px 0 14px" }}>
-      <div style={{ position: "relative", flex: "1 1 240px", minWidth: 220 }}>
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", margin: "10px 0 8px" }}>
+      <div style={{ position: "relative", flex: "0 1 200px", minWidth: 150 }}>
         <input
           type="text"
           value={search}
           onChange={(e) => onSearch(e.target.value)}
           placeholder="Search client, AM, template…"
-          style={{ ...ctrl, width: "100%", paddingLeft: 30 }}
+          style={{ ...ctrl, width: "100%", paddingLeft: 26 }}
         />
-        <span style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: "var(--ink-3)", pointerEvents: "none" }}>
-          <Icon name="search" size={13} />
+        <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", color: "var(--ink-3)", pointerEvents: "none" }}>
+          <Icon name="search" size={12} />
         </span>
       </div>
-      <select value={stage} onChange={(e) => onStage(e.target.value)} style={ctrl} title="Filter by stage">
-        <option value="all">All stages</option>
-        {stageOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
       <select value={am} onChange={(e) => onAm(e.target.value)} style={ctrl} title="Filter by AM">
         <option value="all">All AMs</option>
         {amOptions.map((a) => <option key={a} value={a}>{a}</option>)}
       </select>
+      <select value={industry} onChange={(e) => onIndustry(e.target.value)} style={ctrl} title="Filter by industry">
+        <option value="all">All industries</option>
+        {industryOptions.map((i) => <option key={i} value={i}>{i}</option>)}
+      </select>
       {teamLeadOptions.length > 0 && (
         <select value={teamLead} onChange={(e) => onTeamLead(e.target.value)} style={ctrl} title="Filter by Team Lead">
-          <option value="all">All Team Leads</option>
+          <option value="all">All team leads</option>
           {teamLeadOptions.map((tl) => <option key={tl} value={tl}>{tl}</option>)}
-        </select>
-      )}
-      <select value={template} onChange={(e) => onTemplate(e.target.value)} style={ctrl} title="Filter by template">
-        <option value="all">All templates</option>
-        {tplOptions.map((t) => <option key={t} value={t}>{t}</option>)}
-      </select>
-      <select value={status} onChange={(e) => onStatus(e.target.value)} style={ctrl} title="Filter by status">
-        <option value="all">All status</option>
-        <option value="not_started">Not started (0%)</option>
-        <option value="in_progress">In progress</option>
-        <option value="awaiting_client">Awaiting client (stage ≤ 3)</option>
-      </select>
-      {industryOptions.length > 0 && (
-        <select value={industry} onChange={(e) => onIndustry(e.target.value)} style={ctrl} title="Filter by industry">
-          <option value="all">All industries</option>
-          {industryOptions.map((i) => <option key={i} value={i}>{i}</option>)}
         </select>
       )}
       {monthOptions.length > 0 && (
         <select value={month} onChange={(e) => onMonth(e.target.value)} style={ctrl} title="Filter by engagement start month">
-          <option value="all">All months</option>
+          <option value="all">All months started</option>
           {monthOptions.map((m) => <option key={m} value={m}>{new Date(m + "-01").toLocaleDateString("en-GB", { month: "short", year: "numeric" })}</option>)}
         </select>
       )}
@@ -360,123 +333,102 @@ function RunFilterBar({
         <option value="annually">Annually</option>
       </select>
       {filtersActive && (
-        <button className="btn-ghost" onClick={onReset} style={{ height: 32 }}>
-          <Icon name="x" size={12} /> Clear filters
+        <button className="btn-ghost" onClick={onReset} style={{ height: 30, fontSize: 11, padding: "0 8px" }}>
+          <Icon name="x" size={11} /> Clear
         </button>
       )}
     </div>
   );
 }
 
+function LeadCard({ lead, ams, draftAmId, onAssign, onSign, signing }: { lead: LeadRow; ams: AmRow[]; draftAmId: string; onAssign: (amId: string) => void; onSign: () => void; signing: boolean }) {
+  return (
+    <div className="kb-card" style={{ background: "#fff", border: "1px solid var(--border)", borderLeft: "3px solid var(--orange)", borderRadius: 8, padding: 8 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, lineHeight: 1.2 }}>{lead.name}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3, fontSize: 9.5, color: "var(--ink-3)" }}>
+        <span>{lead.industry ?? "—"}</span>
+        {lead.proposal_id && <><span style={{ opacity: 0.4 }}>·</span><span>{lead.proposal_id}</span></>}
+      </div>
+      {lead.services?.length ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 6 }}>
+          {lead.services.map((s) => <span key={s} style={{ fontSize: 9, fontWeight: 600, color: "var(--ink-2)", background: "var(--bg-soft)", borderRadius: 999, padding: "2px 6px" }}>{s}</span>)}
+        </div>
+      ) : null}
+      <select value={draftAmId} onChange={(e) => onAssign(e.target.value)} style={{ width: "100%", height: 28, marginTop: 6, border: "1px solid var(--border)", borderRadius: 7, background: "#fff", color: "var(--ink-2)", fontSize: 10.5, padding: "0 7px" }}>
+        <option value="">— Assign AM —</option>
+        {ams.map((a) => <option key={a.id} value={a.id}>{a.full_name}</option>)}
+      </select>
+      <button
+        onClick={onSign}
+        disabled={!draftAmId || signing}
+        style={{
+          width: "100%", height: 28, marginTop: 6, borderRadius: 7, border: "none", fontSize: 10.5, fontWeight: 700,
+          cursor: draftAmId && !signing ? "pointer" : "not-allowed",
+          background: draftAmId ? "var(--orange)" : "var(--bg-soft)", color: draftAmId ? "#fff" : "var(--ink-4)",
+        }}
+      >
+        {signing ? "Signing…" : "Mark signed →"}
+      </button>
+    </div>
+  );
+}
+
+function RunCard({ run, done, canDelete, isAdmin, onOpen, onDelete, onForceComplete }: { run: RunCardData; done: boolean; canDelete: boolean; isAdmin: boolean; onOpen: () => void; onDelete: () => void; onForceComplete: () => void }) {
+  return (
+    <div className="kb-card" onClick={onOpen} style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 8, padding: 8, cursor: "pointer" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, lineHeight: 1.2, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{run.clientName}</div>
+        <SlaPill sla={run.sla} days={run.daysToTarget} />
+      </div>
+      <div style={{ fontSize: 9.5, fontWeight: 600, color: "var(--ink-3)", marginTop: 4 }}>{run.templateName}</div>
+      {!done && (
+        <div style={{ marginTop: 6 }}>
+          <div className="progress orange" style={{ height: 4 }}><i style={{ width: `${run.progress}%` }} /></div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3, fontSize: 9, color: "var(--ink-3)", fontWeight: 600 }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run.currentStageName ?? "—"}</span><span>{run.progress}%</span>
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, paddingTop: 6, borderTop: "1px solid var(--border)" }}>
+        {run.amName && (
+          <div style={{ width: 17, height: 17, borderRadius: 999, background: avatarColor(run.amName), color: "#fff", display: "grid", placeItems: "center", fontSize: 8, fontWeight: 700, flexShrink: 0 }}>{initials(run.amName)}</div>
+        )}
+        <div style={{ minWidth: 0, lineHeight: 1.15 }}>
+          <div style={{ fontSize: 9.5, fontWeight: 600, color: "var(--ink-2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{run.amName ?? "Unassigned"}</div>
+          <div style={{ fontSize: 8.5, color: "var(--ink-4)", whiteSpace: "nowrap" }}>{run.teamLeadName ? `TL · ${run.teamLeadName}` : "—"}</div>
+        </div>
+        {isAdmin && !done && (
+          <button className="icon-btn" style={{ marginLeft: "auto", color: "#15803d", padding: 3 }} title="Force complete" onClick={(e) => { e.stopPropagation(); onForceComplete(); }}>
+            <Icon name="check-circle" size={12} />
+          </button>
+        )}
+        {canDelete && (
+          <button className="icon-btn" style={{ marginLeft: isAdmin && !done ? 0 : "auto", color: "var(--red)", padding: 3 }} title="Delete run" onClick={(e) => { e.stopPropagation(); onDelete(); }}>
+            <Icon name="trash-2" size={12} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SlaPill({ sla, days }: { sla: "on_track" | "warning" | "breached" | "unknown"; days: number | null }) {
-  if (sla === "unknown") return <span style={{ fontSize: 11, color: "var(--ink-3)" }}>—</span>;
+  if (sla === "unknown") return <span style={{ fontSize: 9, color: "var(--ink-3)", flexShrink: 0 }}>—</span>;
   const map = {
     on_track: { color: "green", label: days != null ? `${days}d left` : "On track" },
-    warning:  { color: "amber", label: days != null ? `${days}d left · at risk` : "At risk" },
+    warning:  { color: "amber", label: days != null ? `${days}d left` : "At risk" },
     breached: { color: "red",   label: days != null ? `${Math.abs(days)}d over` : "Overdue" },
   } as const;
   const v = map[sla];
-  return <span className={"pill " + v.color} style={{ fontSize: 10.5, whiteSpace: "nowrap" }}><span className="dot" />{v.label}</span>;
+  return <span className={"pill " + v.color} style={{ fontSize: 9, whiteSpace: "nowrap", flexShrink: 0, padding: "1px 6px" }}><span className="dot" />{v.label}</span>;
 }
 
 function Stat({ label, value, icon, tone }: { label: string; value: string; icon: string; tone?: string }) {
   return (
-    <div className={"stat" + (tone ? " " + tone : "")}>
-      <div className="label">{label}</div>
-      <div className="value">{value}</div>
-      <div className={"badge-ic" + (tone ? "" : " neutral")}><Icon name={icon} size={15} /></div>
-    </div>
-  );
-}
-
-function Empty({ msg }: { msg: string }) {
-  return <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 10, padding: "60px 40px", textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>{msg}</div>;
-}
-
-const PIPE_COLS = "minmax(160px, 2fr) minmax(120px, 1.4fr) minmax(150px, 1.6fr) 110px 120px";
-const PIPE_COLS_ADMIN = "minmax(160px, 2fr) minmax(120px, 1.4fr) minmax(150px, 1.6fr) 110px 120px 40px";
-
-function Pipeline({ runs, leads, ams, canDelete = false, onDelete }: { runs: RunCardData[]; leads: LeadRow[]; ams: AmRow[]; canDelete?: boolean; onDelete?: (id: string, name: string) => void }) {
-  if (!runs.length && !leads.length) return <Empty msg="No leads or onboardings in your pipeline yet." />;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
-      {/* New leads — the first pipeline step is always Assign AM. */}
-      <div>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--orange)", marginBottom: 8 }}>New leads · Assign AM · {leads.length}</div>
-        {leads.length ? (
-          <div style={{ border: "1px solid var(--border)", borderRadius: 12, background: "#fff", overflow: "hidden" }}>
-            <div style={{ display: "grid", gridTemplateColumns: PIPE_COLS, gap: 12, padding: "10px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-soft)", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)" }}>
-              <span>Company</span><span>Proposal</span><span>Services</span><span>Account Manager</span><span style={{ textAlign: "right" }}>Action</span>
-            </div>
-            {leads.map((l, i) => <LeadRow key={l.id} lead={l} ams={ams} first={i === 0} />)}
-          </div>
-        ) : <div style={{ fontSize: 12, color: "var(--ink-4)", padding: "4px 2px" }}>No new leads. They appear here automatically when an onboarding email syncs.</div>}
-      </div>
-
-      {/* Active onboardings — compact, with status. */}
-      <div>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 8 }}>Active onboardings · {runs.length}</div>
-        {runs.length ? (
-          <div style={{ border: "1px solid var(--border)", borderRadius: 12, background: "#fff", overflow: "hidden" }}>
-            <div style={{ display: "grid", gridTemplateColumns: canDelete ? PIPE_COLS_ADMIN : PIPE_COLS, gap: 12, padding: "10px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-soft)", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--ink-3)" }}>
-              <span>Client</span><span>AM</span><span>Stage</span><span>Status</span><span style={{ textAlign: "right" }}>Progress</span>
-              {canDelete && <span></span>}
-            </div>
-            {runs.map((r, i) => (
-              <div key={r.id} style={{ display: "grid", gridTemplateColumns: canDelete ? PIPE_COLS_ADMIN : PIPE_COLS, gap: 12, alignItems: "center", padding: "0", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
-                <Link href={`/onboarding/${r.id}`} className="mywork-row" style={{ display: "grid", gridTemplateColumns: canDelete ? "minmax(160px, 2fr) minmax(120px, 1.4fr) minmax(150px, 1.6fr) 110px 120px" : PIPE_COLS, gap: 12, alignItems: "center", padding: "11px 16px", textDecoration: "none", color: "inherit", gridColumn: canDelete ? "1 / span 5" : "1 / -1" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.clientName}</div>
-                    <div style={{ fontSize: 11, color: "var(--ink-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.templateName}</div>
-                  </div>
-                  <div style={{ minWidth: 0, fontSize: 12.5, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.amName ?? "—"}</div>
-                  <div style={{ minWidth: 0, fontSize: 12.5, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ color: "var(--ink-3)" }}>St {r.currentStage}/{r.stageCount}</span> · {r.currentStageName ?? "—"}</div>
-                  <div style={{ minWidth: 0 }}><StatusPill status={r.status} progress={r.progress} /></div>
-                  <div><div className="progress orange"><i style={{ width: `${r.progress}%` }} /></div><div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 3, textAlign: "right" }}>{r.progress}%</div></div>
-                </Link>
-                {canDelete && (
-                  <button className="icon-btn" style={{ color: "var(--red)", padding: "8px" }} aria-label="Delete onboarding" onClick={() => onDelete?.(r.id, r.clientName)} title="Master-Admin: delete this onboarding run"><Icon name="trash-2" size={15} /></button>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : <div style={{ fontSize: 12, color: "var(--ink-4)", padding: "4px 2px" }}>No active onboardings.</div>}
-      </div>
-    </div>
-  );
-}
-
-function StatusPill({ status, progress }: { status: string; progress: number }) {
-  const label = status === "complete" || status === "closed" ? "Done" : progress === 0 ? "Not started" : "In progress";
-  const done = label === "Done";
-  return <span style={{ fontSize: 10.5, fontWeight: 700, padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap", background: done ? "var(--bg)" : "var(--orange-soft)", color: done ? "var(--ink-3)" : "var(--orange)", border: "1px solid " + (done ? "var(--border)" : "var(--orange)") }}>{label}</span>;
-}
-
-function LeadRow({ lead, ams, first }: { lead: LeadRow; ams: AmRow[]; first: boolean }) {
-  const router = useRouter();
-  const [amId, setAmId] = useState(lead.am_id ?? "");
-  const [busy, start] = useTransition();
-
-  const assign = (id: string) => { setAmId(id); start(async () => { await setClientAm(lead.id, id); router.refresh(); }); };
-  const sign = () => start(async () => { const r = await markSignedAction(lead.id); if (!r.error && r.runId) router.push(`/onboarding/${r.runId}`); });
-
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: PIPE_COLS, gap: 12, alignItems: "center", padding: "11px 16px", borderTop: first ? "none" : "1px solid var(--border)" }}>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lead.name}</div>
-        {lead.industry && <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{lead.industry}</div>}
-      </div>
-      <div style={{ minWidth: 0, fontSize: 12, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lead.proposal_id ?? "—"}</div>
-      <div style={{ minWidth: 0, fontSize: 11.5, color: "var(--ink-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lead.services?.length ? lead.services.join(" · ") : "—"}</div>
-      <div style={{ minWidth: 0 }}>
-        <select value={amId} onChange={(e) => assign(e.target.value)} disabled={busy} style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px", fontSize: 12 }}>
-          <option value="">— Assign AM —</option>
-          {ams.map((a) => <option key={a.id} value={a.id}>{a.full_name} · {a.role}</option>)}
-        </select>
-      </div>
-      <div style={{ textAlign: "right" }}>
-        <button className="btn-primary" disabled={busy || !amId} onClick={sign} style={{ fontSize: 11.5, padding: "6px 10px" }}>{busy ? "…" : "Mark signed"}</button>
-      </div>
+    <div className={"stat" + (tone ? " " + tone : "")} style={{ padding: "8px 12px" }}>
+      <div className="label" style={{ fontSize: 10 }}>{label}</div>
+      <div className="value" style={{ fontSize: 17 }}>{value}</div>
+      <div className={"badge-ic" + (tone ? "" : " neutral")} style={{ width: 28, height: 28 }}><Icon name={icon} size={14} /></div>
     </div>
   );
 }
@@ -605,7 +557,7 @@ function NewOnboardingModal({
         <div className="hd"><h3>Start a new onboarding</h3><div className="sub">Pick a signed client and the flow. The run, playbook and client record are created and synced.</div></div>
         <div className="bd">
           {leads.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No leads or signed clients yet. <Link href="/clients" style={{ color: "var(--orange)" }}>Add a client →</Link></div>
+            <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No leads or signed clients yet. Add one from the Clients page.</div>
           ) : (
             <>
               <div className="field"><label>Client</label>
@@ -630,7 +582,6 @@ function NewOnboardingModal({
                   <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 2 }}>Forks the master template into a client-specific copy first, then runs on the copy. Edits to the copy never touch the master.</div>
                 </div>
               </label>
-              <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Need a different client? <Link href="/clients" style={{ color: "var(--orange)" }}>Add one →</Link></div>
               {error && <div style={{ fontSize: 12.5, color: "var(--red)" }}>{error}</div>}
             </>
           )}
