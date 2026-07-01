@@ -7,6 +7,16 @@ import { Icon } from "@/components/icon";
 import { stepCount, type OnbTemplate } from "@/lib/onboarding-templates";
 import { createTemplateFromText, forkTemplate } from "./actions";
 
+// Top-level event grouping shown in the gallery (order + display label).
+const EVENT_ORDER = ["onboarding", "accounting", "compliance"];
+const EVENT_LABEL: Record<string, string> = { onboarding: "Onboarding", accounting: "Accounting", compliance: "Compliance", other: "Other" };
+const FLOW_LABEL: Record<string, string> = {
+  "client-onboarding": "Client onboarding",
+  "catchup-accounting": "Catch-up accounting",
+  audit: "Audit",
+  liquidation: "Liquidation",
+};
+
 export function TemplatesView({ templates }: { templates: OnbTemplate[] }) {
   const router = useRouter();
   const [open, setOpen] = useState<string | null>(null);
@@ -41,7 +51,7 @@ export function TemplatesView({ templates }: { templates: OnbTemplate[] }) {
         <div className="section-head">
           <div>
             <h2>Templates</h2>
-            <div className="sub">{templates.length} onboarding template{templates.length === 1 ? "" : "s"} · client onboarding — master flow · all editable · fork any to start from a copy</div>
+            <div className="sub">{templates.length} template{templates.length === 1 ? "" : "s"} · grouped by event &amp; flow · all editable · fork any to start from a copy</div>
           </div>
           <button className="btn-primary" onClick={() => { setGenOpen(true); setErr(null); }}>
             <Icon name="sparkles" size={14} /> Create from description
@@ -71,15 +81,28 @@ export function TemplatesView({ templates }: { templates: OnbTemplate[] }) {
           </div>
         )}
 
-        <div style={{ marginTop: 18 }}>
-          <div className="tmpl-grid">
-            {templates.map((t) => (
+        {(() => {
+          const events = [...new Set(templates.map((t) => t.event || "other"))]
+            .sort((a, b) => {
+              const ia = EVENT_ORDER.indexOf(a), ib = EVENT_ORDER.indexOf(b);
+              return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+            });
+          return events.map((ev) => {
+            const inEvent = templates.filter((t) => (t.event || "other") === ev);
+            return (
+              <div key={ev} style={{ marginTop: 22 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", marginBottom: 10 }}>
+                  {EVENT_LABEL[ev] ?? ev}
+                </div>
+                <div className="tmpl-grid">
+                  {inEvent.map((t) => (
               <div key={t.id} className="tmpl-card" style={{ cursor: "default" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div className="ic"><Icon name={t.id.startsWith("micro") ? "zap" : t.category === "Catch-up" ? "history" : "users"} size={17} /></div>
                   {t.live && <span className="pill green" style={{ fontSize: 10 }}><span className="dot" /> Live</span>}
                 </div>
                 <h4>{t.name}</h4>
+                {t.flow && <div className="meta" style={{ marginTop: 2, color: "var(--ink-3)" }}>Flow · {FLOW_LABEL[t.flow] ?? t.flow}</div>}
                 <div className="meta" style={{ fontWeight: 600, color: "var(--ink-2)" }}>{t.teamLabel}</div>
                 <div className="meta" style={{ marginTop: 6, lineHeight: 1.5 }}>{t.desc}</div>
                 <div className="ft">
@@ -110,9 +133,12 @@ export function TemplatesView({ templates }: { templates: OnbTemplate[] }) {
                   </div>
                 )}
               </div>
-            ))}
-          </div>
-        </div>
+                  ))}
+                </div>
+              </div>
+            );
+          });
+        })()}
       </div>
     </div>
   );

@@ -43,6 +43,7 @@ export interface ClientRow {
   expected_onboarding_days: number | null;
   proposal_id: string | null;
   group_id: string | null;
+  report_frequency: string | null;
 }
 export interface ClientGroup { id: string; name: string }
 export interface RunLite {
@@ -165,6 +166,7 @@ export function ClientsTable({
   const [fMonth, setFMonth] = useState("all");
   const [fAuthority, setFAuthority] = useState("all");
   const [fTeamLead, setFTeamLead] = useState("all");
+  const [fFrequency, setFFrequency] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
   const [picking, setPicking] = useState<{ clientId: string; name: string; amId: string; patch?: { ownerName?: string | null; industry?: string | null; entityType?: string | null; services?: string[]; email?: string | null; phone?: string | null; proposalId?: string | null; tradeAuthority?: string | null; tradeLicenceNo?: string | null; contractStart?: string | null; targetGoLive?: string | null; expectedDays?: number | null } } | null>(null);
   const [signing, setSigning] = useState<{ name: string; step: number } | null>(null);
@@ -192,11 +194,12 @@ export function ClientsTable({
   const ALL_COLS: Array<{ id: string; label: string; admin?: boolean }> = [
     { id: "code", label: "Code", admin: true },
     { id: "industry", label: "Industry" },
+    { id: "frequency", label: "Report frequency" },
     { id: "team", label: "Team Lead / Senior", admin: true },
     { id: "services", label: "Services" },
     { id: "progress", label: "Progress" },
   ];
-  const DEFAULT_VISIBLE = new Set(["code", "industry", "team", "services", "progress"]);
+  const DEFAULT_VISIBLE = new Set(["code", "industry", "frequency", "team", "services", "progress"]);
   const [visibleCols, setVisibleCols] = useState<Set<string>>(DEFAULT_VISIBLE);
   const [colsOpen, setColsOpen] = useState(false);
   useEffect(() => {
@@ -265,6 +268,7 @@ export function ClientsTable({
       if (fMonth !== "all" && (c.contract_start_date ?? "").slice(0, 7) !== fMonth) return false;
       if (fAuthority !== "all" && c.trade_licence_authority !== fAuthority) return false;
       if (fTeamLead !== "all" && !(teamByClient[c.id]?.teamLeads ?? []).includes(fTeamLead)) return false;
+      if (fFrequency !== "all" && (c.report_frequency ?? "monthly") !== fFrequency) return false;
       return true;
     };
 
@@ -306,7 +310,7 @@ export function ClientsTable({
     }
 
     return result;
-  }, [clients, tab, search, fIndustry, fEntity, fMonth, fAuthority, groupedClients, groupMap, expandedGroups]);
+  }, [clients, tab, search, fIndustry, fEntity, fMonth, fAuthority, fTeamLead, fFrequency, teamByClient, overdueClientIds, amlAssignedClientIds, groupedClients, groupMap, expandedGroups]);
 
   const bulkStatus = async (status: "lead" | "active" | "hold" | "paused", label: string) => {
     const ids = [...selected];
@@ -463,8 +467,7 @@ export function ClientsTable({
             const monthOpts = [...new Set(clients.map((c) => c.contract_start_date?.slice(0, 7)).filter(Boolean) as string[])].sort().reverse();
             const authorityOpts = [...new Set(clients.map((c) => c.trade_licence_authority).filter(Boolean) as string[])].sort();
             const teamLeadOpts = [...new Set(Object.values(teamByClient).flatMap((t) => t.teamLeads))].sort();
-            const hasFilters = fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all" || fTeamLead !== "all";
-            if (!industryOpts.length && !monthOpts.length && !authorityOpts.length && !teamLeadOpts.length) return null;
+            const hasFilters = fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all" || fTeamLead !== "all" || fFrequency !== "all";
             const ctrl: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 12, background: "#fff", height: 30 };
             return (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid var(--border)", background: "var(--bg-soft)" }}>
@@ -497,8 +500,14 @@ export function ClientsTable({
                     {teamLeadOpts.map((tl) => <option key={tl} value={tl}>{tl}</option>)}
                   </select>
                 )}
+                <select value={fFrequency} onChange={(e) => setFFrequency(e.target.value)} style={ctrl}>
+                  <option value="all">All frequencies</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="quarterly">Quarterly</option>
+                  <option value="annually">Annually</option>
+                </select>
                 {hasFilters && (
-                  <button className="btn-ghost" style={{ height: 30, fontSize: 12 }} onClick={() => { setFIndustry("all"); setFEntity("all"); setFMonth("all"); setFAuthority("all"); setFTeamLead("all"); }}>
+                  <button className="btn-ghost" style={{ height: 30, fontSize: 12 }} onClick={() => { setFIndustry("all"); setFEntity("all"); setFMonth("all"); setFAuthority("all"); setFTeamLead("all"); setFFrequency("all"); }}>
                     <Icon name="x" size={12} /> Clear
                   </button>
                 )}
@@ -532,6 +541,7 @@ export function ClientsTable({
                 <th>Client</th>
                 {masterAdmin && show("code") && <th>Code</th>}
                 {show("industry") && <th>Industry</th>}
+                {show("frequency") && <th>Report frequency</th>}
                 {masterAdmin && show("team") && <th>Team Lead / Senior</th>}
                 {show("services") && <th>Services</th>}
                 <th>Status</th>
@@ -545,6 +555,7 @@ export function ClientsTable({
                 if (canManageStatus || canDelete) span++;
                 if (masterAdmin && show("code")) span++;
                 if (show("industry")) span++;
+                if (show("frequency")) span++;
                 if (masterAdmin && show("team")) span++;
                 if (show("services")) span++;
                 if (show("progress")) span++;
@@ -564,6 +575,7 @@ export function ClientsTable({
                   if (canManageStatus || canDelete) span++;
                   if (masterAdmin && show("code")) span++;
                   if (show("industry")) span++;
+                if (show("frequency")) span++;
                   if (masterAdmin && show("team")) span++;
                   if (show("services")) span++;
                   if (show("progress")) span++;
@@ -622,6 +634,7 @@ export function ClientsTable({
                       </td>
                     )}
                     {show("industry") && <td>{c.industry ?? "—"}</td>}
+                    {show("frequency") && <td style={{ textTransform: "capitalize" }}>{c.report_frequency ?? "monthly"}</td>}
                     {masterAdmin && show("team") && (() => {
                       const t = teamByClient[c.id];
                       const tlNames = t?.teamLeads ?? [];
@@ -1492,7 +1505,7 @@ function AddClientModal({
   onCreated: (name: string) => void;
   onMarkSigned: (clientId: string, prefill: { name: string; ownerName: string | null; industry: string | null; entityType: string | null; services: string[] | null; amId: string | null; email: string | null; phone: string | null; proposalId: string | null; tradeAuthority: string | null; tradeLicenceNo: string | null; contractStart: string | null; targetGoLive: string | null; expectedDays: number | null }) => void;
 }) {
-  const [form, setForm] = useState<NewClientInput>({ name: "", services: [] });
+  const [form, setForm] = useState<NewClientInput>({ name: "", services: [], report_frequency: "monthly" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1545,6 +1558,14 @@ function AddClientModal({
                 {ENTITIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
             </div>
+          </div>
+          <div className="field">
+            <label>Report frequency *</label>
+            <select value={form.report_frequency ?? "monthly"} onChange={(e) => set("report_frequency", e.target.value)}>
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="annually">Annually</option>
+            </select>
           </div>
           <div className="field">
             <label>Services signed</label>

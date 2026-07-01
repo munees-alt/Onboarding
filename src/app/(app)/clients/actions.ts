@@ -516,6 +516,7 @@ export interface NewClientInput {
   trade_licence_no?: string;
   contract_start_date?: string;
   trade_licence_authority?: string;
+  report_frequency?: string;
 }
 
 /** Lifecycle statuses a user can manually set from the Clients list. */
@@ -563,6 +564,7 @@ export async function createClientAction(
       trade_licence_no: tradeLicence,
       contract_start_date: contractStart,
       trade_licence_authority: input.trade_licence_authority?.trim() || null,
+      report_frequency: (["monthly", "quarterly", "annually"].includes(input.report_frequency ?? "") ? input.report_frequency : "monthly"),
       custom_code: customCode,
       status: "lead",
       profile_complete: false,

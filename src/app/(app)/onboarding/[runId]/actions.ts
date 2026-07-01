@@ -1076,12 +1076,13 @@ export async function escalateUrgentComplianceServices(
     return { created: 0, runIds: [] };
   }
 
-  const allowed = new Set(["ct-registration", "vat-registration", "ct-filing", "vat-filing", "audit"]);
+  const allowed = new Set(["ct-registration", "vat-registration", "ct-filing", "vat-filing", "audit", "liquidation"]);
   const picked = services.filter((s) => allowed.has(s));
   if (!picked.length) return { error: "Pick at least one service to escalate, or choose No urgent compliance." };
 
-  // Map picker service IDs → tax_compliance services. Audit isn't a tax-compliance service —
-  // it's an Audit-team workflow, so for now we route audit picks via tax compliance with a note.
+  // Map picker service IDs → tax_compliance services. Audit and Liquidation aren't
+  // tax-compliance services — they're Audit/Liquidation-team workflows, so we route
+  // those picks via tax compliance with a note for the team to open a case.
   const SERVICE_MAP: Record<string, string> = {
     "ct-registration": "ct_reg",
     "vat-registration": "vat_reg",
@@ -1090,6 +1091,7 @@ export async function escalateUrgentComplianceServices(
   };
   const taxServices = [...new Set(picked.map((p) => SERVICE_MAP[p]).filter(Boolean))];
   const hasAudit = picked.includes("audit");
+  const hasLiquidation = picked.includes("liquidation");
 
   const head = await findTaxHead(run.org_id);
   const lead = await findTaxTeamLead(run.org_id, head?.id);
@@ -1100,6 +1102,7 @@ export async function escalateUrgentComplianceServices(
   const noteParts: string[] = [];
   noteParts.push(`Escalated from onboarding run ${runId}.`);
   if (hasAudit) noteParts.push("Includes Statutory Audit — coordinate with Audit team.");
+  if (hasLiquidation) noteParts.push("Includes Liquidation — coordinate with Liquidation team.");
 
   const { error: upsertErr } = await admin.from("tax_compliance_records").upsert(
     {
@@ -1122,6 +1125,7 @@ export async function escalateUrgentComplianceServices(
       if (p === "vat-registration") return "VAT Registration";
       if (p === "ct-filing") return "CT Filing";
       if (p === "vat-filing") return "VAT Filing";
+      if (p === "liquidation") return "Liquidation";
       return "Statutory Audit";
     });
     const taxLine = `${client?.name ?? "Client"} — new tax case (${serviceLabels.join(", ")})`;

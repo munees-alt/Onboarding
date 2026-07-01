@@ -31,10 +31,14 @@ export function AuditLiquidationView({
   boards,
   clients,
   canCreate,
+  title,
+  lockedFlow,
 }: {
   boards: Board[];
   clients: { id: string; name: string }[];
   canCreate: boolean;
+  title?: string;
+  lockedFlow?: "audit" | "liquidation";
 }) {
   const [flow, setFlow] = useState(boards[0]?.flow ?? "audit");
   const [newOpen, setNewOpen] = useState(false);
@@ -59,7 +63,7 @@ export function AuditLiquidationView({
       <div className="page" style={{ maxWidth: "none" }}>
         <div className="section-head">
           <div>
-            <h2>Liquidation &amp; Audit</h2>
+            <h2>{title ?? "Liquidation & Audit"}</h2>
             <div className="sub">Cases flow left to right across the stages. Click a card to open and work the case.</div>
           </div>
           {canCreate && (
@@ -67,7 +71,8 @@ export function AuditLiquidationView({
           )}
         </div>
 
-        {/* Flow toggle */}
+        {/* Flow toggle — only when this view holds more than one board */}
+        {boards.length > 1 && (
         <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 9, padding: 3, gap: 2, marginBottom: 16 }}>
           {boards.map((b) => (
             <button
@@ -80,6 +85,7 @@ export function AuditLiquidationView({
             </button>
           ))}
         </div>
+        )}
 
         {total === 0 ? (
           <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: "56px 40px", textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
@@ -120,7 +126,8 @@ export function AuditLiquidationView({
       {newOpen && (
         <NewCaseModal
           clients={clients}
-          defaultFlow={flow as "audit" | "liquidation"}
+          defaultFlow={(lockedFlow ?? flow) as "audit" | "liquidation"}
+          lockedFlow={lockedFlow}
           onClose={() => setNewOpen(false)}
         />
       )}
@@ -131,10 +138,12 @@ export function AuditLiquidationView({
 function NewCaseModal({
   clients,
   defaultFlow,
+  lockedFlow,
   onClose,
 }: {
   clients: { id: string; name: string }[];
   defaultFlow: "audit" | "liquidation";
+  lockedFlow?: "audit" | "liquidation";
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -158,13 +167,15 @@ function NewCaseModal({
       <div className="modal" style={{ width: 480 }} onClick={(e) => e.stopPropagation()}>
         <div className="hd"><h3>New case</h3><div className="sub">Creates the case and opens it. The team is assigned in the first stage.</div></div>
         <div className="bd" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div className="field">
-            <label>Case type</label>
-            <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8, padding: 3, gap: 2 }}>
-              <button type="button" className={"tab-pill" + (flow === "audit" ? " active" : "")} onClick={() => setFlow("audit")} style={{ padding: "6px 16px" }}>Audit</button>
-              <button type="button" className={"tab-pill" + (flow === "liquidation" ? " active" : "")} onClick={() => setFlow("liquidation")} style={{ padding: "6px 16px" }}>Liquidation</button>
+          {!lockedFlow && (
+            <div className="field">
+              <label>Case type</label>
+              <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8, padding: 3, gap: 2 }}>
+                <button type="button" className={"tab-pill" + (flow === "audit" ? " active" : "")} onClick={() => setFlow("audit")} style={{ padding: "6px 16px" }}>Audit</button>
+                <button type="button" className={"tab-pill" + (flow === "liquidation" ? " active" : "")} onClick={() => setFlow("liquidation")} style={{ padding: "6px 16px" }}>Liquidation</button>
+              </div>
             </div>
-          </div>
+          )}
           <div className="field">
             <label>Client</label>
             {clients.length === 0 ? (

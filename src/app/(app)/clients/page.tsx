@@ -17,7 +17,7 @@ export default async function ClientsPage() {
 
   const { data: allClients } = await supabase
     .from("clients")
-    .select("id,name,owner_name,industry,entity_type,status,services,primary_contact_email,phone,profile_complete,am_id,custom_code,trade_licence_no,trade_licence_authority,contract_start_date,target_go_live,expected_onboarding_days,proposal_id,group_id")
+    .select("id,name,owner_name,industry,entity_type,status,services,primary_contact_email,phone,profile_complete,am_id,custom_code,trade_licence_no,trade_licence_authority,contract_start_date,target_go_live,expected_onboarding_days,proposal_id,group_id,report_frequency")
     .order("created_at", { ascending: true });
 
   const { data: groups } = await supabase

@@ -30,9 +30,12 @@ async function getSubtreeIds(orgId: string, rootId: string): Promise<Set<string>
   return visited;
 }
 
-const TEMPLATE_IDS = ["audit-workflow", "liquidation-workflow"];
-
-export default async function AuditLiquidationPage() {
+// Audit and Liquidation are now two separate sections. This shared renderer is
+// scoped to a single flow ("audit" | "liquidation") and its nav id; the thin
+// /audit and /liquidation route files call it. /audit-liquidation redirects here.
+export async function renderAuditLiquidationSection(flow: "audit" | "liquidation", navId: string) {
+  const templateId = flow === "liquidation" ? "liquidation-workflow" : "audit-workflow";
+  const title = flow === "liquidation" ? "Liquidation" : "Audit";
   const session = await getSession();
   if (!session?.profile.org_id) redirect("/login");
   const orgId = session.profile.org_id;
@@ -52,13 +55,13 @@ export default async function AuditLiquidationPage() {
   }
   // Access panel overrides (dept / user / role) always win over the default above.
   const matrix = await getAccessMatrix(orgId);
-  hasAccess = resolveNavAccess(matrix, { role, memberId: currentMemberId, dept: session.teamMember?.dept ?? null }, "audit-liquidation", hasAccess);
+  hasAccess = resolveNavAccess(matrix, { role, memberId: currentMemberId, dept: session.teamMember?.dept ?? null }, navId, hasAccess);
 
   if (!hasAccess) {
     return (
       <div style={{ padding: 48, textAlign: "center", color: "var(--ink-3)", fontSize: 14 }}>
         <p style={{ fontWeight: 700, fontSize: 20, color: "var(--ink-1)" }}>Access restricted</p>
-        <p>This section is only accessible to the Liquidation &amp; Audit team.</p>
+        <p>This section is only accessible to the {title} team.</p>
       </div>
     );
   }
@@ -68,17 +71,18 @@ export default async function AuditLiquidationPage() {
     .from("onboarding_runs")
     .select("id,template_key,status")
     .eq("org_id", orgId)
-    .in("template_key", TEMPLATE_IDS)
+    .eq("template_key", templateId)
     .not("status", "eq", "archived");
   const runIds = (runRows ?? []).map((r) => r.id as string);
   const cards = runIds.length ? await getRunCards(supabase, runIds) : [];
 
-  const stagesFor = (templateId: string) =>
-    (templateById(templateId)?.stages ?? []).map((s, i) => ({ no: i + 1, name: s.name }));
-
-  const view = TEMPLATE_IDS.map((templateId) => {
-    const tpl = templateById(templateId);
-    const templateCards = cards
+  const tpl = templateById(templateId);
+  const board = {
+    flow,
+    templateId,
+    name: tpl?.name ?? title,
+    stages: (tpl?.stages ?? []).map((s, i) => ({ no: i + 1, name: s.name })),
+    cards: cards
       .filter((c) => c.templateKey === templateId)
       .map((c) => ({
         id: c.id,
@@ -89,20 +93,17 @@ export default async function AuditLiquidationPage() {
         status: c.status,
         amName: c.amName,
         teamLeadName: c.teamLeadName,
-      }));
-    return {
-      flow: tpl?.flow ?? templateId,
-      templateId,
-      name: tpl?.name ?? templateId,
-      stages: stagesFor(templateId),
-      cards: templateCards,
-    };
-  });
+      })),
+  };
 
   // Clients that don't yet have an open case, for the "New case" picker.
   const { data: clientRows } = await admin
     .from("clients").select("id,name").eq("org_id", orgId).order("name");
   const clients = (clientRows ?? []).map((c) => ({ id: c.id as string, name: c.name as string }));
 
-  return <AuditLiquidationView boards={view} clients={clients} canCreate={["admin", "ops_head", "am", "team_lead"].includes(role)} />;
+  return <AuditLiquidationView boards={[board]} title={title} lockedFlow={flow} clients={clients} canCreate={["admin", "ops_head", "am", "team_lead"].includes(role)} />;
+}
+
+export default async function AuditLiquidationPage() {
+  redirect("/audit");
 }

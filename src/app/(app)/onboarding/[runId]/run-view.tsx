@@ -5722,7 +5722,8 @@ function UrgentConfigModal({
     { id: "vat-registration", label: "VAT Registration" },
     { id: "ct-filing", label: "Corporate Tax Filing" },
     { id: "vat-filing", label: "VAT Filing" },
-    { id: "audit", label: "Statutory Audit", note: "Uses the CT Filing template" },
+    { id: "audit", label: "Statutory Audit", note: "Routed to the Audit team" },
+    { id: "liquidation", label: "Liquidation", note: "Routed to the Liquidation team" },
   ];
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [saving, start] = useTransition();

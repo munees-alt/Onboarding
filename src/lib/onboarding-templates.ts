@@ -258,7 +258,7 @@ const MICRO_TEAM: OnbTemplate = {
   teamLabel: "Micro team (Lead + Team Lead + assigned senior)",
   desc: "Fast onboarding for smaller clients — same disciplined flow as Medium Team PLUS a branded, contract-scoped onboarding deck for the call and urgent-compliance routing.",
   color: "orange", live: true, usedBy: 0,
-  event: "onboarding", flow: "client-onboarding-master",
+  event: "onboarding", flow: "client-onboarding",
   stages: [
     { id: "m1", name: "Assign Roles", targetDays: 1, desc: "AM assigns the Team Lead, Senior and Junior who will run this onboarding.", steps: [
       { id: "m1.1", title: "Run auto-created from template", kind: "ai", who: ["System"], pre: true, note: "Created the moment the client was marked signed — the Drive folder is auto-provisioned at the same time." },
@@ -393,7 +393,7 @@ const CATCHUP_RUN: OnbTemplate = {
   live: true,
   usedBy: 0,
   category: "Catch-up",
-  event: "onboarding", flow: "client-onboarding-master",
+  event: "accounting", flow: "catchup-accounting",
   stages: [
     // 1. Role assignment ────────────────────────────────────────────────────
     { id: "cu1", name: "Assign Roles", desc: "Assign the Team Lead (default: Aarju K) and the team members under her who will work this catch-up.", steps: [
@@ -881,7 +881,7 @@ const AUDIT_WORKFLOW: OnbTemplate = {
   live: true,
   usedBy: 0,
   category: "Audit",
-  event: "audit-liquidation",
+  event: "compliance",
   flow: "audit",
   stages: [
     { id: "au1", name: "Assign Roles", targetDays: 1, desc: "Assign the Team Lead (default: Aarju) and the team member who will run this audit.", steps: [
@@ -938,7 +938,7 @@ const LIQUIDATION_WORKFLOW: OnbTemplate = {
   live: true,
   usedBy: 0,
   category: "Liquidation",
-  event: "audit-liquidation",
+  event: "compliance",
   flow: "liquidation",
   stages: [
     { id: "li1", name: "Assign Roles", targetDays: 1, desc: "Assign the Team Lead (default: Aarju) and the team member who will run this liquidation.", steps: [
@@ -1076,9 +1076,10 @@ export const ARCHIVED_TEMPLATE_IDS = new Set<string>([
   "fta-amendment",
   "aml-review",
   "compliance-doc-collection",
-  // Liquidation & Audit cases live in their own section, not the onboarding/templates pickers.
-  "audit-workflow",
-  "liquidation-workflow",
+  // Audit & Liquidation templates ARE browsable in the Templates gallery (under
+  // event "compliance"), but must never appear in the onboarding "new run"
+  // picker — that exclusion is handled by category (Audit/Liquidation ≠
+  // Onboarding) in onboarding-hub, so they are intentionally NOT archived here.
 ]);
 
 export function stepCount(t: OnbTemplate) {

@@ -24,6 +24,7 @@ export interface RunCardData {
   daysToTarget: number | null;
   industry: string | null;
   contractStartDate: string | null;
+  reportFrequency: string | null;
 }
 
 /**
@@ -63,7 +64,7 @@ export async function getRunCards(
   const ids = runs.map((r) => r.id);
 
   const [{ data: clients }, ams, { data: stages }, { data: rt }] = await Promise.all([
-    supabase.from("clients").select("id,name,industry,contract_start_date").in("id", clientIds),
+    supabase.from("clients").select("id,name,industry,contract_start_date,report_frequency").in("id", clientIds),
     amIds.length
       ? supabase.from("team_members").select("id,full_name").in("id", amIds)
       : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
@@ -94,6 +95,7 @@ export async function getRunCards(
       clientName: clientMap[r.client_id]?.name ?? "Client",
       industry: (clientMap[r.client_id] as { industry?: string | null } | undefined)?.industry ?? null,
       contractStartDate: (clientMap[r.client_id] as { contract_start_date?: string | null } | undefined)?.contract_start_date ?? null,
+      reportFrequency: (clientMap[r.client_id] as { report_frequency?: string | null } | undefined)?.report_frequency ?? null,
       templateName: templateById(r.template_key)?.name ?? "Onboarding",
       templateKey: r.template_key,
       amName: r.am_id ? aName[r.am_id] ?? null : null,

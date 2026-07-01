@@ -38,6 +38,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   const [fStatus, setFStatus] = useState<string>("all");
   const [fIndustry, setFIndustry] = useState<string>("all");
   const [fMonth, setFMonth] = useState<string>("all"); // YYYY-MM
+  const [fFrequency, setFFrequency] = useState<string>("all");
   const [confirmDel, setConfirmDel] = useState<{ id: string; name: string } | null>(null);
   const [confirmComplete, setConfirmComplete] = useState<{ id: string; name: string } | null>(null);
   const [busy, startDel] = useTransition();
@@ -82,10 +83,11 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
     }
     if (fIndustry !== "all" && r.industry !== fIndustry) return false;
     if (fMonth !== "all" && (r.contractStartDate ?? "").slice(0, 7) !== fMonth) return false;
+    if (fFrequency !== "all" && (r.reportFrequency ?? "monthly") !== fFrequency) return false;
     return true;
   });
-  const filtersActive = !!fSearch.trim() || fStage !== "all" || fAm !== "all" || fTeamLead !== "all" || fTemplate !== "all" || fStatus !== "all" || fIndustry !== "all" || fMonth !== "all";
-  const resetFilters = () => { setFSearch(""); setFStage("all"); setFAm("all"); setFTeamLead("all"); setFTemplate("all"); setFStatus("all"); setFIndustry("all"); setFMonth("all"); };
+  const filtersActive = !!fSearch.trim() || fStage !== "all" || fAm !== "all" || fTeamLead !== "all" || fTemplate !== "all" || fStatus !== "all" || fIndustry !== "all" || fMonth !== "all" || fFrequency !== "all";
+  const resetFilters = () => { setFSearch(""); setFStage("all"); setFAm("all"); setFTeamLead("all"); setFTemplate("all"); setFStatus("all"); setFIndustry("all"); setFMonth("all"); setFFrequency("all"); };
 
   const doDeleteRun = () => {
     if (!confirmDel) return;
@@ -161,17 +163,19 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
               status={fStatus} onStatus={setFStatus}
               industry={fIndustry} onIndustry={setFIndustry} industryOptions={industryOptions}
               month={fMonth} onMonth={setFMonth} monthOptions={monthOptions}
+              frequency={fFrequency} onFrequency={setFFrequency}
               filtersActive={filtersActive} onReset={resetFilters}
             />
             {runs.length ? (
               <div className="runs-card" style={{ marginTop: 4 }}>
                 <table className="runs-table">
-                  <thead><tr><th>Client</th><th>Template</th><th>Current stage</th><th>Progress</th><th>SLA</th><th></th></tr></thead>
+                  <thead><tr><th>Client</th><th>Template</th><th>Frequency</th><th>Current stage</th><th>Progress</th><th>SLA</th><th></th></tr></thead>
                   <tbody>
                     {runs.map((r) => (
                       <tr key={r.id} onClick={() => router.push(`/onboarding/${r.id}`)}>
                         <td><div className="client-cell"><div className="client">{r.clientName}</div><div className="wf">AM {r.amName ?? "—"}</div></div></td>
                         <td>{r.templateName}</td>
+                        <td style={{ textTransform: "capitalize" }}>{r.reportFrequency ?? "monthly"}</td>
                         <td>{r.currentStage}. {r.currentStageName ?? "—"}</td>
                         <td><div className="progress-wrap"><div className="progress orange"><i style={{ width: `${r.progress}%` }} /></div><span className="progress-pct">{r.progress}%</span></div></td>
                         <td><SlaPill sla={r.sla} days={r.daysToTarget} /></td>
@@ -195,12 +199,13 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
         {tab === "clients" && (
           <div className="runs-card" style={{ marginTop: 4 }}>
             <table className="runs-table">
-              <thead><tr><th>Client</th><th>Template</th><th>Current stage</th><th>Progress</th><th></th></tr></thead>
+              <thead><tr><th>Client</th><th>Template</th><th>Frequency</th><th>Current stage</th><th>Progress</th><th></th></tr></thead>
               <tbody>
                 {runs.map((r) => (
                   <tr key={r.id} onClick={() => router.push(`/onboarding/${r.id}`)}>
                     <td><div className="client-cell"><div className="client">{r.clientName}</div><div className="wf">AM {r.amName ?? "—"}</div></div></td>
                     <td>{r.templateName}</td>
+                    <td style={{ textTransform: "capitalize" }}>{r.reportFrequency ?? "monthly"}</td>
                     <td>{r.currentStage}. {r.currentStageName}</td>
                     <td><div className="progress-wrap"><div className="progress orange"><i style={{ width: `${r.progress}%` }} /></div><span className="progress-pct">{r.progress}%</span></div></td>
                     <td onClick={(e) => e.stopPropagation()}>
@@ -284,7 +289,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
 }
 
 function RunFilterBar({
-  search, onSearch, stage, onStage, stageOptions, am, onAm, amOptions, teamLead, onTeamLead, teamLeadOptions, template, onTemplate, tplOptions, status, onStatus, industry, onIndustry, industryOptions, month, onMonth, monthOptions, filtersActive, onReset,
+  search, onSearch, stage, onStage, stageOptions, am, onAm, amOptions, teamLead, onTeamLead, teamLeadOptions, template, onTemplate, tplOptions, status, onStatus, industry, onIndustry, industryOptions, month, onMonth, monthOptions, frequency, onFrequency, filtersActive, onReset,
 }: {
   search: string; onSearch: (s: string) => void;
   stage: string; onStage: (s: string) => void; stageOptions: { value: string; label: string }[];
@@ -294,6 +299,7 @@ function RunFilterBar({
   status: string; onStatus: (s: string) => void;
   industry: string; onIndustry: (s: string) => void; industryOptions: string[];
   month: string; onMonth: (s: string) => void; monthOptions: string[];
+  frequency: string; onFrequency: (s: string) => void;
   filtersActive: boolean; onReset: () => void;
 }) {
   const ctrl: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px", fontSize: 12.5, background: "#fff", height: 32 };
@@ -347,6 +353,12 @@ function RunFilterBar({
           {monthOptions.map((m) => <option key={m} value={m}>{new Date(m + "-01").toLocaleDateString("en-GB", { month: "short", year: "numeric" })}</option>)}
         </select>
       )}
+      <select value={frequency} onChange={(e) => onFrequency(e.target.value)} style={ctrl} title="Filter by report frequency">
+        <option value="all">All frequencies</option>
+        <option value="monthly">Monthly</option>
+        <option value="quarterly">Quarterly</option>
+        <option value="annually">Annually</option>
+      </select>
       {filtersActive && (
         <button className="btn-ghost" onClick={onReset} style={{ height: 32 }}>
           <Icon name="x" size={12} /> Clear filters
