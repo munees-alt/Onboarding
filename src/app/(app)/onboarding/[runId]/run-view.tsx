@@ -9,7 +9,7 @@ import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboard
 import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, CREDENTIALS_SOP, accessTypeById, clientEmailSlug, type AccessItem, type AccessMode } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, completeOnboarding, dispatchMagicLink, dispatchIntakeLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateUrgentComplianceServices, escalateCatchup, suggestCatchupAssignee, getCatchupGautham, setRunBlocked, suggestAssignee, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveExistingDriveLink, saveAccess, saveContractAnalysis, saveAccountingSoftware, createComplianceRenewalRun, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, listTemplatesLite, saveLinkedSops, createSalesUploadLink, revealAccessCredentials, suggestTaxAssignee, pushCoaToZoho, markDocReceivedOutside, markAccessReceivedOutside, addDocFollowupNote, addAccessFollowupNote, deleteRun, forceCompleteRun, getTaxAssignDefaults, saveTaxAssign, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, forceCompleteStep, completeOnboarding, dispatchMagicLink, dispatchIntakeLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateUrgentComplianceServices, escalateCatchup, suggestCatchupAssignee, getCatchupGautham, setRunBlocked, suggestAssignee, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveExistingDriveLink, saveAccess, saveContractAnalysis, saveAccountingSoftware, createComplianceRenewalRun, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, listTemplatesLite, saveLinkedSops, createSalesUploadLink, revealAccessCredentials, suggestTaxAssignee, pushCoaToZoho, markDocReceivedOutside, markAccessReceivedOutside, addDocFollowupNote, addAccessFollowupNote, deleteRun, forceCompleteRun, getTaxAssignDefaults, saveTaxAssign, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
 import { loadSlackComposerOptions, listRunAttachableDocs, sendSlackSetupRequest } from "./slack-actions";
 import { runBankReconForCatchup, getBankReconResult, confirmBankReconReady, type BankReconResult } from "./bank-recon-actions";
 import { getPortalAccessCode } from "@/app/portal/[token]/actions";
@@ -348,6 +348,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
                           busy={busy}
                           onOpenAct={() => openAct(step)}
                           onRollback={() => run(() => rollbackStep(detail.runId, step.id), "Step reopened")}
+                          onForceComplete={() => run(() => forceCompleteStep(detail.runId, step.id), `${step.title} — force-completed`)}
                           onAssignMembers={(members) => run(() => assignStepMembers(detail.runId, step.id, members), members.length ? `Assigned ${members.length} ${members.length === 1 ? "person" : "people"}` : "Step skipped")}
                         />
                       ))}
@@ -1407,7 +1408,7 @@ function AssignPicker({
 }
 
 function StepBox({
-  step, assignRole, status, isActive, canEdit, assignedName, people, busy, onOpenAct, onRollback, onAssignMembers,
+  step, assignRole, status, isActive, canEdit, assignedName, people, busy, onOpenAct, onRollback, onForceComplete, onAssignMembers,
 }: {
   step: TemplateStep;
   assignRole: string | null;
@@ -1419,8 +1420,11 @@ function StepBox({
   busy: boolean;
   onOpenAct: () => void;
   onRollback: () => void;
+  onForceComplete: () => void;
   onAssignMembers: (members: { id: string; name: string; role: string }[]) => void;
 }) {
+  const { effectiveRole } = useIdentity();
+  const masterAdmin = isMasterAdmin(effectiveRole as Parameters<typeof isMasterAdmin>[0]);
   const ki = KIND_ICON[step.kind] ?? KIND_ICON.person;
   const done = status === "complete";
   const isAssign = step.act?.type === "assign";
@@ -1484,6 +1488,21 @@ function StepBox({
           {!done && !isAuto && !canEdit && (
             <div style={{ marginTop: 10, fontSize: 12, color: "var(--ink-3)", display: "flex", alignItems: "center", gap: 6 }}>
               <Icon name="lock" size={12} /> {stepRequiredRole(step) ? `${ROLE_NICE[stepRequiredRole(step)!] ?? stepRequiredRole(step)}'s step — view only` : "View only"}
+            </div>
+          )}
+          {/* Master-admin override — mark any incomplete step done, bypassing its
+              normal requirements. Strictly admin-only (server also enforces). */}
+          {!done && !isAuto && masterAdmin && (
+            <div style={{ marginTop: 8 }}>
+              <button
+                className="btn-ghost"
+                disabled={busy}
+                onClick={onForceComplete}
+                title="Master admin: mark this step complete, bypassing its normal requirements"
+                style={{ fontSize: 11.5, color: "var(--ink-3)" }}
+              >
+                <Icon name="shield-check" size={12} /> Force complete (admin)
+              </button>
             </div>
           )}
           {/* Completed steps stay viewable — and editable for anyone allowed; the team is notified on change. */}
@@ -2655,9 +2674,18 @@ function DiagramBuilderModal({
 const ITEM_FIELDS: Record<string, { k: string; l: string; opts?: string[] }[]> = {
   catchup: [{ k: "title", l: "Task" }, { k: "owner", l: "Owner" }, { k: "due", l: "Due" }],
   project: [{ k: "task", l: "Task" }, { k: "cadence", l: "Cadence" }, { k: "when", l: "When" }],
-  compliance: [{ k: "label", l: "Item" }, { k: "date", l: "Due date" }, { k: "type", l: "Type", opts: ["VAT", "CT", "WPS", "Doc expiry", "Other"] }],
+  compliance: [{ k: "label", l: "Document" }, { k: "date", l: "Expiry" }, { k: "type", l: "Type", opts: ["VAT", "CT", "WPS", "Doc expiry", "Other"] }],
 };
 const CADENCES = ["daily", "weekly", "biweekly", "monthly"];
+
+// Compliance calendar: default the reminder to 30 days before the document's
+// expiry (editable). Empty when the expiry isn't a valid YYYY-MM-DD date.
+function reminderFromExpiry(expiry?: string): string {
+  if (!expiry || !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) return "";
+  const d = new Date(expiry + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - 30);
+  return d.toISOString().slice(0, 10);
+}
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const ITEM_TITLE: Record<string, string> = { catchup: "Catch-up board", project: "Internal projects & tasks", compliance: "Compliance calendar" };
 
@@ -2725,7 +2753,7 @@ function ItemsBuilderModal({
     const r = await generateCompliance(runId);
     setAiBusy(false);
     if (r.error) setInfo(r.error);
-    else if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type, reminderDays: String(i.reminderDays ?? 30) })));
+    else if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type, reminderDays: String(i.reminderDays ?? 30), reminderDate: reminderFromExpiry(i.date) })));
   };
   const aiComplianceDocs = async () => {
     setAiBusy(true); setInfo(null);
@@ -2733,7 +2761,7 @@ function ItemsBuilderModal({
     setAiBusy(false);
     if (r.error) { setInfo(r.error); return; }
     if (r.empty) { setInfo(r.scanned ? "Read the uploaded documents but found no expiry/renewal dates in them." : "No documents in the folder yet — the calendar is built from your documents' expiry dates. Ask the client to upload documents first."); return; }
-    if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type, reminderDays: String(i.reminderDays ?? 30) })));
+    if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type, reminderDays: String(i.reminderDays ?? 30), reminderDate: reminderFromExpiry(i.date) })));
   };
   const aiRecurring = async () => { setAiBusy(true); setInfo(null); const r = await generateRecurringTasks(runId, pBrief); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ task: i.task, cadence: CADENCES.includes(i.cadence) ? i.cadence : "monthly", when: i.when }))); };
   // Spin a tracked compliance item into a lightweight renewal run (one task, no config) in My Work.
@@ -2911,7 +2939,7 @@ function ItemsBuilderModal({
             </table>
           ) : (
           <table className="runs-table" style={{ border: "1px solid var(--border)", borderRadius: 8 }}>
-            <thead><tr>{fields.map((f) => <th key={f.k}>{f.l}</th>)}{kind === "compliance" && <th title="Days before the due date that an AM heads-up is fired">Reminder (days)</th>}<th></th></tr></thead>
+            <thead><tr>{fields.map((f) => <th key={f.k}>{f.l}</th>)}{kind === "compliance" && <th title="A reminder is fired on this date (defaults to 30 days before expiry)">Reminder to set</th>}<th></th></tr></thead>
             <tbody>
               {rows.map((row, i) => (
                 <tr key={i}>
@@ -2928,12 +2956,12 @@ function ItemsBuilderModal({
                           <option value="">—</option>{f.opts.map((o) => <option key={o} value={o}>{o}</option>)}
                         </select>
                       ) : (
-                        <input value={row[f.k] ?? ""} onChange={(e) => setCell(i, f.k, e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, width: "100%" }} />
+                        <input type={kind === "compliance" && f.k === "date" ? "date" : "text"} value={row[f.k] ?? ""} onChange={(e) => setCell(i, f.k, e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, width: "100%" }} />
                       )}
                     </td>
                   ))}
                   {kind === "compliance" && (
-                    <td><input type="number" min={1} value={row.reminderDays ?? "30"} onChange={(e) => setCell(i, "reminderDays", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, width: 80 }} /></td>
+                    <td><input type="date" value={row.reminderDate ?? ""} onChange={(e) => setCell(i, "reminderDate", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 8px", fontSize: 12.5, width: 150 }} /></td>
                   )}
                   <td style={{ whiteSpace: "nowrap" }}>
                     {kind === "compliance" && (row.label || row.type) && (

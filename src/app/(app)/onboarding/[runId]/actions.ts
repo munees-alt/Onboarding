@@ -238,6 +238,29 @@ export async function completeStep(runId: string, stepId: string) {
   return {};
 }
 
+/**
+ * MASTER ADMIN ONLY. Marks a step complete bypassing every normal requirement —
+ * role gating, action modals, gates, prerequisites. Strictly gated to role
+ * "admin" (Munees / CEO); everyone else is refused. Use for corrections /
+ * unblocking, not routine work.
+ */
+export async function forceCompleteStep(runId: string, stepId: string) {
+  const session = await getSession();
+  const role = session?.teamMember?.role ?? session?.profile.role;
+  if (role !== "admin") return { error: "Force-complete is restricted to the master admin." };
+  const supabase = await createClient();
+  const { data: run } = await supabase.from("onboarding_runs").select("template_key").eq("id", runId).maybeSingle();
+  if (!run) return { error: "Run not found." };
+  const r = await upsertStep(supabase, runId, run.template_key, stepId, {
+    status: "complete",
+    completed_at: new Date().toISOString(),
+  });
+  if (r.error) return r;
+  await recompute(supabase, runId, run.template_key);
+  revalidatePath(`/onboarding/${runId}`);
+  return {};
+}
+
 export async function assignStep(runId: string, stepId: string, memberId: string, name: string) {
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("template_key,am_id").eq("id", runId).maybeSingle();
