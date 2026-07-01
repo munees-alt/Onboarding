@@ -402,7 +402,8 @@ const CATCHUP_RUN: OnbTemplate = {
     ] },
 
     // 2. Drive + document & access verification ─────────────────────────────
-    { id: "cu2", name: "Drive & Verification", desc: "Open the client Drive, cross-check every document and every Zoho Vault access, and draft a message for anything missing.", steps: [
+    { id: "cu2", name: "Drive & Verification", desc: "Send the client the kickoff document request, open the client Drive, cross-check every document and every Zoho Vault access, and draft a message for anything missing.", steps: [
+      { id: "cu2.0", title: "Draft document request to client", kind: "ai", who: ["AI", "Team Lead"], note: "Draft the kickoff document-request message to the client — bookkeeping documents + FTA/EmaraTax portal access steps. Signed from the assigned Team Lead + teammate, with the client Drive link filled in. Edit before sending.", act: { type: "catchup_docrequest", btn: "Draft document request" } },
       { id: "cu2.1", title: "Open client Drive folder", kind: "link", who: ["Senior"], note: "The Drive folder is auto-created at client creation. Use this to access it.", act: { type: "drivelink", btn: "Open Drive folder" } },
       { id: "cu2.2", title: "Document checklist (Drive)", kind: "person", who: ["Senior"], note: "Tick each document present in the catch-up Drive folder. Items left unticked feed the missing-items draft message below. You can rename / add / remove items.", act: { type: "checklist", btn: "Documents verified", items: ["Trade Licence", "MOA / AOA", "Bank statements (catch-up period)", "Sales invoices", "Vendor bills", "Contracts (if any)", "Salary sheet (if any)", "Tracker (if any)"] } },
       { id: "cu2.3", title: "Access checklist (Zoho Vault)", kind: "person", who: ["Senior"], note: "Tick each access available in Zoho Vault. Items left unticked feed the missing-items draft message.", act: { type: "checklist", btn: "Access verified", items: ["FTA portal access", "Bank access", "Payment gateway access (if any)", "Other (specify)"] } },
@@ -866,6 +867,122 @@ const AML_REVIEW: OnbTemplate = {
   taskboard: [],
 };
 
+// ── Audit workflow (Liquidation & Audit section) ─────────────────────────────
+// Stage-based workflow surfaced as a Kanban board (columns = stages) in the
+// Liquidation & Audit section. Cases are created from the "Cadence Audit and
+// Liquidation" Gmail automation (or manually). Default Team Lead: Aarju.
+const AUDIT_WORKFLOW: OnbTemplate = {
+  id: "audit-workflow",
+  name: "Audit",
+  tier: "Audit",
+  teamLabel: "Audit team (Team Lead: Aarju + assigned member)",
+  desc: "End-to-end statutory audit coordination: assign the team, request documents from the client, extract turnover + authority, request a quote from the auditor, AI-review the auditor's draft against the client's financials, deliver to the client and close with signed reports.",
+  color: "blue",
+  live: true,
+  usedBy: 0,
+  category: "Audit",
+  event: "audit-liquidation",
+  flow: "audit",
+  stages: [
+    { id: "au1", name: "Assign Roles", targetDays: 1, desc: "Assign the Team Lead (default: Aarju) and the team member who will run this audit.", steps: [
+      { id: "au1.1", title: "Assign Team Lead", kind: "person", who: ["AM"], note: "Default: Aarju. Mark done to accept, or override with another Team Lead.", act: { type: "assign", role: "Team Lead", btn: "Assign Team Lead" } },
+      { id: "au1.2", title: "Assign team member", kind: "person", who: ["Team Lead"], note: "Pick whoever under the Team Lead will handle this audit.", act: { type: "assign", role: "Senior", btn: "Assign team member" } },
+    ] },
+    { id: "au2", name: "Welcome & Documents", targetDays: 3, desc: "Optionally send a welcome message, then send the client the audit document request and confirm everything is received.", steps: [
+      { id: "au2.1", title: "Send welcome message (optional)", kind: "ai", who: ["AI", "Team Lead"], note: "Optional short intro — introduces the assigned teammate and asks the client to confirm the contact channel (email / WhatsApp). Edit before sending.", act: { type: "audit_welcome", btn: "Draft welcome message", optional: true } },
+      { id: "au2.2", title: "Send document request to client", kind: "ai", who: ["AI", "Team Lead"], note: "Drafts the full audit document request (VAT/CT certificates, FTA returns, bank statements, financials, WPS, loans, related parties, receivables/payables, fixed assets, tenancy, legal docs). Edit before sending.", act: { type: "audit_docrequest", btn: "Draft document request" } },
+      { id: "au2.3", title: "Documents received — checklist", kind: "person", who: ["Senior"], note: "Confirm the client has shared everything before extraction.", act: { type: "checklist", btn: "Confirm received", items: ["VAT & CT certificates", "FTA VAT returns (audit periods)", "Bank statements (audit periods)", "Prior-year audit report (if any)", "Current-year financials (BS / P&L / TB)", "WPS / salary docs", "Loan documents (if any)", "Related-party licences & confirmations", "Receivables & payables list", "Fixed assets / PPE / lease / legal docs"] } },
+    ] },
+    { id: "au3", name: "Extract & Auditor Request", targetDays: 3, desc: "Extract the key figures from the client's documents, then request a quote and scope from the auditor.", steps: [
+      { id: "au3.1", title: "Extract details from Drive", kind: "person", who: ["Senior"], note: "Open the client Drive and capture the values the auditor email needs — turnover (from the P&L or other financials), the trade-licence authority, and the audit purpose + year (from the contract). Record them in the notes.", act: { type: "checklist", btn: "Details captured", items: ["Drive reviewed", "Turnover captured from P&L / financials", "Trade-licence authority captured", "Audit purpose & year captured from contract"] } },
+      { id: "au3.2", title: "Email auditor — quote & scope", kind: "ai", who: ["AI", "Team Lead"], note: "Drafts the request to the auditor with purpose, audit year, authority and turnover, and asks for the fee before starting. Paste the extracted values in the notes; edit before sending.", act: { type: "audit_auditor_email", btn: "Draft auditor email" } },
+      { id: "au3.3", title: "Additional info requested by auditor (optional)", kind: "ai", who: ["AI", "Team Lead"], note: "Optional — if the auditor asks for more, paste their message + any notes and AI drafts a reply using the client document context. Edit before sending.", act: { type: "audit_client_reply", btn: "Draft reply", optional: true } },
+    ] },
+    { id: "au4", name: "Report Review", targetDays: 5, desc: "The auditor returns a draft report. AI cross-checks it against the client's P&L, balance sheet and financials, and flags mismatches to resolve.", steps: [
+      { id: "au4.1", title: "AI review — draft report vs financials", kind: "ai", who: ["AI", "Team Lead"], note: "Paste the auditor's draft report figures / key numbers. AI cross-checks against the client's P&L, balance sheet and financial statements and returns a feedback list of matches and mismatches.", act: { type: "audit_report_review", btn: "Run AI review" } },
+      { id: "au4.2", title: "Resolve review points with auditor", kind: "person", who: ["Team Lead"], note: "Work every flagged mismatch with the auditor until the report is clean.", act: { type: "checklist", btn: "All points resolved", items: ["Mismatches raised with auditor", "Corrections confirmed", "Final draft agreed"] } },
+    ] },
+    { id: "au5", name: "Delivery & Sign-off", targetDays: 5, desc: "Send the draft to the client, collect any feedback and payment, then close with the signed reports.", steps: [
+      { id: "au5.1", title: "Send draft report to client", kind: "ai", who: ["AI", "Team Lead"], note: "Drafts a message to the client sharing the draft audit report for review. Edit before sending.", act: { type: "audit_send_report", btn: "Draft client message" } },
+      { id: "au5.2", title: "Client feedback / additional info (optional)", kind: "ai", who: ["AI", "Team Lead"], note: "Optional — if the client comes back with changes, paste their message + notes and AI drafts the reply. Edit before sending.", act: { type: "audit_client_reply", btn: "Draft reply", optional: true } },
+      { id: "au5.3", title: "Payment collection (optional)", kind: "person", who: ["Team Lead"], note: "Optional — confirm the audit fee has been collected.", act: { type: "checklist", btn: "Payment confirmed", items: ["Invoice raised", "Payment received"], optional: true } },
+      { id: "au5.4", title: "Signed report received from client", kind: "person", who: ["Senior"], note: "Confirm the client has signed and returned the report.", act: { type: "checklist", btn: "Client signed", items: ["Signed report received from client", "Uploaded to Drive"] } },
+      { id: "au5.5", title: "Auditor signs & returns final report", kind: "person", who: ["Team Lead"], note: "The auditor signs and returns the final report to us.", act: { type: "checklist", btn: "Auditor signed", items: ["Final signed report received from auditor", "Uploaded to Drive"] } },
+      { id: "au5.6", title: "Send final report to client & complete", kind: "ai", who: ["AI", "Team Lead"], note: "Drafts the closing message sharing the final signed audit report. Sending marks the case complete.", act: { type: "audit_send_report", btn: "Draft final message" } },
+    ], gate: { label: "Both signatures in", after: "au5.5" } },
+  ],
+  intake: [],
+  uploads: [
+    { id: "au-u1", label: "VAT & CT certificates", who: "client" },
+    { id: "au-u2", label: "FTA VAT returns", who: "client" },
+    { id: "au-u3", label: "Bank statements (audit periods)", who: "client" },
+    { id: "au-u4", label: "Prior-year audit report", who: "client" },
+    { id: "au-u5", label: "Current-year financials (BS / P&L / TB)", who: "client" },
+    { id: "au-u6", label: "WPS / salary documents", who: "client" },
+    { id: "au-u7", label: "Loan documents", who: "client" },
+    { id: "au-u8", label: "Related-party licences & confirmations", who: "client" },
+    { id: "au-u9", label: "Legal documents (Licence / MOA / COI / EID / passports)", who: "client" },
+  ],
+  taskboard: [],
+};
+
+// ── Liquidation workflow (Liquidation & Audit section) ────────────────────────
+// Mirrors the Audit workflow; only the client document request differs.
+const LIQUIDATION_WORKFLOW: OnbTemplate = {
+  id: "liquidation-workflow",
+  name: "Liquidation",
+  tier: "Liquidation",
+  teamLabel: "Liquidation team (Team Lead: Aarju + assigned member)",
+  desc: "End-to-end liquidation report coordination: assign the team, request documents from the client, extract the key figures, request a quote from the liquidator/auditor, AI-review the draft against the client's financials, deliver to the client and close with signed reports.",
+  color: "amber",
+  live: true,
+  usedBy: 0,
+  category: "Liquidation",
+  event: "audit-liquidation",
+  flow: "liquidation",
+  stages: [
+    { id: "li1", name: "Assign Roles", targetDays: 1, desc: "Assign the Team Lead (default: Aarju) and the team member who will run this liquidation.", steps: [
+      { id: "li1.1", title: "Assign Team Lead", kind: "person", who: ["AM"], note: "Default: Aarju. Mark done to accept, or override with another Team Lead.", act: { type: "assign", role: "Team Lead", btn: "Assign Team Lead" } },
+      { id: "li1.2", title: "Assign team member", kind: "person", who: ["Team Lead"], note: "Pick whoever under the Team Lead will handle this liquidation.", act: { type: "assign", role: "Senior", btn: "Assign team member" } },
+    ] },
+    { id: "li2", name: "Welcome & Documents", targetDays: 3, desc: "Optionally send a welcome message, then send the client the liquidation document request and confirm everything is received.", steps: [
+      { id: "li2.1", title: "Send welcome message (optional)", kind: "ai", who: ["AI", "Team Lead"], note: "Optional short intro — introduces the assigned teammate and asks the client to confirm the contact channel (email / WhatsApp). Edit before sending.", act: { type: "audit_welcome", btn: "Draft welcome message", optional: true } },
+      { id: "li2.2", title: "Send document request to client", kind: "ai", who: ["AI", "Team Lead"], note: "Drafts the full liquidation document request (trade licence, MOA, passports/EIDs, COI, board resolution, bank closure letter, prior audit, CT/VAT certificates + FTA summary, current-year financials). Edit before sending.", act: { type: "liq_docrequest", btn: "Draft document request" } },
+      { id: "li2.3", title: "Documents received — checklist", kind: "person", who: ["Senior"], note: "Confirm the client has shared everything before extraction.", act: { type: "checklist", btn: "Confirm received", items: ["Trade licence", "MOA", "Passports & EIDs of shareholders", "Certificate of incorporation", "Board resolution (if any)", "Bank closure letter", "Prior-year audit (if any)", "CT & VAT certificates + FTA VAT summary", "Current-year financials"] } },
+    ] },
+    { id: "li3", name: "Extract & Report Request", targetDays: 3, desc: "Extract the key figures from the client's documents, then request a quote and scope from the liquidator/auditor.", steps: [
+      { id: "li3.1", title: "Extract details from Drive", kind: "person", who: ["Senior"], note: "Open the client Drive and capture the values the request email needs — turnover (from financials), the trade-licence authority, and the purpose + year (from the contract). Record them in the notes.", act: { type: "checklist", btn: "Details captured", items: ["Drive reviewed", "Turnover captured from financials", "Trade-licence authority captured", "Purpose & year captured from contract"] } },
+      { id: "li3.2", title: "Email liquidator/auditor — quote & scope", kind: "ai", who: ["AI", "Team Lead"], note: "Drafts the request with purpose, year, authority and turnover, and asks for the fee before starting. Paste the extracted values in the notes; edit before sending.", act: { type: "audit_auditor_email", btn: "Draft request email" } },
+      { id: "li3.3", title: "Additional info requested (optional)", kind: "ai", who: ["AI", "Team Lead"], note: "Optional — if more info is requested, paste the message + notes and AI drafts a reply using the client document context. Edit before sending.", act: { type: "audit_client_reply", btn: "Draft reply", optional: true } },
+    ] },
+    { id: "li4", name: "Report Review", targetDays: 5, desc: "The liquidator/auditor returns a draft report. AI cross-checks it against the client's financials and flags mismatches to resolve.", steps: [
+      { id: "li4.1", title: "AI review — draft report vs financials", kind: "ai", who: ["AI", "Team Lead"], note: "Paste the draft report figures / key numbers. AI cross-checks against the client's P&L, balance sheet and financial statements and returns a feedback list of matches and mismatches.", act: { type: "audit_report_review", btn: "Run AI review" } },
+      { id: "li4.2", title: "Resolve review points", kind: "person", who: ["Team Lead"], note: "Work every flagged mismatch until the report is clean.", act: { type: "checklist", btn: "All points resolved", items: ["Mismatches raised", "Corrections confirmed", "Final draft agreed"] } },
+    ] },
+    { id: "li5", name: "Delivery & Sign-off", targetDays: 5, desc: "Send the draft to the client, collect any feedback and payment, then close with the signed reports.", steps: [
+      { id: "li5.1", title: "Send draft report to client", kind: "ai", who: ["AI", "Team Lead"], note: "Drafts a message to the client sharing the draft liquidation report for review. Edit before sending.", act: { type: "audit_send_report", btn: "Draft client message" } },
+      { id: "li5.2", title: "Client feedback / additional info (optional)", kind: "ai", who: ["AI", "Team Lead"], note: "Optional — if the client comes back with changes, paste their message + notes and AI drafts the reply. Edit before sending.", act: { type: "audit_client_reply", btn: "Draft reply", optional: true } },
+      { id: "li5.3", title: "Payment collection (optional)", kind: "person", who: ["Team Lead"], note: "Optional — confirm the fee has been collected.", act: { type: "checklist", btn: "Payment confirmed", items: ["Invoice raised", "Payment received"], optional: true } },
+      { id: "li5.4", title: "Signed report received from client", kind: "person", who: ["Senior"], note: "Confirm the client has signed and returned the report.", act: { type: "checklist", btn: "Client signed", items: ["Signed report received from client", "Uploaded to Drive"] } },
+      { id: "li5.5", title: "Liquidator/auditor signs & returns final report", kind: "person", who: ["Team Lead"], note: "The liquidator/auditor signs and returns the final report to us.", act: { type: "checklist", btn: "Report signed", items: ["Final signed report received", "Uploaded to Drive"] } },
+      { id: "li5.6", title: "Send final report to client & complete", kind: "ai", who: ["AI", "Team Lead"], note: "Drafts the closing message sharing the final signed liquidation report. Sending marks the case complete.", act: { type: "audit_send_report", btn: "Draft final message" } },
+    ], gate: { label: "Both signatures in", after: "li5.5" } },
+  ],
+  intake: [],
+  uploads: [
+    { id: "li-u1", label: "Trade licence", who: "client" },
+    { id: "li-u2", label: "MOA", who: "client" },
+    { id: "li-u3", label: "Passports & EIDs of shareholders", who: "client" },
+    { id: "li-u4", label: "Certificate of incorporation", who: "client" },
+    { id: "li-u5", label: "Board resolution", who: "client" },
+    { id: "li-u6", label: "Bank closure letter", who: "client" },
+    { id: "li-u7", label: "Prior-year audit report", who: "client" },
+    { id: "li-u8", label: "CT & VAT certificates + FTA VAT summary", who: "client" },
+    { id: "li-u9", label: "Current-year financials", who: "client" },
+  ],
+  taskboard: [],
+};
+
 // ── Tax team: one-time compliance document-collection flow ───────────────────
 // Minimal 4-stage template for clients who only need documents collected for a
 // one-time compliance submission. No COA, no Zoho, no welcome-email ceremony.
@@ -932,8 +1049,13 @@ const COMPLIANCE_DOC_COLLECTION: OnbTemplate = {
   ],
 };
 
-export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, COMPLIANCE_RENEWAL, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT, AML_REVIEW, COMPLIANCE_DOC_COLLECTION];
+export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, COMPLIANCE_RENEWAL, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT, AML_REVIEW, COMPLIANCE_DOC_COLLECTION, AUDIT_WORKFLOW, LIQUIDATION_WORKFLOW];
 export const templateById = (id: string) => ONB_TEMPLATES.find((t) => t.id === id);
+
+// The two Liquidation & Audit case templates, keyed by their `flow`. The
+// Liquidation & Audit section creates and renders cases from these; they never
+// appear in the onboarding / templates pickers (see ARCHIVED_TEMPLATE_IDS).
+export const AUDIT_LIQUIDATION_TEMPLATE_IDS = ["audit-workflow", "liquidation-workflow"] as const;
 
 // Templates hidden from the Templates gallery and the "new onboarding run" picker
 // (platform cleanup, 2026-07) — only Client Onboarding · Micro and Catch-up
@@ -954,6 +1076,9 @@ export const ARCHIVED_TEMPLATE_IDS = new Set<string>([
   "fta-amendment",
   "aml-review",
   "compliance-doc-collection",
+  // Liquidation & Audit cases live in their own section, not the onboarding/templates pickers.
+  "audit-workflow",
+  "liquidation-workflow",
 ]);
 
 export function stepCount(t: OnbTemplate) {

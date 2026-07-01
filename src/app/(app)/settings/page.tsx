@@ -43,9 +43,10 @@ export default async function SettingsPage() {
       ? admin.from("user_points").select("member_id, points, reason, created_at").eq("org_id", s.profile.org_id).order("created_at", { ascending: false }).limit(200)
       : Promise.resolve({ data: [] }),
   ]);
-  const [{ data: orgRow }, { data: fuRow }] = await Promise.all([
+  const [{ data: orgRow }, { data: fuRow }, { data: alCfg }] = await Promise.all([
     admin.from("orgs").select("tax_capacity_default,tax_default_assignee_id").eq("id", s.profile.org_id).maybeSingle(),
     admin.from("followup_config").select("task_pending_sla_days,compliance_reminder_days,client_data_refire_days,tl_escalation_days,am_escalation_days").eq("org_id", s.profile.org_id).maybeSingle(),
+    admin.from("al_sync_config").select("*").eq("org_id", s.profile.org_id).maybeSingle().then((r) => r.error?.code === "42P01" ? { data: null } : r),
   ]);
   const conns = (gconn ?? []) as { provider: string; account_email: string | null; connected: boolean }[];
   const google = conns.find((c) => c.provider === "google");
@@ -68,6 +69,16 @@ export default async function SettingsPage() {
     mailboxMemberId: leadCfg?.mailbox_member_id ?? "",
     lastSyncedAt: leadCfg?.last_synced_at ?? null,
     lastResult: (leadCfg?.last_result ?? null) as { scanned: number; created: number; at: string } | null,
+  };
+
+  const alLead = {
+    enabled: alCfg?.enabled ?? true,
+    gmailLabel: alCfg?.gmail_label ?? "Cadence Audit and Liquidation",
+    matchFrom: alCfg?.match_from ?? "",
+    matchSubjectPrefix: alCfg?.match_subject_prefix ?? "",
+    mailboxMemberId: alCfg?.mailbox_member_id ?? "",
+    lastSyncedAt: alCfg?.last_synced_at ?? null,
+    lastResult: (alCfg?.last_result ?? null) as { scanned: number; created: number; at: string } | null,
   };
 
   // Aggregate points per member for the leaderboard.
@@ -111,6 +122,7 @@ export default async function SettingsPage() {
           slackWorkspace={slackWorkspace}
           isAdmin={isAdmin}
           lead={lead}
+          alLead={alLead}
           mailboxes={mailboxes}
           accessMatrix={accessMatrix}
           accessRoles={ACCESS_ROLES}

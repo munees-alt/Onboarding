@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { Icon } from "@/components/icon";
 import { PROVIDER_MODELS, AI_FEATURES, type AiFeature, type FeatureModel, type Provider } from "@/lib/ai-config";
-import { saveAiKeys, saveFeatureModels, saveIntegrations, saveLeadSyncConfig, syncLeadsNow, saveRoleOverride, saveDeptOverride, saveUserNavOverride, saveDeptOverrideBulk, saveUserNavOverrideBulk, awardUserPoints, saveTaxDefaultAssignee } from "./actions";
+import { saveAiKeys, saveFeatureModels, saveIntegrations, saveLeadSyncConfig, syncLeadsNow, saveAlSyncConfig, syncAlNow, saveRoleOverride, saveDeptOverride, saveUserNavOverride, saveDeptOverrideBulk, saveUserNavOverrideBulk, awardUserPoints, saveTaxDefaultAssignee } from "./actions";
 import type { AccessMatrix } from "@/lib/role-access";
 import type { Role } from "@/lib/types";
 import { ROLE_LABEL } from "@/lib/roles";
@@ -21,12 +21,22 @@ interface LeadCfg {
   lastResult: { scanned: number; created: number; at: string } | null;
 }
 
+interface AlCfg {
+  enabled: boolean;
+  gmailLabel: string;
+  matchFrom: string;
+  matchSubjectPrefix: string;
+  mailboxMemberId: string;
+  lastSyncedAt: string | null;
+  lastResult: { scanned: number; created: number; at: string } | null;
+}
+
 export interface TeamMemberRow { id: string; name: string; role: string; title: string | null; points: number }
 export interface RecentPointEntry { member_id: string; points: number; reason: string; created_at: string }
 
 export function SettingsForm({
   keysSet, models, fathomSet, pmsName, pmsSet, googleEmail, zohoConnected, slackWorkspace = null,
-  isAdmin = false, lead, mailboxes = [],
+  isAdmin = false, lead, alLead, mailboxes = [],
   accessMatrix = null, accessRoles = [], team = [], recentPoints = [],
   taxDefaultAssigneeId = null,
 }: {
@@ -40,6 +50,7 @@ export function SettingsForm({
   slackWorkspace?: string | null;
   isAdmin?: boolean;
   lead?: LeadCfg;
+  alLead?: AlCfg;
   mailboxes?: { id: string; label: string }[];
   accessMatrix?: AccessMatrix | null;
   accessRoles?: Role[];
@@ -63,6 +74,12 @@ export function SettingsForm({
   });
   const [newSvc, setNewSvc] = useState("");
   const setL = <K extends keyof LeadCfg>(k: K, v: LeadCfg[K]) => setLc((c) => ({ ...c, [k]: v }));
+
+  const [alc, setAlc] = useState<AlCfg>(alLead ?? {
+    enabled: true, gmailLabel: "Cadence Audit and Liquidation", matchFrom: "", matchSubjectPrefix: "",
+    mailboxMemberId: "", lastSyncedAt: null, lastResult: null,
+  });
+  const setAL = <K extends keyof AlCfg>(k: K, v: AlCfg[K]) => setAlc((c) => ({ ...c, [k]: v }));
 
   const [taxAssigneeId, setTaxAssigneeId] = useState<string>(taxDefaultAssigneeId ?? "");
 
@@ -201,6 +218,48 @@ export function SettingsForm({
               <button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await saveLeadSyncConfig({ enabled: lc.enabled, gmailLabel: lc.gmailLabel, matchFrom: lc.matchFrom, matchSubjectPrefix: lc.matchSubjectPrefix, services: lc.services, mailboxMemberId: lc.mailboxMemberId || null }); note(r.error ?? "Rules saved"); })}>Save rules</button>
               <button className="btn-ghost" disabled={busy} onClick={() => start(async () => { const r = await syncLeadsNow(); if (r.error) { note(r.error); return; } const res = r.result; note(res ? `Synced — ${res.created} new lead(s), ${res.scanned} scanned${res.errors.length ? ` · ${res.errors[0]}` : ""}` : "Synced"); })}><Icon name="refresh-cw" size={14} /> Sync from email now</button>
               {lc.lastResult && <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Last sync: {lc.lastResult.created} created of {lc.lastResult.scanned} · {new Date(lc.lastResult.at).toLocaleString()}</span>}
+            </div>
+          </Card>
+        )}
+
+        {/* ── Liquidation & Audit automation (Master Admin only) ── */}
+        {isAdmin && (
+          <Card title="Liquidation & Audit automation" icon="gavel" desc="Any new email landing in the chosen Gmail label is turned into an audit or liquidation case automatically (and on every manual sync). Audit vs liquidation is inferred from the email; you can move it in the board later.">
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600 }}>
+              <input type="checkbox" checked={alc.enabled} onChange={(e) => setAL("enabled", e.target.checked)} />
+              Automation enabled
+            </label>
+
+            <div className="field">
+              <label>Watch this Gmail label</label>
+              <input value={alc.gmailLabel} onChange={(e) => setAL("gmailLabel", e.target.value)} placeholder="Cadence Audit and Liquidation" />
+              <div style={{ fontSize: 11.5, color: "var(--ink-4)", marginTop: 4 }}>In Gmail, add a filter that labels the incoming audit / liquidation emails with this exact label. Any new mail in it becomes a case.</div>
+            </div>
+
+            <div className="field">
+              <label>Mailbox to read</label>
+              <select value={alc.mailboxMemberId} onChange={(e) => setAL("mailboxMemberId", e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }}>
+                <option value="">Master Admin (default — first connected)</option>
+                {mailboxes.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </select>
+            </div>
+
+            <details>
+              <summary style={{ cursor: "pointer", fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>Optional extra filters (sender / subject)</summary>
+              <div className="field" style={{ marginTop: 10 }}>
+                <label>Only from sender (optional)</label>
+                <input value={alc.matchFrom} onChange={(e) => setAL("matchFrom", e.target.value)} placeholder="leave blank — the label is enough" />
+              </div>
+              <div className="field">
+                <label>Subject starts with (optional)</label>
+                <input value={alc.matchSubjectPrefix} onChange={(e) => setAL("matchSubjectPrefix", e.target.value)} placeholder="leave blank — the label is enough" />
+              </div>
+            </details>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn-primary" disabled={busy} onClick={() => start(async () => { const r = await saveAlSyncConfig({ enabled: alc.enabled, gmailLabel: alc.gmailLabel, matchFrom: alc.matchFrom, matchSubjectPrefix: alc.matchSubjectPrefix, mailboxMemberId: alc.mailboxMemberId || null }); note(r.error ?? "Rules saved"); })}>Save rules</button>
+              <button className="btn-ghost" disabled={busy} onClick={() => start(async () => { const r = await syncAlNow(); if (r.error) { note(r.error); return; } const res = r.result; note(res ? `Synced — ${res.created} new case(s), ${res.scanned} scanned${res.errors.length ? ` · ${res.errors[0]}` : ""}` : "Synced"); })}><Icon name="refresh-cw" size={14} /> Sync from email now</button>
+              {alc.lastResult && <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>Last sync: {alc.lastResult.created} created of {alc.lastResult.scanned} · {new Date(alc.lastResult.at).toLocaleString()}</span>}
             </div>
           </Card>
         )}

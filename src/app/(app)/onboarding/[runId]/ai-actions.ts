@@ -129,6 +129,55 @@ Formatting rules (strict):
 
 Output the ready-to-send message body ONLY — no subject line, no preamble, no JSON.` },
 
+  catchup_docrequest: { feature: "agenda", instruction:
+`Write the CATCH-UP KICKOFF DOCUMENT-REQUEST message sent to the client to start their book clean-up. Follow this EXACT template, structure and wording — only substitute the real names, Drive link and period:
+
+Hi [Client contact first name]
+
+I hope you are doing well!
+
+This is [Team Lead first name], and my teammate [Teammate first name] doing the book clean-up for you.
+
+To get started with your cleanup process, kindly upload the following documents to our secure Google Drive link.
+[Client Google Drive link]
+
+Bookkeeping Documents:
+
+1. Bank statements from [catch-up start month year] to [catch-up end month year]
+2. Sales/purchases invoices for [year] (if any)
+3. Payment gateway/credit card statements (if applicable)
+4. Details of any business expenses paid from a personal account
+5. VAT workings (if applicable)
+
+Also Kindly provide us access to the e-Services Tax Portal (FTA/EmaraTax)
+
+Please follow the steps below:
+1. Log in
+2. Click on View under your company name
+3. Click on Account access
+4. Add user
+5. Select user type as portal user
+6. Search for suhail@finanshels.com
+7. Select the access type as write access
+8. Select add user
+
+If you have any further questions or require assistance with any aspect of your company's financial management, please don't hesitate to reach out. We are here to help and are excited to support you.
+
+Should any further documentation be required, we will reach out accordingly.
+
+Kind regards,
+[Team Lead first name]
+
+Rules (strict):
+- Plain text — no markdown, no emojis, no bold, no headings.
+- Use the real Team Lead as the sender ("This is <Team Lead>") and the assigned Senior/Junior as "my teammate". If only one team member is known, name that one and drop the teammate clause naturally.
+- Use the real client contact first name after "Hi"; if only the company name is known, use that.
+- Use the real Google Drive link if provided in the context; if none is available, keep the line "[Client Google Drive link]" as an editable placeholder.
+- Use the real catch-up period months/years if provided; otherwise keep the bracketed period placeholders so the team can fill them.
+- Keep the FTA/EmaraTax steps and the suhail@finanshels.com search email EXACTLY as written above.
+
+Output the ready-to-send message body ONLY — no subject line, no preamble, no JSON.` },
+
   zoho_account: { feature: "agenda", instruction:
 `Write a SHORT internal Slack / email message to Lohith asking him to create a Zoho account for the client.
 
@@ -186,6 +235,128 @@ Formatting rules:
 - Be honest where you have no data: write '[Not assessable — no data shared]' rather than inventing findings.
 
 Output the review body ONLY.` },
+
+  // ── Liquidation & Audit (AUDIT_WORKFLOW / LIQUIDATION_WORKFLOW) ────────────
+  audit_welcome: { feature: "agenda", instruction:
+`Write a SHORT, warm welcome message to the client at the start of an audit/liquidation engagement. Follow this template closely (substitute real names):
+
+Hi [Client contact first name]
+
+Hope you're having a good day.
+
+My teammate [assigned team member first name] will be taking up your project for the audit/liquidation report.
+
+We will send you the list of documents which are required from you soon. Kindly confirm the email id where you'd like us to keep the conversation thread — or WhatsApp works fine too, whichever you prefer.
+
+Thank you.
+
+Rules: plain text, no markdown, no emojis. Use the real client contact name and the assigned team member's first name from the context. Output the message body ONLY.` },
+
+  audit_docrequest: { feature: "agenda", instruction:
+`Write the AUDIT document-request message to the client. Use this EXACT list, structure and wording (substitute only the greeting name):
+
+Hi,
+
+Hope you're doing well.
+
+As part of the Audit process, we would need the following documents from your side:
+
+1. VAT & Corporate Tax Certificate: Registration certificate (if registered)
+2. VAT Returns from FTA Portal: PDF files of FTA returns for the relevant audit periods
+3. Bank Statement: For the audit periods (in PDF)
+4. Audit Report: Last year's audit report (if available)
+5. Financial Statement for the current Year (Balance Sheet, Profit & Loss, Trial Balance)
+6. WPS Documents: Salary slips for the last 3 months, along with a list of employee salaries and staff terminal benefits workings (if any)
+7. Loan Documents: Agreements and payment schedules (if there are any loans)
+8. Related Parties' Licenses: Licenses of related parties, along with confirmation letters for "Due to Related Party" and "Due from Related Party"
+9. List of Account Receivables and Payables: Detailed list required
+10. Fixed Assets: Addition invoices (if any)
+11. Tenancy/Lease Agreement: Supporting documents
+12. Property, Plant & Equipment (PPE): Details of PPE (if any)
+13. Prepayment
+14. Depreciation schedule
+15. Legal Documents:
+- License
+- Memorandum of Association (MOA)
+- Certificate of Incorporation (COI)
+- Emirates ID and passport copies of shareholders
+
+If you have any questions, please feel free to reach out.
+
+Thank you.
+
+Rules: plain text, no markdown, no emojis. Keep the numbered list exactly as above. Output the message body ONLY.` },
+
+  liq_docrequest: { feature: "agenda", instruction:
+`Write the LIQUIDATION document-request message to the client. Use this EXACT list, structure and wording (substitute only the greeting name):
+
+Hi,
+
+Hope you're doing well.
+
+As part of the liquidation process, we would need the following documents from your side:
+
+1. Trade license
+2. MOA
+3. Passport and Emirates ID of the shareholders
+4. Certificate of incorporation
+5. Board resolution (if available)
+6. Bank closure letter
+7. Previous year audit if available
+8. Corporate tax certificate
+9. VAT certificate (if available) and VAT summary downloaded from FTA portal
+10. Current year financials
+
+Once we have the necessary documents, we will proceed with the Liquidation report.
+
+If you have any questions, please feel free to reach out.
+
+Thank you.
+
+Rules: plain text, no markdown, no emojis. Keep the numbered list exactly as above. Output the message body ONLY.` },
+
+  audit_auditor_email: { feature: "agenda", instruction:
+`Write the email to the AUDITOR requesting a quote before starting. Follow this template exactly (fill the four fields from the pasted details; keep a field's bracket as an editable placeholder only if that value is missing):
+
+Hi Team,
+
+Please find the attached files for the Audit of [company name].
+
+1. Purpose of the Audit - [purpose]
+2. Audit Year - [audit year]
+3. Authority - [trade licence authority]
+4. Turnover - [turnover]
+
+Kindly let me know the Audit fee before initiating the project, and please confirm whether it will be issued under your name or outsourcing.
+
+Rules: plain text, no markdown, no emojis. Use the company name from context. Take Purpose, Audit Year, Authority and Turnover from the team-provided notes. Output the message body ONLY.` },
+
+  audit_client_reply: { feature: "agenda", instruction:
+`Draft a reply to an incoming message (from the auditor or the client) using the pasted message plus the team notes and the client document context. Keep it professional, warm and concise, and address every point raised.
+
+Rules: plain text, no markdown, no emojis. Base the reply ONLY on the pasted message + notes + client context — do not invent figures. Output the reply body ONLY.` },
+
+  audit_report_review: { feature: "brief", instruction:
+`Cross-check the auditor's/liquidator's DRAFT REPORT figures (pasted by the team) against the client's own financials — Profit & Loss, Balance Sheet and financial statements. This is an INTERNAL review for the Team Lead, NOT sent to anyone.
+
+Formatting rules:
+- Plain text, no markdown headers, no emojis.
+- One line opening: "Report Review — [Client Name]".
+- Then THREE labelled blocks, each label on its own line:
+    Matches:
+    - [figures in the draft report that agree with the client's P&L / BS / financials]
+    Mismatches / to query with the auditor:
+    - [figures that differ, with both numbers shown, e.g. "Revenue: report AED X vs client P&L AED Y"]
+    To confirm before sign-off:
+    - [specific cross-checks the Team Lead should verify manually]
+- Only use figures present in the pasted report and the provided client context. Where a value isn't available, write "[Not shared with AI]" rather than inventing it.
+
+Output the review body ONLY.` },
+
+  audit_send_report: { feature: "agenda", instruction:
+`Write a short, professional message to the client sharing the audit/liquidation report for their review (or, for the final step, the final signed report). Thank them, note the report is attached / in the shared Drive, and invite any questions.
+
+Rules: plain text, no markdown, no emojis. Use the real client contact name and company from context. Output the message body ONLY.` },
 };
 
 /** Generates AI text for a run step (agenda, MoM, welcome email, deck, brief).
@@ -242,7 +413,7 @@ export async function generateStepText(
       if (f?.text) notes = f.text;
     }
     if (!p.recording?.trim() && !notes) {
-      return { error: "Add the meeting recording link (we'll pull the notes from Fathom) or paste your notes on the call step first — minutes are written from the real meeting, not generated blank." };
+      return { error: "Add the meeting recording link (we'll pull the notes from Fathom) or paste your notes on the call step first." };
     }
     meetingBlock = `\n\nThe meeting actually happened. Write the minutes ONLY from these real notes (do not add anything that isn't here):\nRecording: ${p.recording ?? "n/a"}\nNotes:\n${notes || "(no notes — keep the minutes minimal and ask the client to confirm details)"}`;
 
@@ -260,6 +431,18 @@ export async function generateStepText(
     }
     const base = (process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")).replace(/\/$/, "");
     portalUrl = base ? `${base}/portal/${token}` : `/portal/${token}`;
+
+    // The welcome email is now a static branded template (VAT/CT sections + portal
+    // link + recording link). No AI generation needed — render and return directly.
+    return {
+      text: renderWelcomeEmail({
+        contactName: client.owner_name?.trim() || client.name,
+        companyName: client.name,
+        portalUrl,
+        fathomLink: p.recording?.trim() || "",
+        notes: notes || undefined,
+      }),
+    };
   }
 
   // For the AGENDA WhatsApp, splice in an intake-form link the client can fill before the call.
@@ -300,6 +483,38 @@ export async function generateStepText(
     }
   }
 
+  // For the catch-up kickoff document request, splice in the client's real Drive link.
+  let driveLinkNote = "";
+  if (actType === "catchup_docrequest") {
+    const admin = createAdminClient();
+    const { data: driveFolder } = await admin.from("drive_folders").select("tree").eq("client_id", run.client_id).maybeSingle();
+    const tree = (driveFolder?.tree ?? {}) as { link?: string; id?: string };
+    const driveLink = tree.link || (tree.id ? `https://drive.google.com/drive/folders/${tree.id}` : "");
+    driveLinkNote = driveLink
+      ? `\n\nClient Google Drive link to use (replace [Client Google Drive link]): ${driveLink}`
+      : `\n\nNo Drive link available — keep "[Client Google Drive link]" as an editable placeholder.`;
+  }
+
+  // For the auditor-request email and the report review, auto-extract the key
+  // figures from the client's Drive documents (turnover + financials, licence
+  // authority, contract purpose/year) so the draft is filled even if the team
+  // pasted nothing. Pasted notes (extraContext) still take precedence.
+  let auditExtractNote = "";
+  if (actType === "audit_auditor_email" || actType === "audit_report_review") {
+    try {
+      const x = await _extractAuditDetailsImpl(session.profile.org_id, runId);
+      if (x.notes || x.authority) {
+        const f = x.financials ?? {};
+        const booksLine = [f.revenue && `revenue ${f.revenue}`, f.netProfit && `net profit ${f.netProfit}`, f.totalAssets && `total assets ${f.totalAssets}`, f.totalLiabilities && `total liabilities ${f.totalLiabilities}`, f.equity && `equity ${f.equity}`, f.financialYear && `FY ${f.financialYear}`].filter(Boolean).join("; ");
+        if (actType === "audit_report_review") {
+          auditExtractNote = `\n\nThe CLIENT'S OWN BOOKS (auto-extracted from their financial statements in Drive) — treat these as the source of truth to check the draft report against: ${booksLine || "(no figures found in Drive)"}.${x.turnover ? ` Turnover ${x.turnover}.` : ""}`;
+        } else {
+          auditExtractNote = `\n\nAuto-extracted from the client's Drive documents (use these to fill the email; prefer any values the team pasted below over these):\n${x.notes}`;
+        }
+      }
+    } catch { /* extraction is best-effort — fall back to pasted notes only */ }
+  }
+
   const ctx =
     `Client: ${client.name}; owner ${client.owner_name ?? "n/a"}; industry ${client.industry}; entity ${client.entity_type}; ` +
     `VAT ${client.vat_registered}; CT ${client.ct_registered}; ` +
@@ -319,20 +534,8 @@ export async function generateStepText(
     const text = await runAi(session.profile.org_id, cfg.feature, {
       runId,
       system: "You write for a UAE accounting firm (Finanshels). Output must be polished and ready to send AS-IS — NEVER use [placeholders], brackets, or 'insert X here'; use the real client and team names provided. If a needed detail isn't in the context, leave it out rather than inventing it. Professional, warm, concise.",
-      prompt: `${cfg.instruction}\n\nUse these real details (do not invent beyond them):\n${ctx}${meetingBlock}${agendaIntakeNote}${extraCtxBlock}`,
+      prompt: `${cfg.instruction}\n\nUse these real details (do not invent beyond them):\n${ctx}${meetingBlock}${agendaIntakeNote}${driveLinkNote}${auditExtractNote}${extraCtxBlock}`,
     });
-    // For the welcome-email step, drop the AI-drafted minutes into the saved
-    // template with the client's real name, company and portal link filled in.
-    if (cfg.feature === "mom") {
-      return {
-        text: renderWelcomeEmail({
-          contactName: client.owner_name?.trim() || client.name,
-          companyName: client.name,
-          portalUrl,
-          momBody: text,
-        }),
-      };
-    }
     return { text };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI failed" };
@@ -625,6 +828,180 @@ export async function _generateComplianceFromDocsImpl(orgId: string, runId: stri
   }
 
   return { items, empty: items.length === 0, scanned };
+}
+
+// ── Audit / Liquidation auto-extraction ──────────────────────────────────────
+// Reads the client's Drive "Company Documents" (+ portal uploads) and pulls the
+// values the audit/liquidation emails and report review need — turnover +
+// financials from the P&L / financial statements, the trade-licence authority,
+// and the audit purpose + year from the contract / engagement letter. Mirrors
+// the Drive-read + OpenAI-extraction pattern used by generateComplianceFromDocs.
+export type AuditExtract = {
+  turnover?: string;
+  authority?: string;
+  purpose?: string;
+  auditYear?: string;
+  financials?: { revenue?: string; netProfit?: string; totalAssets?: string; totalLiabilities?: string; equity?: string; financialYear?: string };
+  notes?: string;
+  scanned: number;
+  empty: boolean;
+  error?: string;
+};
+
+/** Render the extracted values as an editable notes block for the step modal. */
+function renderAuditExtractNotes(x: AuditExtract): string {
+  const f = x.financials ?? {};
+  const lines = [
+    x.purpose ? `Purpose: ${x.purpose}` : null,
+    x.auditYear ? `Audit Year: ${x.auditYear}` : null,
+    x.authority ? `Authority: ${x.authority}` : null,
+    x.turnover ? `Turnover: ${x.turnover}` : null,
+    f.revenue && f.revenue !== x.turnover ? `Revenue: ${f.revenue}` : null,
+    f.netProfit ? `Net profit: ${f.netProfit}` : null,
+    f.totalAssets ? `Total assets: ${f.totalAssets}` : null,
+    f.totalLiabilities ? `Total liabilities: ${f.totalLiabilities}` : null,
+    f.equity ? `Equity: ${f.equity}` : null,
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+export async function extractAuditDetails(runId: string): Promise<AuditExtract> {
+  const session = await getSession();
+  if (!session?.profile.org_id) return { scanned: 0, empty: true, error: "Not signed in." };
+  return _extractAuditDetailsImpl(session.profile.org_id, runId);
+}
+
+export async function _extractAuditDetailsImpl(orgId: string, runId: string): Promise<AuditExtract> {
+  const admin = createAdminClient();
+  const { data: run } = await admin.from("onboarding_runs").select("client_id").eq("id", runId).maybeSingle();
+  if (!run) return { scanned: 0, empty: true, error: "Run not found." };
+  const { data: client } = await admin.from("clients").select("name,trade_licence_authority").eq("id", run.client_id).maybeSingle();
+  const clientName = client?.name ?? "Client";
+
+  // Drive-capable member: a Google-connected run-team member, else any in the org.
+  let driveMember: string | undefined;
+  const { data: rt } = await admin.from("run_team").select("team_member_id").eq("run_id", runId);
+  const ids = (rt ?? []).map((r) => r.team_member_id).filter(Boolean);
+  if (ids.length) {
+    const { data: conn } = await admin.from("member_connections").select("team_member_id").eq("provider", "google").eq("connected", true).in("team_member_id", ids).limit(1);
+    driveMember = conn?.[0]?.team_member_id as string | undefined;
+  }
+  if (!driveMember) {
+    const fallback = await getDriveCapableMemberId(orgId, runId);
+    if (fallback) driveMember = fallback;
+  }
+
+  const { data: driveFolder } = await admin.from("drive_folders").select("tree").eq("client_id", run.client_id).maybeSingle();
+  const storedFolderId = (driveFolder?.tree as { id?: string } | null)?.id;
+  const driveFiles = driveMember
+    ? (storedFolderId ? await listDriveDocsByFolderId(driveMember, storedFolderId) : await listClientDriveDocs(driveMember, clientName))
+    : [];
+  const { data: docs } = await admin.from("documents").select("id,label,status,storage_path").eq("client_id", run.client_id).eq("status", "uploaded");
+  const tableFiles = (docs ?? []).filter((d) => d.storage_path);
+
+  // Prioritise the documents that carry the values we need (financials, licence,
+  // contract) so we read those first and cap the OpenAI calls.
+  const RELEVANT = /(p&l|profit|loss|income|balance|financial|statement|trial|licen|contract|engage|audit)/i;
+  const rankDrive = (n: string) => (RELEVANT.test(n) ? 0 : 1);
+  const sortedDrive = [...driveFiles].filter((f) => !(f.mimeType ?? "").includes("folder")).sort((a, b) => rankDrive(a.name) - rankDrive(b.name));
+  const sortedTable = [...tableFiles].sort((a, b) => rankDrive(a.label ?? "") - rankDrive(b.label ?? ""));
+
+  const authorityFallback = (client?.trade_licence_authority ?? "").trim() || undefined;
+  if (sortedDrive.length === 0 && sortedTable.length === 0) {
+    return { scanned: 0, empty: !authorityFallback, authority: authorityFallback };
+  }
+  const key = (await getAiConfig(orgId)).keys.openai;
+  if (!key) return { scanned: 0, empty: true, authority: authorityFallback, error: "Add an OpenAI key in Settings to read the client's documents." };
+
+  type DocExtract = {
+    docType?: string; turnover?: string; revenue?: string; netProfit?: string;
+    totalAssets?: string; totalLiabilities?: string; equity?: string;
+    financialYear?: string; issuingAuthority?: string; auditPurpose?: string; auditYear?: string;
+  };
+  const extract = async (buf: Buffer, mime: string, label: string): Promise<DocExtract | null> => {
+    try {
+      const up = new FormData();
+      up.append("purpose", "user_data");
+      up.append("file", new File([new Uint8Array(buf)], label || "document", { type: mime || "application/octet-stream" }));
+      const upRes = await fetch("https://api.openai.com/v1/files", { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: up });
+      if (!upRes.ok) return null;
+      const fileId = (await upRes.json()).id as string;
+      const r = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          input: [{ role: "user", content: [
+            { type: "input_text", text:
+              `This is a UAE business document for an audit/liquidation engagement. Return ONLY JSON: ` +
+              `{"docType":"Profit & Loss / Income Statement / Balance Sheet / Financial Statements / Trial Balance / Trade Licence / Contract / Engagement Letter / VAT certificate / other",` +
+              `"turnover":"annual revenue/turnover with currency e.g. AED 4,200,000, or null","revenue":"same as turnover if shown, else null",` +
+              `"netProfit":"net profit/(loss) with currency or null","totalAssets":"or null","totalLiabilities":"or null","equity":"total equity or null",` +
+              `"financialYear":"the year/period the financials cover e.g. 2024 or FY2024, or null",` +
+              `"issuingAuthority":"trade-licence issuing authority / free zone e.g. DED / DMCC / JAFZA / ADGM / IFZA / RAK, or null",` +
+              `"auditPurpose":"if a contract/engagement letter: the purpose/scope of the audit or liquidation, else null",` +
+              `"auditYear":"if a contract/engagement letter: the audit/report year or period, else null"}. ` +
+              `Only fill fields present in THIS document; use null otherwise. Keep currency amounts as written.` },
+            { type: "input_file", file_id: fileId },
+          ] }],
+        }),
+      });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const text: string = j.output_text ?? ((j.output ?? []).flatMap((o: { content?: { text?: string }[] }) => (o.content ?? []).map((c) => c.text)).filter(Boolean).join("\n"));
+      const s = text.indexOf("{"), e = text.lastIndexOf("}");
+      return s >= 0 ? (JSON.parse(text.slice(s, e + 1)) as DocExtract) : null;
+    } catch { return null; }
+  };
+
+  const clean = (v?: string) => (v && v !== "null" && v.trim() ? v.trim() : undefined);
+  const out: AuditExtract = { scanned: 0, empty: false, authority: authorityFallback, financials: {} };
+  const fin = out.financials!;
+  const MAX = 12; // cap OpenAI reads per run
+
+  const absorb = (p: DocExtract | null) => {
+    if (!p) return;
+    out.turnover ??= clean(p.turnover) ?? clean(p.revenue);
+    fin.revenue ??= clean(p.revenue) ?? clean(p.turnover);
+    fin.netProfit ??= clean(p.netProfit);
+    fin.totalAssets ??= clean(p.totalAssets);
+    fin.totalLiabilities ??= clean(p.totalLiabilities);
+    fin.equity ??= clean(p.equity);
+    fin.financialYear ??= clean(p.financialYear);
+    out.authority ??= clean(p.issuingAuthority);
+    out.purpose ??= clean(p.auditPurpose);
+    out.auditYear ??= clean(p.auditYear) ?? clean(p.financialYear);
+  };
+
+  for (const f of sortedDrive) {
+    if (out.scanned >= MAX) break;
+    if (!driveMember) break;
+    const buf = await downloadDriveFile(driveMember, f.id);
+    if (!buf) continue;
+    out.scanned++;
+    absorb(await extract(buf, f.mimeType, f.name));
+  }
+  for (const d of sortedTable) {
+    if (out.scanned >= MAX) break;
+    const sp = d.storage_path as string;
+    let buf: Buffer | null = null;
+    let mime = "application/octet-stream";
+    if (/^https?:\/\//.test(sp)) {
+      const fid = driveFileIdFromLink(sp);
+      if (fid && driveMember) buf = await downloadDriveFile(driveMember, fid);
+    } else {
+      const { data: blob } = await admin.storage.from("client-docs").download(sp);
+      if (blob) { buf = Buffer.from(await blob.arrayBuffer()); mime = blob.type || mime; }
+    }
+    if (!buf) continue;
+    out.scanned++;
+    absorb(await extract(buf, mime, d.label));
+  }
+
+  out.authority ??= authorityFallback;
+  out.notes = renderAuditExtractNotes(out);
+  out.empty = !out.notes && !out.authority;
+  return out;
 }
 
 /** AI-generates internal projects + tasks from a plain-language brief over a period. */

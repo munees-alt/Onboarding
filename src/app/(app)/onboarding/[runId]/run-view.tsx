@@ -48,7 +48,7 @@ function canEditStep(myRole: string, step: TemplateStep): boolean {
 const ROLE_NICE: Record<string, string> = { am: "Account Manager", senior: "Senior", junior: "Junior", team_lead: "Team Lead", ops_head: "Ops", intern: "Intern" };
 import { createClient } from "@/lib/supabase/client";
 import type { TaskRow } from "@/lib/data/run-detail";
-import { generateCoa, saveCoa, getCallSuggestedAccounts, getCallSuggestedAccountsFromNotes, generateTaxCodes, saveTaxCodes, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, generateOnePager, saveOnePagerNotes, regenerateOnePager, generateTaskBoardEmailDraft, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
+import { generateCoa, saveCoa, getCallSuggestedAccounts, getCallSuggestedAccountsFromNotes, generateTaxCodes, saveTaxCodes, generateStepText, saveStepText, generateBusinessDescription, analyzeContract, analyzeContractFile, generateCompliance, generateComplianceFromDocs, generateRecurringTasks, generateDiagram, generateDeck, saveDeck, generateOnePager, saveOnePagerNotes, regenerateOnePager, generateTaskBoardEmailDraft, extractAuditDetails, type CoaLine, type ContractAnalysis, type DeckData } from "./ai-actions";
 import { formatEngagementPeriod } from "@/lib/contract-format";
 import { archiveUrgentRun } from "../../my-work/actions";
 import { cleanDocLabels } from "@/lib/doc-labels";
@@ -487,7 +487,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      {actStep && ["agenda", "ai", "mom", "datareq", "report", "catchup_query", "catchup_followup", "catchup_review"].includes(actStep.act?.type ?? "") && (
+      {actStep && ["agenda", "ai", "mom", "datareq", "report", "catchup_query", "catchup_followup", "catchup_review", "catchup_docrequest", "audit_welcome", "audit_docrequest", "liq_docrequest", "audit_auditor_email", "audit_client_reply", "audit_report_review", "audit_send_report"].includes(actStep.act?.type ?? "") && (
         <AiTextModal
           runId={detail.runId}
           stepId={actStep.id}
@@ -605,7 +605,7 @@ export function RunView({ detail, template }: { detail: RunDetail; template: Onb
         />
       )}
 
-      {actStep && !["coa", "taxcodes", "diagram", "catchup", "project", "calendar", "triage", "agenda", "ai", "mom", "datareq", "report", "deck", "uploads", "intake", "drivelink", "access", "contract", "accountingsoftware", "zoho", "onepager", "catchup_config", "urgent_config", "tax_assign", "catchup_missing", "zoho_account", "catchup_query", "catchup_followup", "catchup_review", "bankrecon"].includes(actStep.act?.type ?? "") && (
+      {actStep && !["coa", "taxcodes", "diagram", "catchup", "project", "calendar", "triage", "agenda", "ai", "mom", "datareq", "report", "deck", "uploads", "intake", "drivelink", "access", "contract", "accountingsoftware", "zoho", "onepager", "catchup_config", "urgent_config", "tax_assign", "catchup_missing", "zoho_account", "catchup_query", "catchup_followup", "catchup_review", "catchup_docrequest", "audit_welcome", "audit_docrequest", "liq_docrequest", "audit_auditor_email", "audit_client_reply", "audit_report_review", "audit_send_report", "bankrecon"].includes(actStep.act?.type ?? "") && (
         <RunStepModal
           runId={detail.runId}
           step={actStep}
@@ -4181,13 +4181,34 @@ function DeckEdit({ n, label, pill, children }: { n: string; label: string; pill
 function AiTextModal({
   runId, stepId, actType, title, contacts = [], onClose, onDone,
 }: { runId: string; stepId: string; actType: string; title: string; contacts?: string[]; onClose: () => void; onDone: () => void }) {
-  // catchup_query and catchup_followup show a notes input before generating
-  const needsNotesPreflight = actType === "catchup_query" || actType === "catchup_followup";
+  // Steps that show a notes input before generating (the team pastes context —
+  // sheet links, extracted figures, an incoming message, or the draft report).
+  const NOTES_PREFLIGHT = ["catchup_query", "catchup_followup", "audit_auditor_email", "audit_client_reply", "audit_report_review"];
+  const needsNotesPreflight = NOTES_PREFLIGHT.includes(actType);
+  const preflightCopy: Record<string, { intro: string; label: string; placeholder: string }> = {
+    audit_auditor_email: { intro: "Paste the details extracted from the client's documents so the auditor email is filled in: purpose of the audit, audit year, trade-licence authority, and turnover.", label: "Extracted details (purpose, audit year, authority, turnover)", placeholder: "e.g. Purpose: statutory audit for free-zone renewal\nAudit Year: 2024\nAuthority: DMCC\nTurnover: AED 4,200,000" },
+    audit_client_reply: { intro: "Paste the incoming message (from the auditor or client) plus any notes. AI will draft a reply using the client document context.", label: "Incoming message + notes", placeholder: "Paste their message here, plus anything you want covered in the reply…" },
+    audit_report_review: { intro: "Paste the key figures from the auditor's/liquidator's draft report. AI cross-checks them against the client's P&L, balance sheet and financials.", label: "Draft report figures", placeholder: "e.g. Revenue: AED 4,200,000\nNet profit: AED 380,000\nTotal assets: AED 2,100,000…" },
+  };
   const [phase, setPhase] = useState<"preflight" | "loading" | "ready" | "error">(needsNotesPreflight ? "preflight" : "loading");
   const [notes, setNotes] = useState("");
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
+  // Auto-extract from Drive (audit/liquidation steps that need figures).
+  const canAutoExtract = actType === "audit_auditor_email" || actType === "audit_report_review";
+  const [extracting, setExtracting] = useState(false);
+  const [extractMsg, setExtractMsg] = useState<string | null>(null);
+  const autoExtract = () => {
+    setExtracting(true); setExtractMsg(null);
+    extractAuditDetails(runId).then((x) => {
+      setExtracting(false);
+      if (x.error) { setExtractMsg(x.error); return; }
+      if (x.empty || !x.notes) { setExtractMsg(`Nothing to extract yet — scanned ${x.scanned} document(s). Add the client's financials / licence to Drive, or type the values below.`); return; }
+      setNotes((prev) => (prev.trim() ? `${prev.trim()}\n${x.notes}` : x.notes!));
+      setExtractMsg(`Filled from ${x.scanned} document(s) in Drive — review and edit before generating.`);
+    });
+  };
   // WhatsApp welcome message (point-of-contact picker + copy).
   const [waOpen, setWaOpen] = useState(false);
   const [waContact, setWaContact] = useState(contacts[0] ?? "");
@@ -4215,17 +4236,26 @@ function AiTextModal({
           {phase === "preflight" && needsNotesPreflight && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6 }}>
-                {actType === "catchup_query"
-                  ? "Add any notes to include in the query-sheet message before generating (e.g. specific items to highlight, the Google Sheet link, or a deadline). Leave blank to generate from context only."
-                  : "Add any notes or updates to include in the follow-up message before generating (e.g. which items are still open, urgency). Leave blank to generate from context only."}
+                {preflightCopy[actType]?.intro
+                  ?? (actType === "catchup_query"
+                    ? "Add any notes to include in the query-sheet message before generating (e.g. specific items to highlight, the Google Sheet link, or a deadline). Leave blank to generate from context only."
+                    : "Add any notes or updates to include in the follow-up message before generating (e.g. which items are still open, urgency). Leave blank to generate from context only.")}
               </div>
+              {canAutoExtract && (
+                <div>
+                  <button className="btn-soft" onClick={autoExtract} disabled={extracting}>
+                    <Icon name={extracting ? "rotate-ccw" : "sparkles"} size={13} /> {extracting ? "Reading the client's Drive…" : "Auto-fill from Drive"}
+                  </button>
+                  {extractMsg && <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>{extractMsg}</div>}
+                </div>
+              )}
               <div className="field">
-                <label>Notes to include {actType === "catchup_query" ? "(Google Sheet link, specific queries, deadline, etc.)" : "(open items, urgency, etc.)"} — optional</label>
+                <label>{preflightCopy[actType]?.label ?? `Notes to include ${actType === "catchup_query" ? "(Google Sheet link, specific queries, deadline, etc.)" : "(open items, urgency, etc.)"} — optional`}</label>
                 <textarea
                   className="notes"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  placeholder={actType === "catchup_query" ? "e.g. Sheet link: https://docs.google.com/…  — please respond by 5 Jan" : "e.g. Items still open: transactions on 12 Dec, vendor ABC"}
+                  placeholder={preflightCopy[actType]?.placeholder ?? (actType === "catchup_query" ? "e.g. Sheet link: https://docs.google.com/…  — please respond by 5 Jan" : "e.g. Items still open: transactions on 12 Dec, vendor ABC")}
                   style={{ minHeight: 100, fontFamily: "inherit" }}
                 />
               </div>

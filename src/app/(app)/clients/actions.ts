@@ -13,6 +13,7 @@ import type { SessionInfo } from "@/lib/types";
 import { isMasterAdmin } from "@/lib/roles";
 import { buildClientCode } from "@/lib/client-code";
 import { sendGmailAs } from "@/lib/google";
+import { sendAssignmentEmail } from "@/lib/assignment-email";
 import {
   INTAKE_EMAIL_SUBJECT,
   renderIntakeEmail,
@@ -1240,8 +1241,30 @@ export async function markSignedAction(
       });
     }
 
-    const { data: client } = await supabase.from("clients").select("name").eq("id", clientId).maybeSingle();
+    const { data: client } = await supabase.from("clients").select("name,services").eq("id", clientId).maybeSingle();
     const clientName = client?.name ?? null;
+
+    // Send assignment notification email to the AM (best-effort).
+    if (amId && clientName) {
+      const { data: am } = await supabase
+        .from("team_members")
+        .select("full_name,email")
+        .eq("id", amId)
+        .maybeSingle();
+      if (am?.email) {
+        const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/+$/, "");
+        void sendAssignmentEmail({
+          toEmail: am.email,
+          toName: am.full_name ?? "Team",
+          clientName,
+          services: (client?.services ?? []) as string[],
+          salesPerson: session.teamMember?.full_name ?? session.email ?? "Finanshels",
+          runUrl: appUrl ? `${appUrl}/onboarding/${runId}` : `/onboarding/${runId}`,
+          orgId: session.profile.org_id,
+        });
+      }
+    }
+
     const drive = amId && clientName ? await createClientDriveFolder(amId, clientName) : null;
     if (!drive) {
       await supabase.from("audit_events").insert({

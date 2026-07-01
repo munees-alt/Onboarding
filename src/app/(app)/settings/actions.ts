@@ -6,6 +6,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { encryptSecret } from "@/lib/crypto";
 import type { AiFeature, FeatureModel } from "@/lib/ai-config";
 import { runLeadSync, type LeadSyncResult } from "@/lib/lead-sync";
+import { runAlSync, type AlSyncResult } from "@/lib/audit-liquidation-sync";
 import type { Role } from "@/lib/types";
 
 async function orgGuard() {
@@ -187,6 +188,44 @@ export async function syncLeadsNow(): Promise<{ error?: string; result?: LeadSyn
   const result = await runLeadSync(orgId);
   revalidatePath("/settings");
   revalidatePath("/onboarding");
+  revalidatePath("/clients");
+  return { result };
+}
+
+export interface AlSyncInput {
+  enabled: boolean;
+  gmailLabel: string;
+  matchFrom?: string | null;
+  matchSubjectPrefix?: string | null;
+  mailboxMemberId?: string | null;
+}
+
+/** Save the "Cadence Audit and Liquidation" email → case automation rules (Master Admin only). */
+export async function saveAlSyncConfig(input: AlSyncInput): Promise<{ error?: string; ok?: boolean }> {
+  const orgId = await masterGuard();
+  if (!orgId) return { error: "Only the Master Admin can change these rules." };
+  const admin = createAdminClient();
+  const { error } = await admin.from("al_sync_config").upsert({
+    org_id: orgId,
+    enabled: input.enabled,
+    gmail_label: input.gmailLabel.trim(),
+    match_from: input.matchFrom?.trim() || null,
+    match_subject_prefix: input.matchSubjectPrefix?.trim() || null,
+    mailbox_member_id: input.mailboxMemberId || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "org_id" });
+  if (error) return { error: error.message };
+  revalidatePath("/settings");
+  return { ok: true };
+}
+
+/** Manually run the audit/liquidation email sync now (Master Admin only). */
+export async function syncAlNow(): Promise<{ error?: string; result?: AlSyncResult }> {
+  const orgId = await masterGuard();
+  if (!orgId) return { error: "Only the Master Admin can run the sync." };
+  const result = await runAlSync(orgId);
+  revalidatePath("/settings");
+  revalidatePath("/audit-liquidation");
   revalidatePath("/clients");
   return { result };
 }

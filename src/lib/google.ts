@@ -116,6 +116,45 @@ export async function sendGmailAs(teamMemberId: string, to: string, subject: str
   return { ok: true };
 }
 
+/** Sends an HTML email via the member's Gmail (MIME multipart with text fallback). */
+export async function sendHtmlGmailAs(
+  teamMemberId: string,
+  to: string,
+  subject: string,
+  htmlBody: string,
+  textBody: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return { ok: false, error: "Connect Google in Settings first." };
+  const boundary = "cadence_boundary_" + Math.random().toString(36).slice(2);
+  const raw = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "",
+    textBody,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "",
+    htmlBody,
+    "",
+    `--${boundary}--`,
+  ].join("\r\n");
+  const encoded = Buffer.from(raw).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw: encoded }),
+  });
+  if (!res.ok) return { ok: false, error: `Gmail error ${res.status}` };
+  return { ok: true };
+}
+
 /** Lists Gmail message ids matching a Gmail search query (e.g. 'from:sales@finanshels.com newer_than:7d'). */
 export async function listGmailMessages(teamMemberId: string, query: string, max = 25): Promise<string[]> {
   return listGmailMessageIds(teamMemberId, { q: query, max });

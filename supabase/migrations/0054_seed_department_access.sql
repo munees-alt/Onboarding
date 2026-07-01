@@ -31,16 +31,16 @@ declare
     "Tax SPC": ["my-work","tax-compliance","connections","audit-log","clients"]
   }'::jsonb;
   r record;
-  dept text;
-  nav text;
-  allowed text[];
+  v_dept text;
+  v_nav text;
+  v_allowed text[];
 begin
   for r in select id from orgs loop
-    for dept in select jsonb_object_keys(dept_defs) loop
-      select array_agg(x) into allowed from jsonb_array_elements_text(dept_defs->dept) as x;
-      foreach nav in array all_nav loop
+    for v_dept in select jsonb_object_keys(dept_defs) loop
+      select array_agg(x) into v_allowed from jsonb_array_elements_text(dept_defs->v_dept) as x;
+      foreach v_nav in array all_nav loop
         insert into dept_overrides (org_id, dept, nav_id, allow)
-        values (r.id, dept, nav, nav = any(allowed))
+        values (r.id, v_dept, v_nav, v_nav = any(v_allowed))
         on conflict (org_id, dept, nav_id) do update set allow = excluded.allow, updated_at = now();
       end loop;
     end loop;

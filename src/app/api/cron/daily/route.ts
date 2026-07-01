@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
 
   const base = process.env.NEXT_PUBLIC_APP_URL || `https://${request.headers.get("host")}`;
   const headers: HeadersInit = secret ? { authorization: `Bearer ${secret}` } : {};
-  const jobs = ["task-sla", "sales-leads", "admin-tasks"];
+  const jobs = ["task-sla", "sales-leads", "audit-liquidation-leads", "admin-tasks"];
   if (new Date().getUTCDay() === 1) jobs.push("client-digests");  // Monday only
 
   const results: Record<string, unknown> = {};

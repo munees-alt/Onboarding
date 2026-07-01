@@ -16,8 +16,10 @@ create index if not exists idx_client_team_members_client on client_team_members
 
 alter table client_team_members enable row level security;
 
+drop policy if exists "org members can read client team" on client_team_members;
 create policy "org members can read client team" on client_team_members
   for select using (org_id = auth_org_id());
 
+drop policy if exists "am and above can manage client team" on client_team_members;
 create policy "am and above can manage client team" on client_team_members
   for all using (org_id = auth_org_id());
