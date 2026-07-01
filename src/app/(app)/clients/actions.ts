@@ -14,6 +14,7 @@ import { isMasterAdmin } from "@/lib/roles";
 import { buildClientCode } from "@/lib/client-code";
 import { sendGmailAs } from "@/lib/google";
 import { sendAssignmentEmail } from "@/lib/assignment-email";
+import { queueEmail } from "@/lib/email";
 import {
   INTAKE_EMAIL_SUBJECT,
   renderIntakeEmail,
@@ -1989,6 +1990,43 @@ export async function auditAllClients(): Promise<{
 
 // ─── AML compliance ────────────────────────────────────────────────────────────
 
+/**
+ * Notify the AML leadership (admins, ops_head + the AML head "Krishna") by email
+ * when an AML record is created or moves to "Document Created". Queues into
+ * email_batch — nothing actually sends until SendGrid is enabled — and also
+ * drops an in-app notification so the signal is visible today regardless.
+ */
+async function notifyAmlEvent(orgId: string, clientId: string, clientName: string, event: "created" | "document_created" | "shared_to_client") {
+  const admin = createAdminClient();
+  const { data: members } = await admin
+    .from("team_members").select("id,full_name,email,role").eq("org_id", orgId).eq("active", true);
+  const recips = (members ?? []).filter((m) =>
+    m.email && (m.role === "admin" || m.role === "ops_head" || (m.full_name ?? "").toLowerCase().includes("krishna")));
+
+  const label = event === "created" ? "New AML review created"
+    : event === "document_created" ? "AML moved to Document Created"
+    : "AML shared with client";
+  const line = event === "created" ? `A new AML review has been created for ${clientName}.`
+    : event === "document_created" ? `The AML review for ${clientName} has moved to "Document Created".`
+    : `The AML document for ${clientName} has been shared with the client.`;
+  const subject = `${label} — ${clientName}`;
+  const html = `<p>${line}</p><p>Open the AML Compliance board in Cadence to review.</p>`;
+
+  // In-app notifications (always visible today).
+  const notifRows = recips.filter((r) => r.id).map((r) => ({
+    org_id: orgId, owner_id: r.id, kind: "aml_event", client_id: clientId, title: subject, body: line,
+  }));
+  if (notifRows.length) { try { await admin.from("notifications").insert(notifRows); } catch { /* notifications table optional */ } }
+
+  // Queued emails (no-op until SendGrid is enabled).
+  const seen = new Set<string>();
+  for (const r of recips) {
+    if (!r.email || seen.has(r.email)) continue;
+    seen.add(r.email);
+    await queueEmail({ orgId, kind: "team_update", to: r.email, toName: r.full_name, subject, html, text: line, clientId });
+  }
+}
+
 export async function saveAmlRecord(input: {
   clientId: string;
   status: string;
@@ -1999,6 +2037,10 @@ export async function saveAmlRecord(input: {
   const session = await getSession();
   if (!session?.profile.org_id) return { error: "Not signed in." };
   const supabase = await createClient();
+  // Previous status — so we only fire the email notification on an actual
+  // transition INTO document_created / shared_to_client, not on every save.
+  const { data: prev } = await supabase.from("aml_records").select("status").eq("client_id", input.clientId).maybeSingle();
+  const prevStatus = (prev as { status?: string } | null)?.status ?? null;
   const { error } = await supabase.from("aml_records").upsert(
     {
       org_id: session.profile.org_id,
@@ -2014,6 +2056,11 @@ export async function saveAmlRecord(input: {
     { onConflict: "client_id" },
   );
   if (error) return { error: error.message };
+  // Email + in-app notification on transition into document_created / shared_to_client.
+  if ((input.status === "document_created" || input.status === "shared_to_client") && prevStatus !== input.status) {
+    const { data: c } = await supabase.from("clients").select("name").eq("id", input.clientId).maybeSingle();
+    await notifyAmlEvent(session.profile.org_id, input.clientId, c?.name ?? "Client", input.status as "document_created" | "shared_to_client");
+  }
   // If link_sent / signed / document_created, create an admin_tasks chip so the AM/team knows to follow up.
   if (input.status === "link_sent" || input.status === "signed" || input.status === "document_created") {
     const { data: client } = await supabase.from("clients").select("name,am_id").eq("id", input.clientId).maybeSingle();
@@ -2221,11 +2268,16 @@ export async function assignToAmlAction(clientId: string): Promise<{ error?: str
   const subordinates = krishna ? [...amlTeamIds].filter(id => id !== krishna.id) : [...amlTeamIds];
   const autoAssignTo = subordinates.length === 1 ? subordinates[0] : null;
 
+  // Was there already an AML record? If not, this call creates one → notify.
+  const { data: existingAml } = await supabase.from("aml_records").select("client_id").eq("client_id", clientId).maybeSingle();
+  const isNewAml = !existingAml;
+
   // Upsert aml_record (don't overwrite existing status/notes if re-assigning)
   await supabase.from("aml_records").upsert(
     { org_id: session.profile.org_id, client_id: clientId, status: "pending", assigned_to: autoAssignTo },
     { onConflict: "client_id", ignoreDuplicates: true },
   );
+  if (isNewAml) { await notifyAmlEvent(session.profile.org_id, clientId, client.name, "created"); }
   // If re-assigning (record exists), just update assigned_to if it was null
   await supabase.from("aml_records")
     .update({ assigned_to: autoAssignTo })

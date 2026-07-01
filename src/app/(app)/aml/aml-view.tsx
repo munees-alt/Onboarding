@@ -19,12 +19,12 @@ type AmlClient = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "Pending", in_review: "In Review", link_sent: "Link Sent", signed: "Signed", document_created: "Document Created", completed: "Completed",
+  pending: "Pending", in_review: "In Review", link_sent: "Link Sent", signed: "Signed", document_created: "Document Created", shared_to_client: "Shared to Client", completed: "Completed",
 };
 const STATUS_COLOR: Record<string, string> = {
-  pending: "#94a3b8", in_review: "var(--orange)", link_sent: "#3b82f6", signed: "#8b5cf6", document_created: "#06b6d4", completed: "#16a34a",
+  pending: "#94a3b8", in_review: "var(--orange)", link_sent: "#3b82f6", signed: "#8b5cf6", document_created: "#06b6d4", shared_to_client: "#d97706", completed: "#16a34a",
 };
-const ALL_STATUSES = ["pending", "in_review", "document_created", "link_sent", "signed", "completed"] as const;
+const ALL_STATUSES = ["pending", "in_review", "document_created", "link_sent", "signed", "shared_to_client", "completed"] as const;
 
 export function AmlView({
   clients, canEdit, isAdmin, isHead, amlTeam,
@@ -54,6 +54,7 @@ export function AmlView({
   );
   const activeClients = searched.filter((c) => ACTIVE_STATUSES.includes(c.status));
   const documentCreatedClients = searched.filter((c) => c.status === "document_created");
+  const sharedClients = searched.filter((c) => c.status === "shared_to_client");
   const completedClients = searched.filter((c) => c.status === "completed");
   // legacy: keep visible for compatibility with tab filter if used
   const visible = searched.filter((c) => filter === "all" || c.status === filter);
@@ -107,12 +108,12 @@ export function AmlView({
           style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 13, width: 240 }}
         />
         <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
-          {activeClients.length} pending · {documentCreatedClients.length} doc created · {completedClients.length} completed
+          {activeClients.length} pending · {documentCreatedClients.length} doc created · {sharedClients.length} shared · {completedClients.length} completed
         </span>
       </div>
 
-      {/* Split layout: three panels side by side */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20, alignItems: "start" }}>
+      {/* Split layout: four panels side by side */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 16, alignItems: "start" }}>
 
         {/* ── Pending / Active panel ── */}
         <div>
@@ -199,7 +200,6 @@ export function AmlView({
                   canEdit={canEdit}
                   isHead={!!isHead}
                   onAssign={amlTeam.length > 0 ? () => setAssignPanel(c.clientId) : undefined}
-                  onSendMessage={() => setMessageFor(c)}
                 />
                 {isAdmin && (
                   <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
@@ -230,6 +230,69 @@ export function AmlView({
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {documentCreatedClients.map((c) => (
               <div key={c.clientId} style={{ background: "var(--card)", border: "1px solid #a5f3fc", borderRadius: 10, padding: "14px 18px" }}>
+                {editing === c.clientId ? (
+                  <AmlEditForm
+                    clientId={c.clientId}
+                    clientName={c.clientName}
+                    form={forms[c.clientId] ?? {}}
+                    onChange={(patch) => setForms((f) => ({ ...f, [c.clientId]: { ...f[c.clientId], ...patch } }))}
+                    onSave={() => doSave(c.clientId)}
+                    onCancel={() => setEditing(null)}
+                    saving={saving === c.clientId}
+                    driveLink={c.driveLink}
+                    runId={c.runId}
+                  />
+                ) : assignPanel === c.clientId ? (
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>{c.clientName} — Assign team member</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                      {amlTeam.map((m) => (
+                        <button key={m.id} className={c.assignedTo === m.id ? "btn-primary" : "btn-ghost"} disabled={assignBusy} style={{ fontSize: 13 }} onClick={() => doAssign(c.clientId, m.id)}>
+                          {m.name}
+                        </button>
+                      ))}
+                    </div>
+                    <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setAssignPanel(null)}>Cancel</button>
+                  </div>
+                ) : (
+                  <div>
+                    <AmlClientRow
+                      c={c}
+                      onEdit={() => startEdit(c)}
+                      canEdit={canEdit}
+                      isHead={!!isHead}
+                      onAssign={amlTeam.length > 0 ? () => setAssignPanel(c.clientId) : undefined}
+                      onSendMessage={() => setMessageFor(c)}
+                    />
+                    {isAdmin && (
+                      <button style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
+                        onClick={() => setAdminPanel(c.clientId)}>
+                        Admin actions
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Shared to Client panel ── */}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-1)" }}>Shared to Client</span>
+            <span style={{ fontSize: 11, fontWeight: 700, background: "#fef3c7", color: "#d97706", padding: "2px 8px", borderRadius: 20 }}>
+              {sharedClients.length}
+            </span>
+          </div>
+          {sharedClients.length === 0 && (
+            <div style={{ padding: "28px 16px", textAlign: "center", color: "var(--ink-3)", fontSize: 12.5, background: "var(--card)", border: "1px dashed var(--border)", borderRadius: 10 }}>
+              Nothing shared with a client yet.
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {sharedClients.map((c) => (
+              <div key={c.clientId} style={{ background: "var(--card)", border: "1px solid #fde68a", borderRadius: 10, padding: "14px 18px" }}>
                 {editing === c.clientId ? (
                   <AmlEditForm
                     clientId={c.clientId}
@@ -554,7 +617,7 @@ function AmlClientRow({
             </div>
           )}
         </div>
-        {c.signingLink && onSendMessage && (
+        {onSendMessage && (
           <button
             onClick={onSendMessage}
             title="Copy the client-ready AML sign-off message"
