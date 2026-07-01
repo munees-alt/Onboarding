@@ -82,11 +82,15 @@ export default async function TaxCompliancePage() {
     (taxLeadId != null && currentMemberId === taxLeadId);
 
   return (
-    <div style={{ maxWidth: 1400, margin: "0 auto", padding: "28px 24px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Tax Compliance</h1>
-        <span className="pill orange" style={{ fontSize: 11 }}>Tax team</span>
-        {isMasterAdmin && <span className="pill" style={{ fontSize: 11, background: "#fef2f2", color: "#dc2626" }}>Admin panel active</span>}
+    <div style={{ padding: "22px 28px 0" }}>
+      <div className="bk-head">
+        <div className="bk-title-row">
+          <h1 className="bk-title">Tax Compliance</h1>
+          <span className="bk-badge">Tax team</span>
+          {isMasterAdmin && (
+            <span className="bk-badge-admin"><span className="bk-dot" />Admin panel active</span>
+          )}
+        </div>
       </div>
       {error && <div className="alert-red">{error}</div>}
       <TaxComplianceView

@@ -6,6 +6,7 @@
 @import "../styles/onboarding-v3.css";
 @import "../styles/onboarding-deck.css";
 @import "../styles/orgchart.css";
+@import "../styles/board-kanban.css";
 
 /* App Router renders children directly inside <body> (no #root wrapper). */
 html,

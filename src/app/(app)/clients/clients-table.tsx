@@ -286,7 +286,7 @@ export function ClientsTable({
           seenGroups.add(c.group_id);
           const allGroupChildren = groupedClients[c.group_id] ?? [];
           const children = allGroupChildren.filter((ch) => matchesTab(ch) && matchesSearch(ch) && matchesFilters(ch));
-          const hasFilter = tab !== "All" || q || fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all" || fTeamLead !== "all";
+          const hasFilter = tab !== "All" || q || fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all" || fTeamLead !== "all" || fFrequency !== "all";
           if (children.length === 0 && hasFilter) continue;
           rows.push({ kind: "group-header", groupId: c.group_id, groupName: groupMap[c.group_id]?.name ?? "Group", children: allGroupChildren });
         }
@@ -300,17 +300,42 @@ export function ClientsTable({
     for (const row of rows) {
       result.push(row);
       if (row.kind === "group-header" && expandedGroups.has(row.groupId)) {
-        const visibleChildren = row.children.filter((ch) => {
-          const tabOk = tab === "All" || ch.status === tab.toLowerCase();
-          const searchOk = !q || ch.name.toLowerCase().includes(q) || (ch.owner_name ?? "").toLowerCase().includes(q);
-          return tabOk && searchOk && matchesFilters(ch);
-        });
+        // Reuse the exact same predicates as top-level rows (matchesTab / matchesSearch /
+        // matchesFilters) — a previous inline re-implementation here only checked a bare
+        // status match, so the "Overdue Payments" / "AML Pending" quick tabs and the
+        // industry/entity/authority/team-lead/frequency filters silently did nothing to
+        // clients nested inside an expanded group.
+        const visibleChildren = row.children.filter((ch) => matchesTab(ch) && matchesSearch(ch) && matchesFilters(ch));
         for (const ch of visibleChildren) result.push({ kind: "group-child", client: ch, groupId: row.groupId });
       }
     }
 
     return result;
   }, [clients, tab, search, fIndustry, fEntity, fMonth, fAuthority, fTeamLead, fFrequency, teamByClient, overdueClientIds, amlAssignedClientIds, groupedClients, groupMap, expandedGroups]);
+
+  // Filter-dropdown option lists — derived from the live client list so a filter
+  // never offers a value that would match zero rows.
+  const industryOpts = useMemo(() => [...new Set(clients.map((c) => c.industry).filter(Boolean) as string[])].sort(), [clients]);
+  const monthOpts = useMemo(() => [...new Set(clients.map((c) => c.contract_start_date?.slice(0, 7)).filter(Boolean) as string[])].sort().reverse(), [clients]);
+  const authorityOpts = useMemo(() => [...new Set(clients.map((c) => c.trade_licence_authority).filter(Boolean) as string[])].sort(), [clients]);
+  const teamLeadOpts = useMemo(() => [...new Set(Object.values(teamByClient).flatMap((t) => t.teamLeads))].sort(), [teamByClient]);
+  const hasFilters = fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all" || fTeamLead !== "all" || fFrequency !== "all";
+  const clearFilters = () => { setFIndustry("all"); setFEntity("all"); setFMonth("all"); setFAuthority("all"); setFTeamLead("all"); setFFrequency("all"); };
+
+  // Live counts per status pill / quick-filter tab — always computed off the full
+  // client list so switching tabs doesn't change the numbers on the other pills.
+  const tabCounts = useMemo(() => {
+    const counts = {} as Record<(typeof TABS)[number], number>;
+    for (const t of TABS) {
+      if (t === "All") counts[t] = clients.length;
+      else if (t === "Overdue Payments") counts[t] = clients.filter((c) => overdueClientIds.has(c.id)).length;
+      else if (t === "AML Pending") counts[t] = clients.filter((c) => ["active", "onboarding", "hold", "paused"].includes(c.status ?? "") && !amlAssignedClientIds.has(c.id)).length;
+      else counts[t] = clients.filter((c) => c.status === t.toLowerCase()).length;
+    }
+    return counts;
+  }, [clients, overdueClientIds, amlAssignedClientIds]);
+  const STATUS_TABS = TABS.slice(0, 7);
+  const QUICK_TABS = TABS.slice(7);
 
   const bulkStatus = async (status: "lead" | "active" | "hold" | "paused", label: string) => {
     const ids = [...selected];
@@ -401,10 +426,10 @@ export function ClientsTable({
   return (
     <div className="scroll">
       <div className="page">
-        <div className="section-head">
+        <div className="bk-title-row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
-            <h2>Clients</h2>
-            <div className="sub">All clients and their onboarding status.</div>
+            <h1 className="bk-title">Clients</h1>
+            <div className="bk-subtitle">All clients and their onboarding status · {clients.length} total</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn-ghost" onClick={() => router.push("/clients/new-group")} title="Multiple companies sharing one owner / proposal">
@@ -416,104 +441,124 @@ export function ClientsTable({
           </div>
         </div>
 
-        <div className="runs-card">
-          <div className="head">
-            <div className="actions" style={{ gap: 6 }}>
-              {TABS.map((t) => (
-                <button
-                  key={t}
-                  className={"tab-pill" + (tab === t ? " active" : "")}
-                  onClick={() => setTab(t)}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
-              <div style={{ position: "relative" }}>
+        <div className="bk-table-card" style={{ marginTop: 16 }}>
+          <div className="bk-pill-tabs">
+            {STATUS_TABS.map((t) => (
+              <button
+                key={t}
+                className={"tab-pill" + (tab === t ? " active" : "")}
+                onClick={() => setTab(t)}
+              >
+                {t} <span className="bk-tab-count">{tabCounts[t]}</span>
+              </button>
+            ))}
+          </div>
+          <div className="bk-pill-tabs bk-pill-tabs-secondary">
+            {QUICK_TABS.map((t) => (
+              <button
+                key={t}
+                className={"tab-pill" + (tab === t ? " active" : "")}
+                onClick={() => setTab(t)}
+              >
+                {t} <span className="bk-tab-count">{tabCounts[t]}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="bk-toolbar">
+            <div className="bk-toolbar-row">
+              <div className="bk-search">
+                <Icon name="search" size={16} />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search clients…"
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 12px 7px 30px", fontSize: 13, width: 220, outline: "none" }}
                 />
-                <span style={{ position: "absolute", left: 9, top: 8, color: "var(--ink-3)" }}>
-                  <Icon name="search" size={14} />
-                </span>
               </div>
-              <button className="btn-ghost" onClick={() => setColsOpen((v) => !v)} style={{ fontSize: 12.5 }} title="Show / hide columns">
-                <Icon name="columns" size={13} /> Columns
-              </button>
-              {colsOpen && (
-                <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: "#fff", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 6px 24px rgba(0,0,0,0.10)", padding: "8px 10px", zIndex: 10, minWidth: 200 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", marginBottom: 6 }}>Visible columns</div>
-                  {ALL_COLS.filter((c) => !c.admin || masterAdmin).map((c) => (
-                    <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 2px", fontSize: 13, cursor: "pointer" }}>
-                      <input type="checkbox" checked={visibleCols.has(c.id)} onChange={() => toggleCol(c.id)} />
-                      {c.label}
-                    </label>
-                  ))}
-                  <div style={{ borderTop: "1px solid var(--border)", marginTop: 6, paddingTop: 6, fontSize: 11, color: "var(--ink-3)" }}>
-                    Client, Status &amp; Actions always visible.
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
 
-          {/* Additional filters */}
-          {(() => {
-            const industryOpts = [...new Set(clients.map((c) => c.industry).filter(Boolean) as string[])].sort();
-            const monthOpts = [...new Set(clients.map((c) => c.contract_start_date?.slice(0, 7)).filter(Boolean) as string[])].sort().reverse();
-            const authorityOpts = [...new Set(clients.map((c) => c.trade_licence_authority).filter(Boolean) as string[])].sort();
-            const teamLeadOpts = [...new Set(Object.values(teamByClient).flatMap((t) => t.teamLeads))].sort();
-            const hasFilters = fIndustry !== "all" || fEntity !== "all" || fMonth !== "all" || fAuthority !== "all" || fTeamLead !== "all" || fFrequency !== "all";
-            const ctrl: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 7, padding: "5px 8px", fontSize: 12, background: "#fff", height: 30 };
-            return (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid var(--border)", background: "var(--bg-soft)" }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Filter</span>
-                {industryOpts.length > 0 && (
-                  <select value={fIndustry} onChange={(e) => setFIndustry(e.target.value)} style={ctrl}>
+              {industryOpts.length > 0 && (
+                <label className="bk-select-wrap">
+                  <select className="bk-select" value={fIndustry} onChange={(e) => setFIndustry(e.target.value)}>
                     <option value="all">All industries</option>
                     {industryOpts.map((i) => <option key={i} value={i}>{i}</option>)}
                   </select>
-                )}
-                <select value={fEntity} onChange={(e) => setFEntity(e.target.value)} style={ctrl}>
+                  <Icon name="chevron-down" size={13} className="bk-select-chev" />
+                </label>
+              )}
+              <label className="bk-select-wrap">
+                <select className="bk-select" value={fEntity} onChange={(e) => setFEntity(e.target.value)}>
                   <option value="all">All entities</option>
                   {ENTITIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
-                {monthOpts.length > 0 && (
-                  <select value={fMonth} onChange={(e) => setFMonth(e.target.value)} style={ctrl}>
-                    <option value="all">All months</option>
-                    {monthOpts.map((m) => <option key={m} value={m}>{new Date(m + "-01").toLocaleDateString("en-GB", { month: "short", year: "numeric" })}</option>)}
-                  </select>
-                )}
-                {authorityOpts.length > 0 && (
-                  <select value={fAuthority} onChange={(e) => setFAuthority(e.target.value)} style={ctrl}>
+                <Icon name="chevron-down" size={13} className="bk-select-chev" />
+              </label>
+              {authorityOpts.length > 0 && (
+                <label className="bk-select-wrap">
+                  <select className="bk-select" value={fAuthority} onChange={(e) => setFAuthority(e.target.value)}>
                     <option value="all">All authorities</option>
                     {authorityOpts.map((a) => <option key={a} value={a}>{a}</option>)}
                   </select>
-                )}
-                {teamLeadOpts.length > 0 && (
-                  <select value={fTeamLead} onChange={(e) => setFTeamLead(e.target.value)} style={ctrl}>
+                  <Icon name="chevron-down" size={13} className="bk-select-chev" />
+                </label>
+              )}
+              {teamLeadOpts.length > 0 && (
+                <label className="bk-select-wrap">
+                  <select className="bk-select" value={fTeamLead} onChange={(e) => setFTeamLead(e.target.value)}>
                     <option value="all">All team leads</option>
                     {teamLeadOpts.map((tl) => <option key={tl} value={tl}>{tl}</option>)}
                   </select>
-                )}
-                <select value={fFrequency} onChange={(e) => setFFrequency(e.target.value)} style={ctrl}>
+                  <Icon name="chevron-down" size={13} className="bk-select-chev" />
+                </label>
+              )}
+              <label className="bk-select-wrap">
+                <select className="bk-select" value={fFrequency} onChange={(e) => setFFrequency(e.target.value)}>
                   <option value="all">All frequencies</option>
                   <option value="monthly">Monthly</option>
                   <option value="quarterly">Quarterly</option>
                   <option value="annually">Annually</option>
                 </select>
-                {hasFilters && (
-                  <button className="btn-ghost" style={{ height: 30, fontSize: 12 }} onClick={() => { setFIndustry("all"); setFEntity("all"); setFMonth("all"); setFAuthority("all"); setFTeamLead("all"); setFFrequency("all"); }}>
-                    <Icon name="x" size={12} /> Clear
-                  </button>
+                <Icon name="chevron-down" size={13} className="bk-select-chev" />
+              </label>
+              {monthOpts.length > 0 && (
+                <label className="bk-select-wrap">
+                  <select className="bk-select" value={fMonth} onChange={(e) => setFMonth(e.target.value)}>
+                    <option value="all">All months</option>
+                    {monthOpts.map((m) => <option key={m} value={m}>{new Date(m + "-01").toLocaleDateString("en-GB", { month: "short", year: "numeric" })}</option>)}
+                  </select>
+                  <Icon name="chevron-down" size={13} className="bk-select-chev" />
+                </label>
+              )}
+
+              <div className="bk-spacer" />
+
+              <div style={{ position: "relative" }}>
+                <button className="btn-ghost bk-toolbar-btn" onClick={() => setColsOpen((v) => !v)} title="Show / hide columns">
+                  <Icon name="columns" size={13} /> Columns
+                </button>
+                {colsOpen && (
+                  <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: "#fff", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 6px 24px rgba(0,0,0,0.10)", padding: "8px 10px", zIndex: 10, minWidth: 200 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", marginBottom: 6 }}>Visible columns</div>
+                    {ALL_COLS.filter((c) => !c.admin || masterAdmin).map((c) => (
+                      <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 2px", fontSize: 13, cursor: "pointer" }}>
+                        <input type="checkbox" checked={visibleCols.has(c.id)} onChange={() => toggleCol(c.id)} />
+                        {c.label}
+                      </label>
+                    ))}
+                    <div style={{ borderTop: "1px solid var(--border)", marginTop: 6, paddingTop: 6, fontSize: 11, color: "var(--ink-3)" }}>
+                      Client, Status &amp; Actions always visible.
+                    </div>
+                  </div>
                 )}
               </div>
-            );
-          })()}
+            </div>
+
+            {hasFilters && (
+              <div className="bk-chips">
+                <span className="bk-chips-label">Filters active</span>
+                <button className="bk-chip-clear" onClick={clearFilters}>Clear all</button>
+              </div>
+            )}
+          </div>
 
           {selected.size > 0 && (canManageStatus || canDelete) && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "var(--orange-soft)", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
@@ -528,7 +573,8 @@ export function ClientsTable({
               <button className="btn-ghost" style={{ marginLeft: "auto" }} onClick={clearSel}>Clear</button>
             </div>
           )}
-          <table className="runs-table">
+          <div className="bk-table-wrap">
+          <table className="bk-table">
             <thead>
               <tr>
                 {(canManageStatus || canDelete) && (
@@ -617,13 +663,16 @@ export function ClientsTable({
                       </td>
                     )}
                     <td>
-                      <div className="client-cell" style={isChild ? { paddingLeft: 24 } : undefined}>
-                        <div className="client" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          {isChild && <span style={{ color: "var(--ink-4)", fontSize: 11 }}>└</span>}
-                          {c.name}
+                      <div className="bk-table-client" style={isChild ? { paddingLeft: 24 } : undefined}>
+                        <div className="bk-table-client-name">
+                          {isChild && <span style={{ color: "var(--ink-4)", fontSize: 11, flexShrink: 0 }}>└</span>}
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</span>
                           {!c.profile_complete && <ProfileIncompletePopover client={c} />}
                         </div>
-                        <div className="wf">{c.owner_name ?? "—"}</div>
+                        {masterAdmin && c.custom_code && (
+                          <div className="bk-table-client-code">{c.custom_code}</div>
+                        )}
+                        <div className="bk-table-client-owner">{c.owner_name ?? "—"}</div>
                       </div>
                     </td>
                     {masterAdmin && show("code") && (
@@ -640,17 +689,20 @@ export function ClientsTable({
                       const tlNames = t?.teamLeads ?? [];
                       const srNames = t?.seniors ?? [];
                       return (
-                        <td style={{ fontSize: 12 }}>
-                          {tlNames.length ? <div><span style={{ color: "var(--ink-4)", fontWeight: 600, marginRight: 4 }}>TL:</span>{tlNames.join(", ")}</div> : null}
-                          {srNames.length ? <div><span style={{ color: "var(--ink-4)", fontWeight: 600, marginRight: 4 }}>Sr:</span>{srNames.join(", ")}</div> : null}
-                          {!tlNames.length && !srNames.length && <span style={{ color: "var(--ink-4)" }}>—</span>}
+                        <td>
+                          <div className="bk-team-cell">
+                            {tlNames.length ? <div><span className="lbl">TL:</span>{tlNames.join(", ")}</div> : null}
+                            {srNames.length ? <div><span className="lbl">Sr:</span>{srNames.join(", ")}</div> : null}
+                            {!tlNames.length && !srNames.length && <span style={{ color: "var(--ink-4)" }}>—</span>}
+                          </div>
                         </td>
                       );
                     })()}
                     {show("services") && (
                       <td>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {(c.services ?? []).slice(0, 3).map((s) => (
+                        <div className="bk-service-chips">
+                          {(c.services ?? []).length === 0 && <span style={{ color: "var(--ink-4)", fontSize: 12 }}>—</span>}
+                          {(c.services ?? []).map((s) => (
                             <span key={s} className="pill gray" style={{ fontSize: 10.5, padding: "2px 8px" }}>
                               {s}
                             </span>
@@ -779,6 +831,7 @@ export function ClientsTable({
               })}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
 

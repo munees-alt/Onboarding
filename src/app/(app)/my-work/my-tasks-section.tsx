@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks, deleteAdminTask, snoozeAdminTask } from "./actions";
@@ -36,8 +36,8 @@ const KIND_COLOR: Record<string, string> = {
   zoho_followup: "#7e3aaf",
   ct_reg_followup: "#b91c1c",
   vat_reg_followup: "#b45309",
-  docs_overdue: "#075985",
-  access_overdue: "#15803d",
+  docs_overdue: "#0f766e",
+  access_overdue: "#16a34a",
   task_overdue: "#92400e",
   weekly_update: "#ea580c",
   compliance_alert: "#dc2626",
@@ -56,6 +56,27 @@ function ageLabel(iso: string) {
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
 }
+
+function isEscalatedTitle(title: string) {
+  return title.startsWith("[Escalated]") || title.startsWith("[1 week");
+}
+
+function isOverdueTask(t: AdminTaskItem) {
+  return ageMs(t.createdAt) >= DAY_MS;
+}
+
+type TabKey = "all" | "overdue" | "escalated" | "access" | "documents";
+
+const CATEGORY_META: Record<
+  "overdue" | "escalated" | "access" | "documents" | "other",
+  { label: string; dot: string; headBg: string; headBorder: string; headText: string; rowBorder: string; accent: string }
+> = {
+  overdue: { label: "Overdue", dot: "#dc2626", headBg: "#fef2f2", headBorder: "#fecaca", headText: "#dc2626", rowBorder: "#f97316", accent: "#f97316" },
+  escalated: { label: "Escalated", dot: "#dc2626", headBg: "#fef2f2", headBorder: "#fecaca", headText: "#dc2626", rowBorder: "#dc2626", accent: "#dc2626" },
+  access: { label: "Access", dot: "#16a34a", headBg: "#f0fdf4", headBorder: "#bbf7d0", headText: "#15803d", rowBorder: "#16a34a", accent: "#16a34a" },
+  documents: { label: "Documents", dot: "#0f766e", headBg: "#f0fdfa", headBorder: "#99f6e4", headText: "#0f766e", rowBorder: "#0f766e", accent: "#0f766e" },
+  other: { label: "New", dot: "#78716c", headBg: "#fafaf9", headBorder: "#e7e5e4", headText: "#57534e", rowBorder: "#a8a29e", accent: "#a8a29e" },
+};
 
 export function MyTasksSection({
   items,
@@ -76,13 +97,47 @@ export function MyTasksSection({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkNotes, setBulkNotes] = useState("");
   const [bulkSaving, startBulk] = useTransition();
+  const [tab, setTab] = useState<TabKey>("all");
+  const [search, setSearch] = useState("");
 
   const now = Date.now();
   const openItems = items.filter((t) => t.status === "open" && !(t.snoozedUntil && new Date(t.snoozedUntil).getTime() > now));
   const snoozedItems = items.filter((t) => t.status === "open" && t.snoozedUntil && new Date(t.snoozedUntil).getTime() > now);
   const closedItems = items.filter((t) => t.status === "closed");
-  const overdue = openItems.filter((t) => ageMs(t.createdAt) >= DAY_MS);
-  const today = openItems.filter((t) => ageMs(t.createdAt) < DAY_MS);
+  const overdue = openItems.filter(isOverdueTask);
+
+  const searchedOpen = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return openItems;
+    return openItems.filter((t) => (t.clientName ?? "").toLowerCase().includes(q) || t.title.toLowerCase().includes(q));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openItems, search]);
+
+  const catOverdue = useMemo(() => searchedOpen.filter(isOverdueTask), [searchedOpen]);
+  const catEscalated = useMemo(() => searchedOpen.filter((t) => isEscalatedTitle(t.title)), [searchedOpen]);
+  const catAccess = useMemo(() => searchedOpen.filter((t) => t.kind === "access_overdue"), [searchedOpen]);
+  const catDocuments = useMemo(() => searchedOpen.filter((t) => t.kind === "docs_overdue"), [searchedOpen]);
+  const catOther = useMemo(
+    () => searchedOpen.filter((t) => !isOverdueTask(t) && !isEscalatedTitle(t.title) && t.kind !== "access_overdue" && t.kind !== "docs_overdue"),
+    [searchedOpen],
+  );
+
+  const tabs: { key: TabKey; label: string; count: number; dot: string | null }[] = [
+    { key: "all", label: "All", count: searchedOpen.length, dot: null },
+    { key: "overdue", label: "Overdue", count: catOverdue.length, dot: CATEGORY_META.overdue.dot },
+    { key: "escalated", label: "Escalated", count: catEscalated.length, dot: CATEGORY_META.escalated.dot },
+    { key: "access", label: "Access", count: catAccess.length, dot: CATEGORY_META.access.dot },
+    { key: "documents", label: "Documents", count: catDocuments.length, dot: CATEGORY_META.documents.dot },
+  ];
+
+  const allSections = [
+    { key: "overdue" as const, meta: CATEGORY_META.overdue, list: catOverdue },
+    { key: "escalated" as const, meta: CATEGORY_META.escalated, list: catEscalated },
+    { key: "access" as const, meta: CATEGORY_META.access, list: catAccess },
+    { key: "documents" as const, meta: CATEGORY_META.documents, list: catDocuments },
+    { key: "other" as const, meta: CATEGORY_META.other, list: catOther },
+  ];
+  const visibleSections = allSections.filter((s) => (tab === "all" ? s.list.length > 0 : s.key === tab));
 
   const selectedOpen = [...selected].filter((id) => openItems.some((t) => t.id === id));
 
@@ -115,50 +170,60 @@ export function MyTasksSection({
   };
 
   return (
-    <div style={{ marginBottom: 28 }}>
+    <div className="bk-wrap" style={{ marginBottom: 28 }}>
       {/* Header */}
-      <div className="section-head" style={{ marginBottom: 12 }}>
+      <div className="bk-action-head">
         <div>
-          <h2 style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            Action Items
-            {openItems.length > 0 && (
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  padding: "2px 8px",
-                  borderRadius: 999,
-                  background: overdue.length > 0 ? "#dc2626" : "var(--orange)",
-                  color: "#fff",
-                }}
-              >
-                {openItems.length}
-              </span>
-            )}
-          </h2>
-          <div className="sub">
-            Only your assigned tasks. Escalates to next level after 2 days unresolved. Close to remove from chain.
+          <div className="bk-title-row">
+            <h2 className="bk-title" style={{ margin: 0 }}>
+              Action Items
+            </h2>
+            {openItems.length > 0 && <span className="bk-count-badge">{openItems.length}</span>}
+          </div>
+          <div className="bk-subtitle">
+            Only your assigned tasks. Escalates to the next level after 2 days unresolved. Close to remove from the chain.
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {canScan && (
-            <button
-              className="btn ghost"
-              disabled={scanning}
-              onClick={() => {
-                setScanning(true);
-                runAutoAdminTaskScan().then((res) => {
-                  setScanning(false);
-                  setFlash(res.ok ? `${res.created} new task(s) generated.` : "Scan failed.");
-                  setTimeout(() => setFlash(null), 4000);
-                });
-              }}
-            >
-              <Icon name="refresh-cw" size={13} /> {scanning ? "Scanning…" : "Run scan"}
-            </button>
-          )}
-        </div>
+        {canScan && (
+          <button
+            className="bk-btn-secondary"
+            disabled={scanning}
+            onClick={() => {
+              setScanning(true);
+              runAutoAdminTaskScan().then((res) => {
+                setScanning(false);
+                setFlash(res.ok ? `${res.created} new task(s) generated.` : "Scan failed.");
+                setTimeout(() => setFlash(null), 4000);
+              });
+            }}
+          >
+            <Icon name="refresh-cw" size={13} /> {scanning ? "Scanning…" : "Run scan"}
+          </button>
+        )}
       </div>
+
+      {/* Filter tabs + search */}
+      {openItems.length > 0 && (
+        <div className="bk-filter-row">
+          <div className="bk-filter-tabs">
+            {tabs.map((tb) => (
+              <button
+                key={tb.key}
+                className={`bk-filter-tab${tab === tb.key ? " active" : ""}`}
+                onClick={() => setTab(tb.key)}
+              >
+                {tb.dot && <span className="bk-filter-tab-dot" style={{ background: tb.dot }} />}
+                {tb.label} {tb.count}
+              </button>
+            ))}
+          </div>
+          <div className="bk-spacer" />
+          <div className="bk-search">
+            <Icon name="search" size={16} />
+            <input placeholder="Search tasks or clients…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+        </div>
+      )}
 
       {flash && (
         <div
@@ -206,7 +271,7 @@ export function MyTasksSection({
               width: "100%",
               minHeight: 48,
               padding: 10,
-              border: "1px solid var(--border)",
+              border: "1px solid #e7e5e4",
               borderRadius: 8,
               fontSize: 12.5,
               fontFamily: "inherit",
@@ -214,11 +279,12 @@ export function MyTasksSection({
             }}
           />
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn primary" disabled={bulkSaving} onClick={doBulkClose}>
+            <button className="bk-btn-primary" disabled={bulkSaving} onClick={doBulkClose}>
               {bulkSaving ? "Closing…" : `Close ${selectedOpen.length} items`}
             </button>
             <button
-              className="btn ghost"
+              className="bk-btn-secondary"
+              style={{ borderColor: "#e7e5e4", color: "#57534e" }}
               onClick={() => {
                 setSelected(new Set());
                 setBulkNotes("");
@@ -234,174 +300,76 @@ export function MyTasksSection({
         <div
           style={{
             background: "#fff",
-            border: "1px solid var(--border)",
+            border: "1px solid #f0efec",
             borderRadius: 10,
             padding: "32px 20px",
             textAlign: "center",
-            color: "var(--ink-3)",
+            color: "#a8a29e",
             fontSize: 13,
           }}
         >
           Nothing assigned to you right now.
         </div>
+      ) : visibleSections.length === 0 ? (
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #f0efec",
+            borderRadius: 10,
+            padding: "32px 20px",
+            textAlign: "center",
+            color: "#a8a29e",
+            fontSize: 13,
+          }}
+        >
+          No action items match your filters.
+        </div>
       ) : (
-        <>
-          {/* OVERDUE — 1+ day old */}
-          {overdue.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  marginBottom: 8,
-                  padding: "6px 10px",
-                  background: "#fef2f2",
-                  border: "1px solid #fecaca",
-                  borderRadius: 8,
-                }}
-              >
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: "#dc2626",
-                    flexShrink: 0,
-                    display: "inline-block",
-                  }}
-                />
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: "#dc2626",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.06em",
-                    flex: 1,
-                  }}
-                >
-                  Overdue — {overdue.length} item{overdue.length !== 1 ? "s" : ""}
-                </span>
-                <button
-                  style={{
-                    fontSize: 11,
-                    color: "#dc2626",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: 0,
-                    textDecoration: "underline",
-                  }}
-                  onClick={() => selectGroup(overdue)}
-                >
-                  Select all
-                </button>
-              </div>
-              <div style={{ display: "grid", gap: 6 }}>
-                {overdue.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    t={t}
-                    pending={pending}
-                    start={start}
-                    selected={selected.has(t.id)}
-                    onToggle={() => toggleItem(t.id)}
-                    canDelete={canDelete}
-                    canSnooze={canSnooze}
-                    isOverdue
-                  />
-                ))}
-              </div>
+        visibleSections.map((section) => (
+          <div key={section.key} className="bk-action-section" style={{ borderLeftColor: section.meta.accent }}>
+            <div className="bk-action-section-head" style={{ background: section.meta.headBg, borderBottomColor: section.meta.headBorder }}>
+              <span className="bk-action-section-dot" style={{ background: section.meta.dot }} />
+              <span className="bk-action-section-label" style={{ color: section.meta.headText }}>
+                {section.meta.label} — {section.list.length} item{section.list.length !== 1 ? "s" : ""}
+              </span>
+              <button className="bk-action-section-select" style={{ color: section.meta.headText }} onClick={() => selectGroup(section.list)}>
+                Select all
+              </button>
             </div>
-          )}
-
-          {/* TODAY — less than 1 day old */}
-          {today.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  marginBottom: 8,
-                  padding: "6px 10px",
-                  background: "#fffbeb",
-                  border: "1px solid #fde68a",
-                  borderRadius: 8,
-                }}
-              >
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: "#f59e0b",
-                    flexShrink: 0,
-                    display: "inline-block",
-                  }}
+            <div className="bk-action-list">
+              {section.list.map((t) => (
+                <TaskCard
+                  key={`${section.key}-${t.id}`}
+                  t={t}
+                  pending={pending}
+                  start={start}
+                  selected={selected.has(t.id)}
+                  onToggle={() => toggleItem(t.id)}
+                  canDelete={canDelete}
+                  canSnooze={canSnooze}
                 />
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: "#b45309",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.06em",
-                    flex: 1,
-                  }}
-                >
-                  Today — {today.length} item{today.length !== 1 ? "s" : ""}
-                </span>
-                <button
-                  style={{
-                    fontSize: 11,
-                    color: "#b45309",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: 0,
-                    textDecoration: "underline",
-                  }}
-                  onClick={() => selectGroup(today)}
-                >
-                  Select all
-                </button>
-              </div>
-              <div style={{ display: "grid", gap: 6 }}>
-                {today.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    t={t}
-                    pending={pending}
-                    start={start}
-                    selected={selected.has(t.id)}
-                    onToggle={() => toggleItem(t.id)}
-                    canDelete={canDelete}
-                    canSnooze={canSnooze}
-                  />
-                ))}
-              </div>
+              ))}
             </div>
-          )}
-        </>
+          </div>
+        ))
       )}
 
       {/* SNOOZED — on hold until a future date */}
       {snoozedItems.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginTop: 16, marginBottom: 16 }}>
           <button
             style={{
               display: "flex",
               alignItems: "center",
               gap: 6,
               fontSize: 12,
-              color: "#6b21a8",
+              color: "#7e22ce",
               background: "none",
               border: "none",
               cursor: "pointer",
               padding: "4px 0",
               marginBottom: showSnoozed ? 8 : 0,
+              fontFamily: "inherit",
             }}
             onClick={() => setShowSnoozed((v) => !v)}
           >
@@ -409,7 +377,7 @@ export function MyTasksSection({
             On hold — {snoozedItems.length} item{snoozedItems.length !== 1 ? "s" : ""} (waiting)
           </button>
           {showSnoozed && (
-            <div style={{ display: "grid", gap: 6 }}>
+            <div className="bk-action-list" style={{ padding: 0 }}>
               {snoozedItems.map((t) => (
                 <TaskCard
                   key={t.id}
@@ -435,12 +403,13 @@ export function MyTasksSection({
               alignItems: "center",
               gap: 6,
               fontSize: 12,
-              color: "var(--ink-3)",
+              color: "#78716c",
               background: "none",
               border: "none",
               cursor: "pointer",
               padding: "4px 0",
               marginBottom: showClosed ? 8 : 0,
+              fontFamily: "inherit",
             }}
             onClick={() => setShowClosed((v) => !v)}
           >
@@ -448,7 +417,7 @@ export function MyTasksSection({
             Resolved — {closedItems.length} item{closedItems.length !== 1 ? "s" : ""}
           </button>
           {showClosed && (
-            <div style={{ display: "grid", gap: 6 }}>
+            <div className="bk-action-list" style={{ padding: 0 }}>
               {closedItems.slice(0, 30).map((t) => (
                 <TaskCard key={t.id} t={t} pending={pending} start={start} canDelete={canDelete} />
               ))}
@@ -468,7 +437,6 @@ function TaskCard({
   onToggle,
   canDelete,
   canSnooze,
-  isOverdue,
   isSnoozed,
 }: {
   t: AdminTaskItem;
@@ -478,7 +446,6 @@ function TaskCard({
   onToggle?: () => void;
   canDelete?: boolean;
   canSnooze?: boolean;
-  isOverdue?: boolean;
   isSnoozed?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -494,7 +461,9 @@ function TaskCard({
   const label = KIND_LABEL[t.kind] ?? t.kind;
   const age = ageLabel(t.createdAt);
   const isOpen = t.status === "open";
-  const borderColor = isSnoozed ? "#7e22ce" : isOverdue ? "#dc2626" : color;
+  const isOverdue = isOpen && isOverdueTask(t);
+  const isEscalated = t.title.startsWith("[Escalated]") || t.title.startsWith("[1 week");
+  const borderColor = isSnoozed ? "#7e22ce" : isEscalated ? "#dc2626" : isOverdue ? "#f97316" : color;
   const priorNotes = t.history.filter((h) => h.notes);
 
   const snoozeUntilDisplay = t.snoozedUntil
@@ -502,200 +471,93 @@ function TaskCard({
     : null;
 
   // Extract escalation prefix if present
-  const isEscalated = t.title.startsWith("[Escalated]") || t.title.startsWith("[1 week");
   const displayTitle = t.title
     .replace(/^\[Escalated\]\s*/, "")
     .replace(/^\[1 week unresolved\]\s*/, "");
 
   return (
-    <div
-      style={{
-        background: "#fff",
-        border: "1px solid var(--border)",
-        borderLeft: `3px solid ${borderColor}`,
-        borderRadius: 10,
-        padding: "10px 14px",
-        outline: selected ? "2px solid var(--orange)" : undefined,
-      }}
-    >
+    <div className={`bk-row${selected ? " is-selected" : ""}`} style={{ borderLeftColor: borderColor }}>
       {/* Main row */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        {isOpen && onToggle && (
-          <input
-            type="checkbox"
-            checked={!!selected}
-            onChange={onToggle}
-            style={{ accentColor: "var(--orange)", cursor: "pointer", flexShrink: 0 }}
-          />
-        )}
+      <div className="bk-row-main">
+        {isOpen && onToggle && <input type="checkbox" className="bk-row-check" checked={!!selected} onChange={onToggle} />}
 
         {/* Escalation badge */}
         {isEscalated && (
-          <span
-            style={{
-              fontSize: 9,
-              fontWeight: 700,
-              padding: "1px 6px",
-              borderRadius: 999,
-              background: "#dc2626",
-              color: "#fff",
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-              flexShrink: 0,
-            }}
-          >
+          <span className="bk-pill" style={{ background: "#dc2626", color: "#fff", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: 9.5, flexShrink: 0 }}>
             ↑ Escalated
           </span>
         )}
 
         {/* Type badge */}
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            padding: "2px 7px",
-            borderRadius: 999,
-            background: color,
-            color: "#fff",
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
-            flexShrink: 0,
-          }}
-        >
+        <span className="bk-pill" style={{ background: color, color: "#fff", textTransform: "uppercase", letterSpacing: "0.04em", flexShrink: 0 }}>
           {label}
         </span>
 
         {/* Client name — most important */}
-        <span
-          style={{
-            fontSize: 13.5,
-            fontWeight: 700,
-            color: "var(--ink-1)",
-            flex: 1,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-          title={displayTitle}
-        >
-          {t.clientName ?? displayTitle}
-        </span>
-
-        {/* Age */}
-        <span
-          style={{
-            fontSize: 11,
-            color: isOverdue ? "#dc2626" : "var(--ink-3)",
-            fontWeight: isOverdue ? 700 : 400,
-            flexShrink: 0,
-          }}
-        >
-          {age}
-        </span>
-
-        {/* Action buttons */}
-        {isOpen ? (
-          <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-            <button
-              className="btn ghost"
-              style={{ fontSize: 11.5, padding: "3px 10px" }}
-              disabled={pending}
-              onClick={() => start(() => { closeAdminTask(t.id, ""); })}
-            >
-              Close
-            </button>
-            <button
-              className="btn ghost"
-              style={{ fontSize: 11.5, padding: "3px 10px" }}
-              onClick={() => setExpanded((v) => !v)}
-            >
-              {expanded ? "Hide" : "Note"}
-            </button>
-            {canSnooze && (
-              <button
-                className="btn ghost"
-                style={{ fontSize: 11.5, padding: "3px 10px", color: "#7e22ce", borderColor: "#c4b5fd" }}
-                onClick={() => { setShowHoldForm((v) => !v); setExpanded(false); }}
-              >
-                {isSnoozed ? "Edit hold" : "Hold"}
-              </button>
-            )}
-            {(t.runId || t.stepId) && (
-              <Link
-                href={
-                  t.kind === "weekly_update" && t.stepId
-                    ? `/weekly-updates/${t.stepId}`
-                    : `/onboarding/${t.runId}`
-                }
-                style={{
-                  fontSize: 11.5,
-                  padding: "3px 10px",
-                  border: "1px solid var(--border)",
-                  borderRadius: 6,
-                  color: "var(--orange)",
-                  textDecoration: "none",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Open →
-              </Link>
-            )}
+        <div className="bk-row-title-wrap">
+          <div className="bk-row-name" title={displayTitle}>
+            {t.clientName ?? displayTitle}
           </div>
-        ) : (
-          <button
-            className="btn ghost"
-            style={{ fontSize: 11.5, padding: "3px 10px" }}
-            disabled={pending}
-            onClick={() => start(() => { reopenAdminTask(t.id); })}
-          >
-            Re-open
-          </button>
-        )}
+          {t.clientName && <div className="bk-row-sub">{displayTitle}</div>}
+        </div>
 
-        {canDelete &&
-          (confirmDel ? (
+        {/* Right-aligned action cluster */}
+        <div className="bk-row-actions">
+          {/* Age */}
+          <span className={`bk-row-age${isOverdue ? " is-overdue" : ""}`}>{age}</span>
+
+          {isOpen ? (
             <>
-              <button
-                className="btn ghost"
-                style={{ color: "#dc2626", borderColor: "#fca5a5", fontSize: 11 }}
-                disabled={deleting}
-                onClick={() => startDelete(async () => { await deleteAdminTask(t.id); })}
-              >
-                {deleting ? "…" : "Confirm"}
+              <button className="bk-row-link" disabled={pending} onClick={() => start(() => { closeAdminTask(t.id, ""); })}>
+                Close
               </button>
-              <button className="btn ghost" style={{ fontSize: 11 }} onClick={() => setConfirmDel(false)}>
-                ×
+              <button className="bk-row-link" onClick={() => setExpanded((v) => !v)}>
+                {expanded ? "Hide" : "Note"}
               </button>
+              {canSnooze && (
+                <button
+                  className="bk-row-link bk-row-link-hold"
+                  onClick={() => { setShowHoldForm((v) => !v); setExpanded(false); }}
+                >
+                  {isSnoozed ? "Edit hold" : "Hold"}
+                </button>
+              )}
+              {(t.runId || t.stepId) && (
+                <Link
+                  href={
+                    t.kind === "weekly_update" && t.stepId
+                      ? `/weekly-updates/${t.stepId}`
+                      : `/onboarding/${t.runId}`
+                  }
+                  className="bk-row-open"
+                >
+                  Open →
+                </Link>
+              )}
             </>
           ) : (
-            <button
-              className="icon-btn"
-              style={{ color: "#dc2626" }}
-              title="Delete"
-              onClick={() => setConfirmDel(true)}
-            >
-              <Icon name="trash-2" size={13} />
+            <button className="bk-row-link" disabled={pending} onClick={() => start(() => { reopenAdminTask(t.id); })}>
+              Re-open
             </button>
-          ))}
-      </div>
+          )}
 
-      {/* Sub-title (task title when client name is shown separately) */}
-      {t.clientName && (
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--ink-2)",
-            marginTop: 3,
-            paddingLeft: isOpen && onToggle ? 20 : 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {displayTitle}
+          {canDelete &&
+            (confirmDel ? (
+              <>
+                <button className="bk-row-link" style={{ color: "#dc2626" }} disabled={deleting} onClick={() => startDelete(async () => { await deleteAdminTask(t.id); })}>
+                  {deleting ? "…" : "Confirm"}
+                </button>
+                <button className="bk-row-link" onClick={() => setConfirmDel(false)}>
+                  ×
+                </button>
+              </>
+            ) : (
+              <button className="bk-row-delete" title="Delete" onClick={() => setConfirmDel(true)}>
+                <Icon name="trash-2" size={13} />
+              </button>
+            ))}
         </div>
-      )}
+      </div>
 
       {/* Snoozed badge + hold note */}
       {isSnoozed && snoozeUntilDisplay && (
@@ -706,6 +568,7 @@ function TaskCard({
             display: "flex",
             alignItems: "flex-start",
             gap: 8,
+            flexWrap: "wrap",
           }}
         >
           <span
@@ -723,7 +586,7 @@ function TaskCard({
             ⏸ On hold until {snoozeUntilDisplay}
           </span>
           {t.holdNote && (
-            <span style={{ fontSize: 11.5, color: "var(--ink-2)", fontStyle: "italic" }}>
+            <span style={{ fontSize: 11.5, color: "#57534e", fontStyle: "italic" }}>
               {t.holdNote}
             </span>
           )}
@@ -746,7 +609,7 @@ function TaskCard({
           </div>
           <div style={{ display: "grid", gap: 8 }}>
             <div>
-              <label style={{ fontSize: 11.5, color: "var(--ink-2)", display: "block", marginBottom: 3 }}>
+              <label style={{ fontSize: 11.5, color: "#57534e", display: "block", marginBottom: 3 }}>
                 Remind me / resurface on
               </label>
               <input
@@ -756,7 +619,7 @@ function TaskCard({
                 onChange={(e) => setHoldDate(e.target.value)}
                 style={{
                   padding: "5px 9px",
-                  border: "1px solid var(--border)",
+                  border: "1px solid #e7e5e4",
                   borderRadius: 6,
                   fontSize: 12.5,
                   fontFamily: "inherit",
@@ -765,7 +628,7 @@ function TaskCard({
               />
             </div>
             <div>
-              <label style={{ fontSize: 11.5, color: "var(--ink-2)", display: "block", marginBottom: 3 }}>
+              <label style={{ fontSize: 11.5, color: "#57534e", display: "block", marginBottom: 3 }}>
                 Reason / comment
               </label>
               <textarea
@@ -776,7 +639,7 @@ function TaskCard({
                   width: "100%",
                   minHeight: 56,
                   padding: 9,
-                  border: "1px solid var(--border)",
+                  border: "1px solid #e7e5e4",
                   borderRadius: 6,
                   fontSize: 12.5,
                   fontFamily: "inherit",
@@ -786,8 +649,8 @@ function TaskCard({
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button
-                className="btn primary"
-                style={{ background: "#7e22ce", borderColor: "#7e22ce" }}
+                className="bk-btn-primary"
+                style={{ background: "#7e22ce" }}
                 disabled={holdSaving || !holdDate}
                 onClick={() =>
                   startHold(async () => {
@@ -798,7 +661,7 @@ function TaskCard({
               >
                 {holdSaving ? "Saving…" : "Save hold"}
               </button>
-              <button className="btn ghost" onClick={() => setShowHoldForm(false)}>
+              <button className="bk-btn-secondary" style={{ borderColor: "#e7e5e4", color: "#57534e" }} onClick={() => setShowHoldForm(false)}>
                 Cancel
               </button>
             </div>
@@ -813,10 +676,10 @@ function TaskCard({
             <div
               style={{
                 fontSize: 12.5,
-                color: "var(--ink-2)",
+                color: "#57534e",
                 whiteSpace: "pre-wrap",
                 marginBottom: 8,
-                background: "var(--bg-soft)",
+                background: "#fafaf9",
                 padding: "8px 10px",
                 borderRadius: 6,
               }}
@@ -827,13 +690,13 @@ function TaskCard({
 
           {priorNotes.length > 0 && (
             <details style={{ fontSize: 12, marginBottom: 8 }}>
-              <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>
+              <summary style={{ cursor: "pointer", color: "#78716c" }}>
                 Prior notes ({priorNotes.length})
               </summary>
               <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
                 {priorNotes.map((h, i) => (
-                  <div key={i} style={{ background: "var(--bg-soft)", padding: "6px 8px", borderRadius: 6 }}>
-                    <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 2 }}>
+                  <div key={i} style={{ background: "#fafaf9", padding: "6px 8px", borderRadius: 6 }}>
+                    <div style={{ fontSize: 10.5, color: "#78716c", marginBottom: 2 }}>
                       {h.at ? new Date(h.at).toLocaleDateString() : ""}
                     </div>
                     <div style={{ whiteSpace: "pre-wrap" }}>{h.notes}</div>
@@ -853,7 +716,7 @@ function TaskCard({
                   width: "100%",
                   minHeight: 56,
                   padding: 10,
-                  border: "1px solid var(--border)",
+                  border: "1px solid #e7e5e4",
                   borderRadius: 8,
                   fontSize: 12.5,
                   fontFamily: "inherit",
@@ -862,14 +725,15 @@ function TaskCard({
               />
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
                 <button
-                  className="btn ghost"
+                  className="bk-btn-secondary"
+                  style={{ borderColor: "#e7e5e4", color: "#57534e" }}
                   disabled={pending}
                   onClick={() => start(() => { closeAdminTask(t.id, ""); })}
                 >
                   Close (no notes)
                 </button>
                 <button
-                  className="btn primary"
+                  className="bk-btn-primary"
                   disabled={pending || !notes.trim()}
                   onClick={() => start(() => { closeAdminTask(t.id, notes); })}
                 >
