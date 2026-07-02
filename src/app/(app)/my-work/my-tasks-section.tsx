@@ -85,6 +85,43 @@ function bucketOf(kind: string): "compliance" | "data" | "access" | "task" {
   return "task";
 }
 
+function stripPrefix(title: string) {
+  return title.replace(/^\[Escalated\]\s*/, "").replace(/^\[1 week unresolved\]\s*/, "");
+}
+
+// The auto-task body carries the actual pending items as a "• name" bullet list
+// (documents, access systems, task titles). Pull those out so the collapsed card
+// can show WHAT is pending, not just a count.
+function bulletLines(body: string | null): string[] {
+  if (!body) return [];
+  return body
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("•"))
+    .map((l) => l.replace(/^•\s*/, "").trim())
+    .filter(Boolean);
+}
+
+const KIND_DETAIL_FALLBACK: Record<string, string> = {
+  ct_reg_followup: "CT registration",
+  vat_reg_followup: "VAT registration",
+  aml_unassigned: "AML not added",
+  zoho_followup: "Zoho setup",
+  weekly_update: "Weekly update",
+};
+
+// The specific pending item name(s) for one task: bullet list if present,
+// else a per-kind label, else the quoted task name or the cleaned title.
+function detailNames(t: AdminTaskItem): string[] {
+  const bullets = bulletLines(t.body);
+  if (bullets.length) return bullets;
+  if (KIND_DETAIL_FALLBACK[t.kind]) return [KIND_DETAIL_FALLBACK[t.kind]];
+  const quoted = t.body?.match(/"([^"]+)"/) ?? t.title.match(/"([^"]+)"/);
+  if (quoted) return [quoted[1]];
+  const clean = stripPrefix(t.title).replace(/\s*·.*$/, "").trim();
+  return clean ? [clean] : [];
+}
+
 type TabKey = "all" | "overdue" | "escalated" | "access" | "documents" | "compliance";
 
 const CATEGORY_META: Record<
@@ -485,17 +522,24 @@ function ClientGroup({
   // Collapsed by default — the summary line below gives the gist; click to expand.
   const [open, setOpen] = useState(false);
 
-  // "What's pending" buckets shown on the collapsed card so the user gets the idea at a glance.
-  const buckets = useMemo(() => {
-    const b = { task: 0, data: 0, access: 0, compliance: 0 };
-    group.items.forEach((t) => { b[bucketOf(t.kind)] += 1; });
-    return b;
+  // Up to 4 category lines shown on the collapsed card, each listing WHAT is
+  // pending (the actual access systems / docs / tasks / compliance names).
+  const categories = useMemo(() => {
+    const g: Record<"access" | "task" | "data" | "compliance", string[]> = { access: [], task: [], data: [], compliance: [] };
+    for (const t of group.items) {
+      const b = bucketOf(t.kind);
+      for (const d of detailNames(t)) g[b].push(d);
+    }
+    const meta = [
+      { key: "access" as const, label: "Access not shared", color: "#16a34a" },
+      { key: "task" as const, label: "Tasks pending", color: "#b45309" },
+      { key: "data" as const, label: "Docs missing", color: "#0f766e" },
+      { key: "compliance" as const, label: "Compliance", color: "#9333ea" },
+    ];
+    return meta
+      .map((m) => ({ ...m, details: [...new Set(g[m.key])] }))
+      .filter((m) => m.details.length > 0);
   }, [group.items]);
-  const summaryChips: { label: string; color: string }[] = [];
-  if (buckets.task) summaryChips.push({ label: `${buckets.task} task${buckets.task > 1 ? "s" : ""} pending`, color: "#b45309" });
-  if (buckets.data) summaryChips.push({ label: `${buckets.data} doc${buckets.data > 1 ? "s" : ""} pending`, color: "#0f766e" });
-  if (buckets.access) summaryChips.push({ label: `${buckets.access} access pending`, color: "#16a34a" });
-  if (buckets.compliance) summaryChips.push({ label: `${buckets.compliance} compliance due`, color: "#9333ea" });
 
   const oldest = useMemo(
     () => group.items.reduce((max, t) => (ageMs(t.createdAt) > ageMs(max.createdAt) ? t : max), group.items[0]),
@@ -520,9 +564,7 @@ function ClientGroup({
         onClick={() => setOpen((v) => !v)}
         style={{
           width: "100%",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
+          display: "block",
           padding: "11px 14px",
           background: "none",
           border: "none",
@@ -531,49 +573,56 @@ function ClientGroup({
           fontFamily: "inherit",
         }}
       >
-        <Icon name={open ? "chevron-down" : "chevron-right"} size={14} style={{ flexShrink: 0, color: "#a8a29e" }} />
-        <span
-          style={{
-            fontSize: 13.5,
-            fontWeight: 700,
-            color: "#1c1917",
-            flexShrink: 0,
-            maxWidth: 220,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {group.name}
-        </span>
-        <div style={{ display: "flex", gap: 5, flex: 1, minWidth: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Icon name={open ? "chevron-down" : "chevron-right"} size={14} style={{ flexShrink: 0, color: "#a8a29e" }} />
+          <span
+            style={{
+              fontSize: 13.5,
+              fontWeight: 700,
+              color: "#1c1917",
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {group.name}
+          </span>
           {escalatedCount > 0 && (
             <span className="bk-chip" style={{ background: "#fef2f2", color: "#dc2626", flexShrink: 0 }}>
               ↑ Escalated{escalatedCount > 1 ? ` ×${escalatedCount}` : ""}
             </span>
           )}
-          {summaryChips.map((chip) => (
-            <span key={chip.label} className="bk-chip" style={{ background: `${chip.color}14`, color: chip.color, flexShrink: 0 }}>
-              {chip.label}
-            </span>
-          ))}
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 11, color: overdueCount ? "#ea580c" : "#78716c", fontWeight: 600, flexShrink: 0, whiteSpace: "nowrap" }}>
+            {ageLabel(oldest.createdAt)} oldest
+          </span>
+          <span
+            style={{
+              fontSize: 10.5,
+              fontWeight: 700,
+              color: "#57534e",
+              background: "#f5f5f4",
+              padding: "2px 8px",
+              borderRadius: 999,
+              flexShrink: 0,
+            }}
+          >
+            {group.items.length}
+          </span>
         </div>
-        <span style={{ fontSize: 11, color: overdueCount ? "#ea580c" : "#78716c", fontWeight: 600, flexShrink: 0, whiteSpace: "nowrap" }}>
-          {ageLabel(oldest.createdAt)} oldest
-        </span>
-        <span
-          style={{
-            fontSize: 10.5,
-            fontWeight: 700,
-            color: "#57534e",
-            background: "#f5f5f4",
-            padding: "2px 8px",
-            borderRadius: 999,
-            flexShrink: 0,
-          }}
-        >
-          {group.items.length}
-        </span>
+        {!open && categories.length > 0 && (
+          <div style={{ marginTop: 6, paddingLeft: 24, display: "grid", gap: 3 }}>
+            {categories.map((c) => (
+              <div key={c.key} style={{ display: "flex", gap: 6, alignItems: "baseline", fontSize: 11.5, minWidth: 0 }}>
+                <span style={{ color: c.color, fontWeight: 700, flexShrink: 0 }}>{c.label}:</span>
+                <span style={{ color: "#57534e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                  {c.details.join(", ")}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </button>
       {open && (
         <div className="bk-action-list" style={{ borderTop: "1px solid #f0efec" }}>
