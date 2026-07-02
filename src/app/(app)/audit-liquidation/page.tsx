@@ -30,12 +30,23 @@ async function getSubtreeIds(orgId: string, rootId: string): Promise<Set<string>
   return visited;
 }
 
-// Audit and Liquidation are now two separate sections. This shared renderer is
-// scoped to a single flow ("audit" | "liquidation") and its nav id; the thin
-// /audit and /liquidation route files call it. /audit-liquidation redirects here.
-export async function renderAuditLiquidationSection(flow: "audit" | "liquidation", navId: string) {
-  const templateId = flow === "liquidation" ? "liquidation-workflow" : "audit-workflow";
-  const title = flow === "liquidation" ? "Liquidation" : "Audit";
+// Audit, Liquidation and Catch-up are separate sections that all share this
+// stage-Kanban renderer. It is scoped to a single flow and its nav id; the thin
+// /audit, /liquidation and /catchup route files call it. /audit-liquidation
+// redirects to /audit.
+const FLOW_TEMPLATE: Record<string, string> = {
+  audit: "audit-workflow",
+  liquidation: "liquidation-workflow",
+  catchup: "catchup",
+};
+const FLOW_TITLE: Record<string, string> = {
+  audit: "Audit",
+  liquidation: "Liquidation",
+  catchup: "Catch-up Accounting",
+};
+export async function renderAuditLiquidationSection(flow: "audit" | "liquidation" | "catchup", navId: string) {
+  const templateId = FLOW_TEMPLATE[flow] ?? "audit-workflow";
+  const title = FLOW_TITLE[flow] ?? "Audit";
   const session = await getSession();
   if (!session?.profile.org_id) redirect("/login");
   const orgId = session.profile.org_id;

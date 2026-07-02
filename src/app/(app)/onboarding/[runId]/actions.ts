@@ -1134,73 +1134,110 @@ export async function escalateUrgentComplianceServices(
   const picked = services.filter((s) => allowed.has(s));
   if (!picked.length) return { error: "Pick at least one service to escalate, or choose No urgent compliance." };
 
-  // Map picker service IDs → tax_compliance services. Audit and Liquidation aren't
-  // tax-compliance services — they're Audit/Liquidation-team workflows, so we route
-  // those picks via tax compliance with a note for the team to open a case.
+  const { data: client } = await admin.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+  const clientName = client?.name ?? "Client";
+  const createdRunIds: string[] = [];
+  let created = 0;
+
+  // ── Audit / Liquidation → real cases on their own boards ─────────────────
+  // These are NOT tax-compliance services. Each ticked one spins up a case on
+  // its own workflow template so it shows up on the /audit or /liquidation
+  // board (previously they were only folded into a tax note, so nothing ever
+  // appeared in those sections — that was the bug).
+  const WORKFLOW_BY_SERVICE: Record<string, { templateId: string; label: string; section: string }> = {
+    audit: { templateId: "audit-workflow", label: "Statutory Audit", section: "Audit" },
+    liquidation: { templateId: "liquidation-workflow", label: "Liquidation", section: "Liquidation" },
+  };
+  // The Audit / Liquidation / Catch-up team lead (Aarju) owns new cases by
+  // default — the same person the /audit and /liquidation boards scope to.
+  const { data: aarju } = await admin
+    .from("team_members").select("id,full_name,email")
+    .eq("org_id", run.org_id).eq("active", true)
+    .ilike("full_name", "%aarju%").maybeSingle();
+
+  for (const svc of ["audit", "liquidation"] as const) {
+    if (!picked.includes(svc)) continue;
+    const wf = WORKFLOW_BY_SERVICE[svc];
+    const newRunId = await createRunFromTemplate(supabase, {
+      orgId: run.org_id, clientId: run.client_id, amId: aarju?.id ?? null, templateId: wf.templateId,
+    });
+    createdRunIds.push(newRunId);
+    created++;
+    if (aarju?.id) {
+      await supabase.from("notifications").insert({
+        org_id: run.org_id, run_id: newRunId, recipient_id: aarju.id, kind: "escalation",
+        title: `New ${wf.label} case — ${clientName}`,
+        body: `Escalated from onboarding. A ${wf.label} case was created on the ${wf.section} board — assign the team and work the case.`,
+      });
+      if (aarju.email) {
+        try {
+          await sendModuleAssignmentEmail({
+            orgId: run.org_id, toEmail: aarju.email, toName: aarju.full_name ?? "there",
+            clientName, moduleLabel: wf.label, runId: newRunId, clientId: run.client_id,
+          });
+        } catch { /* email is best-effort, never block the escalation */ }
+      }
+    }
+  }
+
+  // ── CT / VAT → Tax Compliance board (Gautam + Nafila) ────────────────────
   const SERVICE_MAP: Record<string, string> = {
     "ct-registration": "ct_reg",
     "vat-registration": "vat_reg",
     "ct-filing": "ct_fil",
     "vat-filing": "vat_fil",
   };
-  const taxServices = [...new Set(picked.map((p) => SERVICE_MAP[p]).filter(Boolean))];
-  const hasAudit = picked.includes("audit");
-  const hasLiquidation = picked.includes("liquidation");
+  const taxPicked = picked.filter((p) => SERVICE_MAP[p]);
+  const taxServices = [...new Set(taxPicked.map((p) => SERVICE_MAP[p]))];
 
-  const head = await findTaxHead(run.org_id);
-  const lead = await findTaxTeamLead(run.org_id, head?.id);
-  const defaults = [head?.id, lead?.id].filter((x): x is string => !!x);
+  if (taxServices.length) {
+    const head = await findTaxHead(run.org_id);
+    const lead = await findTaxTeamLead(run.org_id, head?.id);
+    const defaults = [head?.id, lead?.id].filter((x): x is string => !!x);
 
-  // Upsert a single tax_compliance_records row for this client.
-  const { data: client } = await admin.from("clients").select("name").eq("id", run.client_id).maybeSingle();
-  const noteParts: string[] = [];
-  noteParts.push(`Escalated from onboarding run ${runId}.`);
-  if (hasAudit) noteParts.push("Includes Statutory Audit — coordinate with Audit team.");
-  if (hasLiquidation) noteParts.push("Includes Liquidation — coordinate with Liquidation team.");
-
-  const { error: upsertErr } = await admin.from("tax_compliance_records").upsert(
-    {
-      org_id: run.org_id,
-      client_id: run.client_id,
-      status: "open_item",
-      services: taxServices,
-      notes: noteParts.join(" "),
-      assigned_to: defaults,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "client_id" },
-  );
-  if (upsertErr) return { error: upsertErr.message };
-
-  // Action-item chips for Gautam + Nafila.
-  if (defaults.length) {
-    const serviceLabels = picked.map((p) => {
-      if (p === "ct-registration") return "CT Registration";
-      if (p === "vat-registration") return "VAT Registration";
-      if (p === "ct-filing") return "CT Filing";
-      if (p === "vat-filing") return "VAT Filing";
-      if (p === "liquidation") return "Liquidation";
-      return "Statutory Audit";
-    });
-    const taxLine = `${client?.name ?? "Client"} — new tax case (${serviceLabels.join(", ")})`;
-    for (const memberId of defaults) {
-      await upsertConsolidatedComplianceTask(admin, {
-        orgId: run.org_id,
-        ownerId: memberId,
-        clientId: run.client_id,
-        runId,
-        stepId,
-        line: taxLine,
-        source: "tax_compliance_new",
-      });
-    }
-    await supabase.from("notifications").insert(
-      defaults.map((id) => ({
-        org_id: run.org_id, run_id: runId, recipient_id: id, kind: "escalation",
-        title: `New tax compliance assigned — ${client?.name ?? "Client"}`,
-        body: `Open Tax Compliance and assign a team member. Services: ${serviceLabels.join(", ")}.`,
-      })),
+    const { error: upsertErr } = await admin.from("tax_compliance_records").upsert(
+      {
+        org_id: run.org_id,
+        client_id: run.client_id,
+        status: "open_item",
+        services: taxServices,
+        notes: `Escalated from onboarding run ${runId}.`,
+        assigned_to: defaults,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "client_id" },
     );
+    if (upsertErr) return { error: upsertErr.message };
+    created++;
+
+    // Action-item chips for Gautam + Nafila.
+    if (defaults.length) {
+      const serviceLabels = taxPicked.map((p) => {
+        if (p === "ct-registration") return "CT Registration";
+        if (p === "vat-registration") return "VAT Registration";
+        if (p === "ct-filing") return "CT Filing";
+        return "VAT Filing";
+      });
+      const taxLine = `${clientName} — new tax case (${serviceLabels.join(", ")})`;
+      for (const memberId of defaults) {
+        await upsertConsolidatedComplianceTask(admin, {
+          orgId: run.org_id,
+          ownerId: memberId,
+          clientId: run.client_id,
+          runId,
+          stepId,
+          line: taxLine,
+          source: "tax_compliance_new",
+        });
+      }
+      await supabase.from("notifications").insert(
+        defaults.map((id) => ({
+          org_id: run.org_id, run_id: runId, recipient_id: id, kind: "escalation",
+          title: `New tax compliance assigned — ${clientName}`,
+          body: `Open Tax Compliance and assign a team member. Services: ${serviceLabels.join(", ")}.`,
+        })),
+      );
+    }
   }
 
   await supabase.from("run_items").delete().eq("run_id", runId).eq("kind", "urgent_decision");
@@ -1208,13 +1245,15 @@ export async function escalateUrgentComplianceServices(
     run_id: runId,
     client_id: run.client_id,
     kind: "urgent_decision",
-    data: { hasUrgent: true, services: picked, taxComplianceRouted: true },
+    data: { hasUrgent: true, services: picked, taxComplianceRouted: taxServices.length > 0, casesCreated: createdRunIds.length },
     status: "escalated",
   });
   await completeStep(runId, stepId);
   revalidatePath(`/onboarding/${runId}`);
-  revalidatePath("/tax-compliance");
-  return { created: 1, runIds: [] };
+  if (taxServices.length) revalidatePath("/tax-compliance");
+  if (picked.includes("audit")) revalidatePath("/audit");
+  if (picked.includes("liquidation")) revalidatePath("/liquidation");
+  return { created, runIds: createdRunIds };
 }
 
 /**

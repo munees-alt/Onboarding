@@ -8,6 +8,7 @@ export const NAV: NavItem[] = [
   { id: "tax-compliance", label: "Tax Compliance", icon: "percent", href: "/tax-compliance", group: "primary" },
   { id: "audit", label: "Audit", icon: "gavel", href: "/audit", group: "primary" },
   { id: "liquidation", label: "Liquidation", icon: "scale", href: "/liquidation", group: "primary" },
+  { id: "catchup", label: "Catch-up Accounting", icon: "history", href: "/catchup", group: "primary" },
   { id: "onboarding", label: "Onboarding", icon: "user-plus", href: "/onboarding", group: "primary",
     roles: ["admin", "ops_head", "am", "team_lead", "senior", "junior"] },
   { id: "clients", label: "Clients", icon: "users", href: "/clients", group: "primary" },

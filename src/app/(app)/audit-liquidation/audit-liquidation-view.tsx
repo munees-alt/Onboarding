@@ -60,7 +60,7 @@ export function AuditLiquidationView({
   clients: { id: string; name: string }[];
   canCreate: boolean;
   title?: string;
-  lockedFlow?: "audit" | "liquidation";
+  lockedFlow?: "audit" | "liquidation" | "catchup";
 }) {
   const [flow, setFlow] = useState(boards[0]?.flow ?? "audit");
   const [newOpen, setNewOpen] = useState(false);
@@ -204,7 +204,10 @@ export function AuditLiquidationView({
 
           {total === 0 ? (
             <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 12, padding: "56px 40px", textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
-              No {board?.name.toLowerCase()} cases yet. New cases arrive from the &ldquo;Cadence Audit and Liquidation&rdquo; email automation, or add one with &ldquo;New case&rdquo;.
+              No {board?.name.toLowerCase()} cases yet.{" "}
+              {lockedFlow === "catchup"
+                ? "Cases arrive when catch-up is escalated from onboarding, or add one with “New case”."
+                : "New cases arrive from the “Cadence Audit and Liquidation” email automation, or add one with “New case”."}
             </div>
           ) : (
             <div className="bk-board">
@@ -259,7 +262,7 @@ export function AuditLiquidationView({
       {newOpen && (
         <NewCaseModal
           clients={clients}
-          defaultFlow={(lockedFlow ?? flow) as "audit" | "liquidation"}
+          defaultFlow={(lockedFlow ?? flow) as "audit" | "liquidation" | "catchup"}
           lockedFlow={lockedFlow}
           onClose={() => setNewOpen(false)}
         />
@@ -275,13 +278,13 @@ function NewCaseModal({
   onClose,
 }: {
   clients: { id: string; name: string }[];
-  defaultFlow: "audit" | "liquidation";
-  lockedFlow?: "audit" | "liquidation";
+  defaultFlow: "audit" | "liquidation" | "catchup";
+  lockedFlow?: "audit" | "liquidation" | "catchup";
   onClose: () => void;
 }) {
   const router = useRouter();
   const [clientId, setClientId] = useState(clients[0]?.id ?? "");
-  const [flow, setFlow] = useState<"audit" | "liquidation">(defaultFlow);
+  const [flow, setFlow] = useState<"audit" | "liquidation" | "catchup">(defaultFlow);
   const [busy, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
