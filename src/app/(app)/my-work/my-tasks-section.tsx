@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/icon";
-import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks, deleteAdminTask, snoozeAdminTask, editAdminTask } from "./actions";
+import { closeAdminTask, reopenAdminTask, runAutoAdminTaskScan, bulkCloseAdminTasks, deleteAdminTask, editAdminTask, requestCloseWithDate, approveCloseRequest, disapproveCloseRequest } from "./actions";
 
 export type AdminTaskItem = {
   id: string;
@@ -33,6 +33,8 @@ const KIND_LABEL: Record<string, string> = {
   task_pending_alert: "Task pending",
   aml_unassigned: "AML not added",
   task_escalation: "Task escalation",
+  compliance: "Compliance",
+  close_approval: "Approval",
 };
 
 const KIND_COLOR: Record<string, string> = {
@@ -47,6 +49,8 @@ const KIND_COLOR: Record<string, string> = {
   task_pending_alert: "#0369a1",
   aml_unassigned: "#9333ea",
   task_escalation: "#dc2626",
+  compliance: "#9333ea",
+  close_approval: "#7e22ce",
 };
 
 const DAY_MS = 86_400_000;
@@ -72,7 +76,7 @@ function isOverdueTask(t: AdminTaskItem) {
 }
 
 // Kinds grouped into the four "what's pending" buckets shown on the collapsed card.
-const COMPLIANCE_KINDS = ["compliance_alert", "ct_reg_followup", "vat_reg_followup", "aml_unassigned"];
+const COMPLIANCE_KINDS = ["compliance", "compliance_alert", "ct_reg_followup", "vat_reg_followup", "aml_unassigned"];
 const DATA_KINDS = ["docs_overdue"];
 const ACCESS_KINDS = ["access_overdue"];
 function isComplianceKind(kind: string) {
@@ -115,6 +119,15 @@ const KIND_DETAIL_FALLBACK: Record<string, string> = {
 function detailNames(t: AdminTaskItem): string[] {
   const bullets = bulletLines(t.body);
   if (bullets.length) return bullets;
+  // Escalated compliance alert: the real item is AFTER the "·" in the title
+  // ("… – Compliance expiry approaching · VAT Registration for CLIENT"); the
+  // due date is in the body ("VAT Registration is due 2026-07-05").
+  if (isComplianceKind(t.kind) && t.title.includes("·")) {
+    let item = t.title.split("·").slice(1).join("·").replace(/\s+for\s+.+$/i, "").trim();
+    const due = t.body?.match(/is due (\d{4}-\d{2}-\d{2})/) ?? t.body?.match(/due (\d{4}-\d{2}-\d{2})/);
+    if (item && due) item += ` — due ${due[1]}`;
+    if (item) return [item];
+  }
   if (KIND_DETAIL_FALLBACK[t.kind]) return [KIND_DETAIL_FALLBACK[t.kind]];
   const quoted = t.body?.match(/"([^"]+)"/) ?? t.title.match(/"([^"]+)"/);
   if (quoted) return [quoted[1]];
@@ -670,19 +683,25 @@ function TaskCard({
   canSnooze?: boolean;
   isSnoozed?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [notes, setNotes] = useState("");
   const [deleting, startDelete] = useTransition();
   const [confirmDel, setConfirmDel] = useState(false);
-  const [showHoldForm, setShowHoldForm] = useState(false);
-  const [holdDate, setHoldDate] = useState("");
-  const [holdComment, setHoldComment] = useState(t.holdNote ?? "");
-  const [holdSaving, startHold] = useTransition();
   const [showEditForm, setShowEditForm] = useState(false);
   const [editTitle, setEditTitle] = useState(t.title);
   const [editBody, setEditBody] = useState(t.body ?? "");
   const [editSaving, startEdit] = useTransition();
+  // Close flow: "note" = add note & close; "date" = close with next action date.
+  const [showClose, setShowClose] = useState(false);
+  const [closeMode, setCloseMode] = useState<"note" | "date">("note");
+  const [closeNote, setCloseNote] = useState("");
+  const [closeDate, setCloseDate] = useState("");
+  const [closeSaving, startClose] = useTransition();
+  const [flash, setFlash] = useState<string | null>(null);
+  // Approval flow (close_approval items — team lead approves/disapproves).
+  const [showDisapprove, setShowDisapprove] = useState(false);
+  const [disNote, setDisNote] = useState("");
+  const [apprSaving, startAppr] = useTransition();
 
+  const isApproval = t.kind === "close_approval";
   const isCompliance = isComplianceKind(t.kind);
   const color = KIND_COLOR[t.kind] ?? "#475569";
   const label = KIND_LABEL[t.kind] ?? t.kind;
@@ -690,8 +709,7 @@ function TaskCard({
   const isOpen = t.status === "open";
   const isOverdue = isOpen && isOverdueTask(t);
   const isEscalated = t.title.startsWith("[Escalated]") || t.title.startsWith("[1 week");
-  const borderColor = isSnoozed ? "#7e22ce" : isEscalated ? "#dc2626" : isOverdue ? "#f97316" : color;
-  const priorNotes = t.history.filter((h) => h.notes);
+  const borderColor = isSnoozed ? "#7e22ce" : isApproval ? "#7e22ce" : isEscalated ? "#dc2626" : isOverdue ? "#f97316" : color;
 
   const snoozeUntilDisplay = t.snoozedUntil
     ? new Date(t.snoozedUntil).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
@@ -733,27 +751,26 @@ function TaskCard({
           {/* Age */}
           <span className={`bk-row-age${isOverdue ? " is-overdue" : ""}`}>{age}</span>
 
-          {isOpen ? (
+          {isOpen && isApproval ? (
+            /* Team lead approves / disapproves a member's deferral request. */
             <>
-              <button className="bk-row-link" disabled={pending} onClick={() => start(() => { closeAdminTask(t.id, ""); })}>
-                Close
+              <button className="bk-row-link" style={{ color: "#15803d" }} disabled={apprSaving} onClick={() => startAppr(async () => { await approveCloseRequest(t.id); })}>
+                Approve
               </button>
-              <button className="bk-row-link" onClick={() => setExpanded((v) => !v)}>
-                {expanded ? "Hide" : "Note"}
+              <button className="bk-row-link" style={{ color: "#dc2626" }} onClick={() => setShowDisapprove((v) => !v)}>
+                Disapprove
               </button>
-              {canSnooze && (
-                <button
-                  className="bk-row-link bk-row-link-hold"
-                  onClick={() => { setShowHoldForm((v) => !v); setExpanded(false); }}
-                >
-                  {isSnoozed ? "Edit hold" : "Hold"}
-                </button>
-              )}
+            </>
+          ) : isOpen ? (
+            <>
+              <button className="bk-row-link" onClick={() => { setShowClose((v) => !v); setShowEditForm(false); }}>
+                {showClose ? "Cancel" : "Close"}
+              </button>
               {canSnooze && isCompliance && (
                 <button
                   className="bk-row-link"
                   style={{ color: "#7e22ce" }}
-                  onClick={() => { setShowEditForm((v) => !v); setShowHoldForm(false); setExpanded(false); }}
+                  onClick={() => { setShowEditForm((v) => !v); setShowClose(false); }}
                   title="Master admin: correct this compliance item"
                 >
                   Correct
@@ -871,157 +888,86 @@ function TaskCard({
         </div>
       )}
 
-      {/* Hold / snooze form — admin only */}
-      {showHoldForm && isOpen && (
-        <div
-          style={{
-            marginTop: 10,
-            padding: "12px 14px",
-            background: "#faf5ff",
-            border: "1px solid #c4b5fd",
-            borderRadius: 8,
-          }}
-        >
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#7e22ce", marginBottom: 8 }}>
-            Put on hold — next action date
+      {/* Close panel — add note & close, or close with a next action date. */}
+      {showClose && isOpen && (
+        <div style={{ marginTop: 10, padding: "12px 14px", background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 8 }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+            <button
+              onClick={() => setCloseMode("note")}
+              style={{ fontFamily: "inherit", cursor: "pointer", fontSize: 11.5, fontWeight: 700, padding: "5px 11px", borderRadius: 6, border: "1px solid #e7e5e4", background: closeMode === "note" ? "#1c1917" : "#fff", color: closeMode === "note" ? "#fff" : "#57534e" }}
+            >
+              Add note &amp; close
+            </button>
+            <button
+              onClick={() => setCloseMode("date")}
+              style={{ fontFamily: "inherit", cursor: "pointer", fontSize: 11.5, fontWeight: 700, padding: "5px 11px", borderRadius: 6, border: "1px solid #e7e5e4", background: closeMode === "date" ? "#1c1917" : "#fff", color: closeMode === "date" ? "#fff" : "#57534e" }}
+            >
+              Close with next action date
+            </button>
           </div>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div>
-              <label style={{ fontSize: 11.5, color: "#57534e", display: "block", marginBottom: 3 }}>
-                Remind me / resurface on
-              </label>
+          {closeMode === "date" && (
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 11.5, color: "#57534e", display: "block", marginBottom: 3 }}>Next action date</label>
               <input
                 type="date"
-                value={holdDate}
+                value={closeDate}
                 min={new Date().toISOString().slice(0, 10)}
-                onChange={(e) => setHoldDate(e.target.value)}
-                style={{
-                  padding: "5px 9px",
-                  border: "1px solid #e7e5e4",
-                  borderRadius: 6,
-                  fontSize: 12.5,
-                  fontFamily: "inherit",
-                  width: "100%",
-                }}
+                onChange={(e) => setCloseDate(e.target.value)}
+                style={{ padding: "5px 9px", border: "1px solid #e7e5e4", borderRadius: 6, fontSize: 12.5, fontFamily: "inherit", width: "100%" }}
               />
             </div>
-            <div>
-              <label style={{ fontSize: 11.5, color: "#57534e", display: "block", marginBottom: 3 }}>
-                Reason / comment
-              </label>
-              <textarea
-                placeholder="e.g. Government needs to confirm before we proceed — follow up on 10 Jul"
-                value={holdComment}
-                onChange={(e) => setHoldComment(e.target.value)}
-                style={{
-                  width: "100%",
-                  minHeight: 56,
-                  padding: 9,
-                  border: "1px solid #e7e5e4",
-                  borderRadius: 6,
-                  fontSize: 12.5,
-                  fontFamily: "inherit",
-                  resize: "vertical",
-                }}
-              />
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
+          )}
+          <textarea
+            placeholder={closeMode === "date" ? "Reason / what happens next…" : "Closing note (optional)…"}
+            value={closeNote}
+            onChange={(e) => setCloseNote(e.target.value)}
+            style={{ width: "100%", minHeight: 52, padding: 9, border: "1px solid #e7e5e4", borderRadius: 6, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }}
+          />
+          {flash && <div style={{ fontSize: 11.5, color: "#15803d", marginTop: 6 }}>{flash}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            {closeMode === "note" ? (
+              <button className="bk-btn-primary" disabled={closeSaving} onClick={() => startClose(async () => { await closeAdminTask(t.id, closeNote); setShowClose(false); })}>
+                {closeSaving ? "Closing…" : "Close item"}
+              </button>
+            ) : (
               <button
                 className="bk-btn-primary"
-                style={{ background: "#7e22ce" }}
-                disabled={holdSaving || !holdDate}
-                onClick={() =>
-                  startHold(async () => {
-                    const res = await snoozeAdminTask(t.id, holdDate, holdComment);
-                    if (res.ok) setShowHoldForm(false);
-                  })
-                }
+                disabled={closeSaving || !closeDate}
+                onClick={() => startClose(async () => {
+                  const res = await requestCloseWithDate(t.id, closeDate, closeNote);
+                  if (res.ok) {
+                    if (res.mode === "approval") { setFlash("Sent to your team lead for approval."); setTimeout(() => setShowClose(false), 1600); }
+                    else setShowClose(false);
+                  } else setFlash(res.error ?? "Failed.");
+                })}
               >
-                {holdSaving ? "Saving…" : "Save hold"}
+                {closeSaving ? "Saving…" : "Close with date"}
               </button>
-              <button className="bk-btn-secondary" style={{ borderColor: "#e7e5e4", color: "#57534e" }} onClick={() => setShowHoldForm(false)}>
-                Cancel
-              </button>
-            </div>
+            )}
+            <button className="bk-btn-secondary" style={{ borderColor: "#e7e5e4", color: "#57534e" }} onClick={() => setShowClose(false)}>Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Expanded: body + notes + close form */}
-      {expanded && (
-        <div style={{ marginTop: 10, paddingLeft: isOpen && onToggle ? 20 : 0 }}>
-          {t.body && (
-            <div
-              style={{
-                fontSize: 12.5,
-                color: "#57534e",
-                whiteSpace: "pre-wrap",
-                marginBottom: 8,
-                background: "#fafaf9",
-                padding: "8px 10px",
-                borderRadius: 6,
-              }}
-            >
-              {t.body}
-            </div>
-          )}
-
-          {priorNotes.length > 0 && (
-            <details style={{ fontSize: 12, marginBottom: 8 }}>
-              <summary style={{ cursor: "pointer", color: "#78716c" }}>
-                Prior notes ({priorNotes.length})
-              </summary>
-              <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
-                {priorNotes.map((h, i) => (
-                  <div key={i} style={{ background: "#fafaf9", padding: "6px 8px", borderRadius: 6 }}>
-                    <div style={{ fontSize: 10.5, color: "#78716c", marginBottom: 2 }}>
-                      {h.at ? new Date(h.at).toLocaleDateString() : ""}
-                    </div>
-                    <div style={{ whiteSpace: "pre-wrap" }}>{h.notes}</div>
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
-
-          {isOpen && (
-            <>
-              <textarea
-                placeholder="Notes (carry into next re-fire)…"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                style={{
-                  width: "100%",
-                  minHeight: 56,
-                  padding: 10,
-                  border: "1px solid #e7e5e4",
-                  borderRadius: 8,
-                  fontSize: 12.5,
-                  fontFamily: "inherit",
-                  resize: "vertical",
-                }}
-              />
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
-                <button
-                  className="bk-btn-secondary"
-                  style={{ borderColor: "#e7e5e4", color: "#57534e" }}
-                  disabled={pending}
-                  onClick={() => start(() => { closeAdminTask(t.id, ""); })}
-                >
-                  Close (no notes)
-                </button>
-                <button
-                  className="bk-btn-primary"
-                  disabled={pending || !notes.trim()}
-                  onClick={() => start(() => { closeAdminTask(t.id, notes); })}
-                >
-                  Save & close
-                </button>
-              </div>
-            </>
-          )}
+      {/* Disapprove panel — team lead sends the deferral back with a note. */}
+      {showDisapprove && isOpen && isApproval && (
+        <div style={{ marginTop: 10, padding: "12px 14px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#dc2626", marginBottom: 8 }}>Disapprove — send back with a note</div>
+          <textarea
+            placeholder="Why is this not approved? It returns to them to action now."
+            value={disNote}
+            onChange={(e) => setDisNote(e.target.value)}
+            style={{ width: "100%", minHeight: 52, padding: 9, border: "1px solid #e7e5e4", borderRadius: 6, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }}
+          />
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button className="bk-btn-primary" style={{ background: "#dc2626" }} disabled={apprSaving} onClick={() => startAppr(async () => { await disapproveCloseRequest(t.id, disNote); setShowDisapprove(false); })}>
+              {apprSaving ? "Saving…" : "Disapprove"}
+            </button>
+            <button className="bk-btn-secondary" style={{ borderColor: "#e7e5e4", color: "#57534e" }} onClick={() => setShowDisapprove(false)}>Cancel</button>
+          </div>
         </div>
       )}
+
     </div>
   );
 }

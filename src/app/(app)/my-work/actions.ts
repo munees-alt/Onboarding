@@ -107,6 +107,138 @@ export async function snoozeAdminTask(id: string, until: string, note: string): 
   return { ok: true };
 }
 
+// Close-with-next-action-date. A team member's request must be approved by their
+// manager (team lead); a manager (team_lead+) defers directly. "Defer" = snooze
+// the item until the chosen date, when it resurfaces.
+export async function requestCloseWithDate(
+  taskId: string,
+  date: string,
+  note: string,
+): Promise<{ ok: boolean; mode?: "deferred" | "approval"; error?: string }> {
+  const session = await requireSession();
+  const supabase = await createClient();
+  const admin = createAdminClient();
+  const memberId = session.teamMember?.id;
+  const role = session.profile.role;
+  if (!date) return { ok: false, error: "Pick a next action date." };
+  const { data: task } = await supabase
+    .from("admin_tasks")
+    .select("id,owner_id,org_id,client_id,run_id,title,history")
+    .eq("id", taskId)
+    .maybeSingle();
+  if (!task) return { ok: false, error: "not_found" };
+  if (task.owner_id !== memberId && role !== "admin" && role !== "ops_head") return { ok: false, error: "forbidden" };
+  const trimmed = (note ?? "").trim();
+  const iso = new Date(date).toISOString();
+  const history = Array.isArray(task.history) ? task.history : [];
+
+  const isManager = role === "admin" || role === "ops_head" || role === "am" || role === "team_lead";
+  if (isManager) {
+    await supabase.from("admin_tasks").update({
+      snoozed_until: iso,
+      hold_note: trimmed || null,
+      history: [...history, { at: new Date().toISOString(), action: "deferred", notes: `Next action ${date}${trimmed ? ` — ${trimmed}` : ""}` }],
+    }).eq("id", taskId);
+    revalidatePath("/my-work");
+    return { ok: true, mode: "deferred" };
+  }
+
+  // Team member → route to their manager as an approval item.
+  const { data: me } = await admin.from("team_members").select("full_name,reports_to").eq("id", memberId!).maybeSingle();
+  const managerId = (me?.reports_to as string | null) ?? null;
+  if (!managerId) return { ok: false, error: "No manager on file to approve this. Ask an admin." };
+  await admin.from("admin_tasks").insert({
+    org_id: task.org_id,
+    owner_id: managerId,
+    kind: "close_approval",
+    client_id: task.client_id,
+    run_id: task.run_id,
+    title: `Approve action timeline · ${task.title}`,
+    body: `${me?.full_name ?? "A team member"} requests to close this with a next action date of ${date}.${trimmed ? `\nReason: ${trimmed}` : ""}`,
+    history: [{
+      at: new Date().toISOString(),
+      action: "approval_requested",
+      approval: { originalTaskId: taskId, originalTitle: task.title, date, note: trimmed, requesterId: memberId, requesterName: me?.full_name ?? null },
+    }],
+  });
+  // Park the original until the date so it leaves the active list while pending.
+  await supabase.from("admin_tasks").update({
+    snoozed_until: iso,
+    hold_note: `Pending team lead approval — next action ${date}${trimmed ? ` — ${trimmed}` : ""}`,
+    history: [...history, { at: new Date().toISOString(), action: "approval_requested", notes: `Requested close w/ next action ${date}` }],
+  }).eq("id", taskId);
+  revalidatePath("/my-work");
+  return { ok: true, mode: "approval" };
+}
+
+function approvalMeta(history: unknown): { originalTaskId?: string; originalTitle?: string; date?: string; requesterId?: string; requesterName?: string } | null {
+  if (!Array.isArray(history)) return null;
+  for (const h of history) {
+    if (h && typeof h === "object" && "approval" in h) return (h as { approval: Record<string, string> }).approval;
+  }
+  return null;
+}
+
+// Team lead approves a member's deferral: the original stays parked until its
+// next-action date; the approval item is closed and the requester notified.
+export async function approveCloseRequest(approvalTaskId: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await requireSession();
+  const supabase = await createClient();
+  const admin = createAdminClient();
+  const memberId = session.teamMember?.id;
+  const role = session.profile.role;
+  const { data: appr } = await supabase.from("admin_tasks").select("owner_id,org_id,history").eq("id", approvalTaskId).maybeSingle();
+  if (!appr) return { ok: false, error: "not_found" };
+  if (appr.owner_id !== memberId && role !== "admin" && role !== "ops_head") return { ok: false, error: "forbidden" };
+  const meta = approvalMeta(appr.history);
+  const hist = Array.isArray(appr.history) ? appr.history : [];
+  await admin.from("admin_tasks").update({
+    status: "closed", closed_at: new Date().toISOString(),
+    history: [...hist, { at: new Date().toISOString(), action: "approved" }],
+  }).eq("id", approvalTaskId);
+  if (meta?.requesterId) {
+    await admin.from("notifications").insert({
+      org_id: appr.org_id, recipient_id: meta.requesterId, kind: "task_assigned",
+      title: "Close approved",
+      body: `Your request to defer "${meta.originalTitle ?? "an item"}" to ${meta.date ?? "the chosen date"} was approved.`,
+    });
+  }
+  revalidatePath("/my-work");
+  return { ok: true };
+}
+
+// Team lead rejects: the original returns to the member's active list now.
+export async function disapproveCloseRequest(approvalTaskId: string, note: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await requireSession();
+  const supabase = await createClient();
+  const admin = createAdminClient();
+  const memberId = session.teamMember?.id;
+  const role = session.profile.role;
+  const { data: appr } = await supabase.from("admin_tasks").select("owner_id,org_id,history").eq("id", approvalTaskId).maybeSingle();
+  if (!appr) return { ok: false, error: "not_found" };
+  if (appr.owner_id !== memberId && role !== "admin" && role !== "ops_head") return { ok: false, error: "forbidden" };
+  const meta = approvalMeta(appr.history);
+  const trimmed = (note ?? "").trim();
+  if (meta?.originalTaskId) {
+    // Un-park the original so it's actionable again immediately.
+    await admin.from("admin_tasks").update({ snoozed_until: null, hold_note: null }).eq("id", meta.originalTaskId);
+  }
+  const hist = Array.isArray(appr.history) ? appr.history : [];
+  await admin.from("admin_tasks").update({
+    status: "closed", closed_at: new Date().toISOString(),
+    history: [...hist, { at: new Date().toISOString(), action: "disapproved", notes: trimmed || undefined }],
+  }).eq("id", approvalTaskId);
+  if (meta?.requesterId) {
+    await admin.from("notifications").insert({
+      org_id: appr.org_id, recipient_id: meta.requesterId, kind: "task_assigned",
+      title: "Close not approved",
+      body: `Your request to defer "${meta.originalTitle ?? "an item"}" was not approved${trimmed ? `: ${trimmed}` : ""}. Please action it.`,
+    });
+  }
+  revalidatePath("/my-work");
+  return { ok: true };
+}
+
 // Correct an admin task's title/body — master admin only. Used to override a
 // compliance alert the system got wrong (e.g. wrong entity, already handled,
 // wrong wording) without deleting the whole item. The correction is recorded
