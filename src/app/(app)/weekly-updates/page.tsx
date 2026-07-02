@@ -1,8 +1,14 @@
 import { notFound } from "next/navigation";
+import { requireSession } from "@/lib/auth";
+import { isMasterAdmin } from "@/lib/roles";
+import { listWeeklyUpdates } from "./actions";
+import { WeeklyUpdatesView } from "./weekly-updates-view";
 
-// Archived (platform cleanup, 2026-07). Weekly Client Updates is no longer part
-// of the product — kept out of nav and unreachable, but weekly_client_updates
-// data is untouched in case it's needed again.
 export default async function WeeklyUpdatesPage() {
-  notFound();
+  const s = await requireSession();
+  const role = s.teamMember?.role ?? s.profile?.role ?? "";
+  if (!isMasterAdmin(role)) notFound();
+  if (!s.profile?.org_id) notFound();
+  const { rows = [], error } = await listWeeklyUpdates();
+  return <WeeklyUpdatesView rows={rows} loadError={error ?? null} />;
 }

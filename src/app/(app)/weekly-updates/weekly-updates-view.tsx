@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
-import { runWeeklyScanNow, markSent, type WeeklyUpdateRow } from "./actions";
+import { listOnboardingCandidates, createDraftForClient, markSent, type WeeklyUpdateRow } from "./actions";
 
 type SentChannel = "manual" | "call" | "whatsapp" | "email" | "other";
 
@@ -13,23 +13,41 @@ function fmtWeek(iso: string): string {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
+type Candidate = { clientId: string; clientName: string; runId: string };
+
 export function WeeklyUpdatesView({ rows, loadError }: { rows: WeeklyUpdateRow[]; loadError: string | null }) {
   const router = useRouter();
-  const [scanning, setScanning] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [loadingCandidates, setLoadingCandidates] = useState(false);
+  const [selected, setSelected] = useState<string>("");
   const [flash, setFlash] = useState<string | null>(null);
 
   const drafts = rows.filter((r) => r.status === "draft");
   const sent = rows.filter((r) => r.status === "sent");
   const skipped = rows.filter((r) => r.status === "skipped");
 
-  const onScan = async () => {
-    setScanning(true);
-    const res = await runWeeklyScanNow();
-    setScanning(false);
-    if (res.error) setFlash(res.error);
-    else setFlash(`${res.created} draft(s) generated.`);
-    setTimeout(() => setFlash(null), 4000);
-    router.refresh();
+  const openPicker = async () => {
+    setPicking(true);
+    setLoadingCandidates(true);
+    const res = await listOnboardingCandidates();
+    setLoadingCandidates(false);
+    if (res.error) { setFlash(res.error); setTimeout(() => setFlash(null), 4000); return; }
+    const list = res.rows ?? [];
+    setCandidates(list);
+    setSelected(list[0] ? `${list[0].clientId}|${list[0].runId}` : "");
+  };
+
+  const onCreate = async () => {
+    if (!selected) return;
+    const [clientId, runId] = selected.split("|");
+    setCreating(true);
+    const res = await createDraftForClient(clientId, runId);
+    setCreating(false);
+    if (res.error) { setFlash(res.error); setTimeout(() => setFlash(null), 4000); return; }
+    setPicking(false);
+    if (res.id) router.push(`/weekly-updates/${res.id}`);
   };
 
   return (
@@ -41,14 +59,39 @@ export function WeeklyUpdatesView({ rows, loadError }: { rows: WeeklyUpdateRow[]
               Weekly Client Updates <span className="pill" style={{ fontSize: 10 }}>Master Admin</span>
             </h2>
             <div className="sub">
-              Drafts auto-created every Thursday 9am UAE for every active onboarding client. Edit, compose,
-              and send via Gmail or WhatsApp. Drafts unsent by Friday 9am surface in Action Items.
+              Pick a client + their onboarding run below, and Cadence builds the update from the real task
+              board. Review and edit, then it&apos;s saved as a Gmail draft (cc&apos;d to accounts@finanshels.com) —
+              nothing sends automatically.
             </div>
           </div>
-          <button className="btn ghost" disabled={scanning} onClick={onScan}>
-            <Icon name="refresh-cw" size={13} /> {scanning ? "Generating…" : "Generate drafts now"}
+          <button className="btn ghost" disabled={picking} onClick={openPicker}>
+            <Icon name="plus" size={13} /> New draft
           </button>
         </div>
+
+        {picking && (
+          <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 10, padding: 14, marginBottom: 14, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+            {loadingCandidates ? (
+              <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>Loading clients…</span>
+            ) : candidates.length === 0 ? (
+              <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>No clients with an active Onboarding run.</span>
+            ) : (
+              <>
+                <span style={{ fontSize: 12.5, fontWeight: 600 }}>Client:</span>
+                <select value={selected} onChange={(e) => setSelected(e.target.value)} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px", fontSize: 13, minWidth: 220 }}>
+                  {candidates.map((c) => (
+                    <option key={`${c.clientId}|${c.runId}`} value={`${c.clientId}|${c.runId}`}>{c.clientName}</option>
+                  ))}
+                </select>
+                <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>Service: Onboarding</span>
+                <button className="btn primary" disabled={creating || !selected} onClick={onCreate}>
+                  {creating ? "Building from task board…" : "Create draft"}
+                </button>
+              </>
+            )}
+            <button className="btn ghost" onClick={() => setPicking(false)}>Cancel</button>
+          </div>
+        )}
 
         {loadError && (
           <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#7f1d1d", padding: "8px 12px", borderRadius: 8, fontSize: 12.5, marginBottom: 10 }}>

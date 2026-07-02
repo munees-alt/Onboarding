@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icon";
 import {
-  saveUpdate, regenerateDraft, composeDraft, sendEmail, markSent, skipUpdate,
+  saveUpdate, regenerateDraft, composeDraft, createGmailDraft, markSent, skipUpdate,
   type WeeklyUpdateRow, type TaskItem, type KeyDate,
 } from "../actions";
 
@@ -75,9 +75,9 @@ export function DraftEditor({ row }: { row: WeeklyUpdateRow }) {
   });
 
   const doSend = () => start(async () => {
-    const r = await sendEmail(row.id, to, subject, emailBody);
+    const r = await createGmailDraft(row.id, to, subject, emailBody);
     if (r.error) { note(r.error); return; }
-    note("Email sent and update marked sent.");
+    note("Draft created in your Gmail (cc'd to accounts@finanshels.com) — review and send from there.");
     router.refresh();
   });
 
@@ -265,9 +265,10 @@ export function DraftEditor({ row }: { row: WeeklyUpdateRow }) {
             {tab === "email" ? (
               <div style={{ display: "grid", gap: 8 }}>
                 <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="client@example.com" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", fontSize: 13 }} />
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>Cc: accounts@finanshels.com · saved as a Gmail draft — nothing is sent automatically.</div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button className="btn ghost" onClick={() => doCopy(`Subject: ${subject}\n\n${emailBody}`, "Email")}><Icon name="copy" size={13} /> Copy</button>
-                  <button className="btn primary" disabled={pending || !emailBody.trim() || !to.trim()} onClick={doSend}><Icon name="send" size={13} /> Send via Gmail</button>
+                  <button className="btn primary" disabled={pending || !emailBody.trim() || !to.trim()} onClick={doSend}><Icon name="mail" size={13} /> Create Gmail draft</button>
                 </div>
               </div>
             ) : (

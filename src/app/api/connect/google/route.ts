@@ -7,6 +7,9 @@ const SCOPES = [
   // gmail.readonly lets the master-admin mailbox be polled for sales "Payment Received"
   // emails → auto-created onboarding leads. Requires a one-time Google reconnect to grant.
   "https://www.googleapis.com/auth/gmail.readonly",
+  // gmail.compose lets Cadence create Gmail DRAFTS (weekly client task update) without
+  // sending. Added 2026-07-02 — members connected before this needs a one-time reconnect.
+  "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/userinfo.email",
   "openid",
 ];

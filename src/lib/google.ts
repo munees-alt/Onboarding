@@ -155,6 +155,55 @@ export async function sendHtmlGmailAs(
   return { ok: true };
 }
 
+/**
+ * Creates a Gmail DRAFT (does not send) in the member's mailbox — HTML with a
+ * plain-text fallback, optional CC. Requires the `gmail.compose` scope; a
+ * member connected before that scope was added must reconnect once via
+ * /connections before this will work (getValidGoogleToken still returns a
+ * token, but Gmail rejects drafts.create with 403 insufficient scope).
+ */
+export async function createGmailDraftAs(
+  teamMemberId: string,
+  to: string,
+  cc: string[] | null | undefined,
+  subject: string,
+  htmlBody: string,
+  textBody: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const token = await getValidGoogleToken(teamMemberId);
+  if (!token) return { ok: false, error: "Connect Google in Settings first." };
+  const boundary = "cadence_boundary_" + Math.random().toString(36).slice(2);
+  const headers = [`To: ${to}`, ...(cc && cc.length ? [`Cc: ${cc.join(", ")}`] : []), `Subject: ${subject}`];
+  const raw = [
+    ...headers,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "",
+    textBody,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "",
+    htmlBody,
+    "",
+    `--${boundary}--`,
+  ].join("\r\n");
+  const encoded = Buffer.from(raw).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ message: { raw: encoded } }),
+  });
+  if (!res.ok) {
+    const isScope = res.status === 403;
+    return { ok: false, error: isScope ? "Gmail rejected this (missing gmail.compose scope) — reconnect Google in My Connections." : `Gmail error ${res.status}` };
+  }
+  return { ok: true };
+}
+
 /** Lists Gmail message ids matching a Gmail search query (e.g. 'from:sales@finanshels.com newer_than:7d'). */
 export async function listGmailMessages(teamMemberId: string, query: string, max = 25): Promise<string[]> {
   return listGmailMessageIds(teamMemberId, { q: query, max });

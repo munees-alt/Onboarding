@@ -13,6 +13,7 @@ export const NAV: NavItem[] = [
     roles: ["admin", "ops_head", "am", "team_lead", "senior", "junior"] },
   { id: "clients", label: "Clients", icon: "users", href: "/clients", group: "primary" },
   { id: "connections", label: "My Connections", icon: "plug", href: "/connections", group: "primary" },
+  { id: "weekly-updates", label: "Weekly Client Updates", icon: "mail", href: "/weekly-updates", group: "more", roles: ["admin"] },
 
   { id: "all-runs", label: "All Runs", icon: "radar", href: "/all-runs", group: "more", stub: true, roles: ["admin"] },
   { id: "process-intel", label: "Process Intel", icon: "brain-circuit", href: "/process-intel", group: "more", stub: true, badge: "AI", badgeKind: "ai" },
@@ -31,9 +32,10 @@ export const NAV: NavItem[] = [
   { id: "settings", label: "Settings", icon: "settings", href: "/settings", group: "admin", roles: ["admin", "ops_head"] },
 ];
 
-// Archived (Batch: platform cleanup) — Weekly Pulse and Weekly Client Updates are hidden
-// from nav and gated out of the routes below, but their tables/data are kept intact.
-export const ARCHIVED_NAV_IDS = new Set(["pulse", "weekly-updates"]);
+// Archived (Batch: platform cleanup) — Weekly Pulse is hidden from nav and gated out of
+// its route below. Weekly Client Updates was revived 2026-07-02 as a manual, per-client
+// "create draft" tool (Gmail draft, cc accounts@finanshels.com) — no more auto-cron.
+export const ARCHIVED_NAV_IDS = new Set(["pulse"]);
 
 export function visibleNav(role: Role): NavItem[] {
   return NAV.filter((n) => !n.roles || n.roles.includes(role));

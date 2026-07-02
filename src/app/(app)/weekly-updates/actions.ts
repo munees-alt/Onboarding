@@ -5,7 +5,16 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSession } from "@/lib/auth";
 import { runAi } from "@/lib/ai";
-import { sendGmailAs, getDriveCapableMemberId } from "@/lib/google";
+import { createGmailDraftAs, getDriveCapableMemberId } from "@/lib/google";
+
+// Templates that are NOT the client-onboarding flow — excluded when picking
+// "which of this client's active runs counts as Onboarding" for the manual
+// draft-creation picker. Audit/Liquidation/Catch-up have their own comms.
+const ONBOARDING_EXCLUDED_TEMPLATES = new Set([
+  "urgent-compliance", "catchup", "compliance-renewal",
+  "audit-workflow", "liquidation-workflow", "lead-intake",
+]);
+const CC_ADDRESS = "accounts@finanshels.com";
 
 // NOTE: this is a "use server" module — only async exports allowed. Interfaces
 // are type-only (erased at compile time) so the WeeklyUpdate / KeyDate / TaskItem
@@ -114,6 +123,60 @@ export async function getWeeklyUpdate(id: string): Promise<{ error?: string; row
   };
 }
 
+/** Clients with an active Onboarding-flow run — feeds the "New draft" client picker. */
+export async function listOnboardingCandidates(): Promise<{ error?: string; rows?: { clientId: string; clientName: string; runId: string }[] }> {
+  const g = await requireMasterAdmin();
+  if ("error" in g) return { error: g.error };
+  const supabase = await createClient();
+  const { data: runs, error } = await supabase
+    .from("onboarding_runs")
+    .select("id,client_id,template_key,status")
+    .eq("org_id", g.orgId)
+    .not("status", "in", "(complete,closed,archived)");
+  if (error) return { error: error.message };
+  const eligible = (runs ?? []).filter((r) => !ONBOARDING_EXCLUDED_TEMPLATES.has(r.template_key as string));
+  if (!eligible.length) return { rows: [] };
+  const clientIds = [...new Set(eligible.map((r) => r.client_id as string))];
+  const { data: clients } = await supabase.from("clients").select("id,name").in("id", clientIds);
+  const nameById = new Map<string, string>((clients ?? []).map((c) => [c.id as string, c.name as string]));
+  return {
+    rows: eligible.map((r) => ({
+      clientId: r.client_id as string,
+      runId: r.id as string,
+      clientName: nameById.get(r.client_id as string) ?? "Client",
+    })),
+  };
+}
+
+/** Manually create (or reuse today's) draft for one client's onboarding run, then seed it from the task board. */
+export async function createDraftForClient(clientId: string, runId: string): Promise<{ error?: string; id?: string }> {
+  const g = await requireMasterAdmin();
+  if ("error" in g) return { error: g.error };
+  const supabase = await createClient();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data: existing } = await supabase
+    .from("weekly_client_updates")
+    .select("id")
+    .eq("org_id", g.orgId).eq("client_id", clientId).eq("run_id", runId).eq("week_of", today)
+    .maybeSingle();
+
+  let id = existing?.id as string | undefined;
+  if (!id) {
+    const { data: inserted, error } = await supabase
+      .from("weekly_client_updates")
+      .insert({ org_id: g.orgId, client_id: clientId, run_id: runId, week_of: today, status: "draft" })
+      .select("id")
+      .single();
+    if (error) return { error: error.message };
+    id = inserted.id as string;
+  }
+
+  const r = await regenerateDraft(id);
+  if (r.error) return { error: r.error };
+  return { id };
+}
+
 export async function regenerateDraft(id: string): Promise<{ error?: string; ok?: boolean }> {
   const g = await requireMasterAdmin();
   if ("error" in g) return { error: g.error };
@@ -124,25 +187,37 @@ export async function regenerateDraft(id: string): Promise<{ error?: string; ok?
     .eq("id", id).eq("org_id", g.orgId).maybeSingle();
   if (!row) return { error: "Not found." };
 
-  // Pull every active run for this client (mirrors the cron logic).
-  const { data: runs } = await supabase
-    .from("onboarding_runs")
-    .select("id,template_key,status")
-    .eq("client_id", row.client_id)
-    .not("status", "in", "(complete,closed,archived)");
-  const descoped = new Set(["urgent-compliance", "catchup", "compliance-renewal"]);
-  const runIds = (runs ?? []).filter((r) => !descoped.has(r.template_key)).map((r) => r.id);
-  if (!runIds.length) return { error: "No active onboarding runs for this client." };
+  // Scope strictly to THIS update's onboarding run — a client can simultaneously have
+  // Audit/Liquidation/Catch-up runs going, which have their own comms and must not
+  // bleed into the onboarding update. Older rows created before run_id was always set
+  // fall back to "every active non-excluded run for this client" (legacy behaviour).
+  let runIds: string[];
+  if (row.run_id) {
+    runIds = [row.run_id as string];
+  } else {
+    const { data: runs } = await supabase
+      .from("onboarding_runs")
+      .select("id,template_key,status")
+      .eq("client_id", row.client_id)
+      .not("status", "in", "(complete,closed,archived)");
+    runIds = (runs ?? []).filter((r) => !ONBOARDING_EXCLUDED_TEMPLATES.has(r.template_key as string)).map((r) => r.id as string);
+  }
+  if (!runIds.length) return { error: "No active onboarding run for this client." };
 
+  // NOTE: tasks has no owner_name column — join team_members on owner_id.
   const { data: taskRows } = await supabase
     .from("tasks")
-    .select("id,run_id,title,status,owner_id,owner_name,owner_kind,due_date,updated_at,notes,client_visible")
+    .select("id,run_id,title,status,owner_id,owner_kind,due_date,updated_at,notes,client_visible,owner:team_members(full_name)")
     .in("run_id", runIds);
-  const tasks = (taskRows ?? []) as Array<{
+  const tasks = ((taskRows ?? []) as Array<{
     id: string; run_id: string; title: string; status: string;
-    owner_id: string | null; owner_name: string | null; owner_kind: string | null;
-    due_date: string | null; updated_at: string | null; notes: string | null; client_visible: boolean | null;
-  }>;
+    owner_id: string | null; owner_kind: string | null; due_date: string | null;
+    updated_at: string | null; notes: string | null; client_visible: boolean | null;
+    owner: { full_name: string | null } | { full_name: string | null }[] | null;
+  }>).map((t) => ({
+    ...t,
+    owner_name: Array.isArray(t.owner) ? (t.owner[0]?.full_name ?? null) : (t.owner?.full_name ?? null),
+  }));
 
   const { data: accessRows } = await supabase
     .from("run_items")
@@ -479,7 +554,12 @@ async function closeLinkedAdminTask(updateId: string, action: string, note: stri
   }).eq("id", t.id);
 }
 
-export async function sendEmail(id: string, to: string, subject: string, body: string): Promise<{ error?: string; ok?: boolean }> {
+/**
+ * Creates a Gmail DRAFT for this update (does NOT send). To = client, CC = accounts@finanshels.com,
+ * from the connected master-admin mailbox — left sitting in Gmail Drafts for manual review/send.
+ * The weekly_client_updates row stays "draft"; only a real send (from Gmail) or "Mark sent" closes it out.
+ */
+export async function createGmailDraft(id: string, to: string, subject: string, body: string): Promise<{ error?: string; ok?: boolean }> {
   const g = await requireMasterAdmin();
   if ("error" in g) return { error: g.error };
   const recipients = to.split(/[,;\s]+/).map((s) => s.trim()).filter((s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s));
@@ -487,18 +567,16 @@ export async function sendEmail(id: string, to: string, subject: string, body: s
   if (!subject.trim()) return { error: "Subject is empty." };
   if (!body.trim()) return { error: "Email body is empty." };
   const sender = await getDriveCapableMemberId(g.orgId);
-  if (!sender) return { error: "Connect a Google account first (My Connections) to send the email." };
-  const res = await sendGmailAs(sender, recipients.join(","), subject, body);
-  if (!res.ok) return { error: res.error ?? "Couldn't send the email." };
+  if (!sender) return { error: "Connect a Google account first (My Connections) to create the draft." };
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;white-space:pre-wrap;">${body
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`;
+  const res = await createGmailDraftAs(sender, recipients.join(","), [CC_ADDRESS], subject, html, body);
+  if (!res.ok) return { error: res.error ?? "Couldn't create the Gmail draft." };
   const supabase = await createClient();
   await supabase.from("weekly_client_updates").update({
-    status: "sent", sent_at: new Date().toISOString(), sent_via: "email",
-    sent_to: recipients.join(","), subject, email_body: body, updated_at: new Date().toISOString(),
+    subject, email_body: body, updated_at: new Date().toISOString(),
   }).eq("id", id).eq("org_id", g.orgId);
-  await closeLinkedAdminTask(id, "sent_email", `Sent to ${recipients.join(",")}`);
   revalidatePath(`/weekly-updates/${id}`);
-  revalidatePath("/weekly-updates");
-  revalidatePath("/my-work");
   return { ok: true };
 }
 
@@ -550,15 +628,3 @@ export async function setFeedbackFormUrl(url: string): Promise<{ error?: string;
   return { ok: true };
 }
 
-export async function runWeeklyScanNow(): Promise<{ ok: boolean; error?: string; created?: number }> {
-  const g = await requireMasterAdmin();
-  if ("error" in g) return { ok: false, error: g.error };
-  const base = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-  const headers: Record<string, string> = {};
-  if (process.env.CRON_SECRET) headers.authorization = `Bearer ${process.env.CRON_SECRET}`;
-  // force=1 lets the admin trigger this any day of the week.
-  const res = await fetch(`${base}/api/cron/weekly-client-updates?force=1`, { headers, cache: "no-store" });
-  const j = (await res.json().catch(() => ({}))) as { created?: number };
-  revalidatePath("/weekly-updates");
-  return { ok: true, created: j.created ?? 0 };
-}
