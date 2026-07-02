@@ -405,26 +405,6 @@ export async function composeDraft(id: string): Promise<{ error?: string; ok?: b
   const firmName = org?.name ?? "Finanshels";
   const senderName = g.userName ?? "the team";
 
-  // Portal status snapshot — formatted as plain facts the AI must weave in.
-  const snap = (row.status_snapshot ?? {}) as Partial<StatusSnapshot>;
-  const docsLine = snap.docs && snap.docs.total > 0
-    ? (snap.docs.received >= snap.docs.total
-        ? `Intake Form & Documents: All requested documents received (${snap.docs.received}/${snap.docs.total} collected).`
-        : `Documents: ${snap.docs.received} of ${snap.docs.total} requested documents received — ${snap.docs.total - snap.docs.received} still pending.`)
-    : null;
-  const intakeLine = snap.intake === "submitted" ? "Intake form: Submitted."
-    : snap.intake === "awaiting" ? "Intake form: Sent — awaiting client submission."
-    : null;
-  const coaLine = snap.coa === "signed_off" ? "COA sign-off: Signed off by client."
-    : snap.coa === "pending" ? "COA sign-off: Pending — Chart of Accounts will be shared for review and approval."
-    : null;
-  const accessLine = snap.access && snap.access.total > 0
-    ? (snap.access.shared >= snap.access.total
-        ? `Access: All ${snap.access.total} requested systems shared.`
-        : `Access: ${snap.access.shared} of ${snap.access.total} systems shared — ${snap.access.total - snap.access.shared} still pending.`)
-    : null;
-  const portalStatusBlock = [docsLine, intakeLine, coaLine, accessLine].filter(Boolean).join("\n");
-
   const prompt =
 `Compose this week's onboarding update for ${clientName}.
 
@@ -447,9 +427,6 @@ ${clientActions || "- (none)"}
 Upcoming dates (deliveries, data requests, deadlines):
 ${fmtDates(row.key_dates ?? [])}
 
-Portal status (use these as facts in Completed / In progress / Next steps as appropriate):
-${portalStatusBlock || "- (no portal data)"}
-
 Feedback link (only include if present): ${row.feedback_link ?? "(none)"}
 
 ============================================================
@@ -461,7 +438,7 @@ SUBJECT
 Use exactly: "Your Onboarding: Where We Are + What's Next — ${clientName}"
 
 ============================================================
-EMAIL BODY — FOLLOW THIS TEMPLATE EXACTLY (structure + tone). Fill the blanks from the data above. Keep section headings verbatim. Use the portal-status lines as FACTS — e.g. if "Intake Form & Documents: All requested documents received (4/4 collected)", surface that as ONE Completed bullet: "Intake Form & Documents: All submitted and received (4/4 documents collected)." If documents are still pending, list it instead under Next steps as a client ask. Omit any sub-bullet that has no data. If "Completed" is empty, write "- (nothing closed out this week yet)".
+EMAIL BODY — FOLLOW THIS TEMPLATE EXACTLY (structure + tone). Fill the blanks ONLY from the task-board data above (completed / in progress / client actions / notes / dates) — do NOT reference documents, intake form, COA sign-off, or system access status; those are not part of this email. Keep section headings verbatim. Omit any sub-bullet that has no data. If "Completed" is empty, write "- (nothing closed out this week yet)".
 
 Hi ${firstName},
 
@@ -469,15 +446,14 @@ Hope you're doing well. Here's a quick update on where we stand with your onboar
 
 Where we are
 Completed:
-- <each completed task as a short line; if a per-task note exists, append it as plain prose. ADD a single line for "Intake Form & Documents" when the portal-status shows all docs received + intake submitted; for "Setup Zoho" or other system tasks, phrase as "Setup Zoho: Account creation is complete.">
+- <each completed task as a short line; if a per-task note exists, append it as plain prose>
 
 In progress:
 - <each in-progress task as ONE sentence. The team's note for that task IS the WHY — incorporate it verbatim or paraphrased. Example: a CT Registration task with note "Tax Team started the process. Require clients support in account creation" becomes "Corporate Tax (CT) Registration: The application is currently in progress. Our Tax Team has started the process, but we require your support in the initial account creation first so we can move forward with the filing.">
 
 Next steps
-- <Client actions first, framed warmly as a request. Use the portal-status access/docs lines if anything is pending: "Bank & payment gateway access: We haven't received access yet — connecting this would be a great help so we can process your transactions accurately.">
-- <COA sign-off line if portal-status shows COA pending: "COA Sign-off: This is currently pending. We will be sharing the Chart of Accounts with you shortly for your review and approval.">
-- <Onboarding sign-off line if "Sign off onboarding" task is in the data with a due date: "Onboarding Sign-off: Once the [prerequisite, e.g. CT account] is created and the COA is approved, we will look to officially close out the onboarding phase by the deadline of <due date>.">
+- <Each client-action task, framed warmly as a request, using its note as context if present.>
+- <Onboarding sign-off line if "Sign off onboarding" task is in the data with a due date: "Onboarding Sign-off: Once the [prerequisite] is in place, we will look to officially close out the onboarding phase by the deadline of <due date>.">
 - <First delivery date if in upcoming dates: "First delivery: Your first set of deliverables will be ready on <date>.">
 - <Data request dates if in upcoming dates.>
 
