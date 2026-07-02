@@ -128,9 +128,9 @@ export async function GET(request: NextRequest) {
       .maybeSingle();
     const taskDays = data?.task_overdue_days ?? DEFAULT_WINDOW_DAYS.task_overdue;
     const noteExtDays = data?.note_extension_days ?? 2;
-    const clientDataRefireDays = (data as { client_data_refire_days?: number } | null)?.client_data_refire_days ?? 3;
+    const clientDataRefireDays = (data as { client_data_refire_days?: number } | null)?.client_data_refire_days ?? 2;
     const tlEscalationDays = (data as { tl_escalation_days?: number } | null)?.tl_escalation_days ?? 2;
-    const amEscalationDays = (data as { am_escalation_days?: number } | null)?.am_escalation_days ?? 1;
+    const amEscalationDays = (data as { am_escalation_days?: number } | null)?.am_escalation_days ?? 2;
     cfgByOrg.set(orgId, {
       window: {
         zoho_followup: DEFAULT_WINDOW_DAYS.zoho_followup * DAY,

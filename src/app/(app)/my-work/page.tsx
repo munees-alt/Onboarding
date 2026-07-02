@@ -68,6 +68,7 @@ export default async function MyWorkPage() {
       notes: r.notes,
       snoozedUntil: r.snoozed_until ?? null,
       holdNote: r.hold_note ?? null,
+      ownerId: r.owner_id,
     }));
   }
 
@@ -76,7 +77,14 @@ export default async function MyWorkPage() {
   return (
     <div className="scroll">
       <div className="page">
-        <MyTasksSection items={adminTasks} canScan={canScan} canDelete={role === "admin"} canSnooze={role === "admin"} />
+        <MyTasksSection
+          items={adminTasks}
+          canScan={canScan}
+          canDelete={role === "admin"}
+          canSnooze={role === "admin"}
+          viewerId={memberId}
+          showViewToggle={role === "admin"}
+        />
       </div>
     </div>
   );

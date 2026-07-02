@@ -19,6 +19,7 @@ export type AdminTaskItem = {
   notes: string | null;
   snoozedUntil: string | null;
   holdNote: string | null;
+  ownerId: string;
 };
 
 const KIND_LABEL: Record<string, string> = {
@@ -156,11 +157,17 @@ export function MyTasksSection({
   canScan,
   canDelete,
   canSnooze,
+  viewerId,
+  showViewToggle,
 }: {
   items: AdminTaskItem[];
   canScan: boolean;
   canDelete?: boolean;
   canSnooze?: boolean;
+  /** Current viewer's team_member id — used to filter "My action items". */
+  viewerId?: string | null;
+  /** Master Admin gets a My action items / Team view split; everyone else sees one list. */
+  showViewToggle?: boolean;
 }) {
   const [showClosed, setShowClosed] = useState(false);
   const [showSnoozed, setShowSnoozed] = useState(false);
@@ -172,11 +179,18 @@ export function MyTasksSection({
   const [bulkSaving, startBulk] = useTransition();
   const [tab, setTab] = useState<TabKey>("all");
   const [search, setSearch] = useState("");
+  const [view, setView] = useState<"mine" | "team">("mine");
+
+  const mineCount = useMemo(() => items.filter((t) => t.status === "open" && t.ownerId === viewerId).length, [items, viewerId]);
+  const scopedItems = useMemo(() => {
+    if (!showViewToggle) return items;
+    return view === "mine" ? items.filter((t) => t.ownerId === viewerId) : items;
+  }, [items, showViewToggle, view, viewerId]);
 
   const now = Date.now();
-  const openItems = items.filter((t) => t.status === "open" && !(t.snoozedUntil && new Date(t.snoozedUntil).getTime() > now));
-  const snoozedItems = items.filter((t) => t.status === "open" && t.snoozedUntil && new Date(t.snoozedUntil).getTime() > now);
-  const closedItems = items.filter((t) => t.status === "closed");
+  const openItems = scopedItems.filter((t) => t.status === "open" && !(t.snoozedUntil && new Date(t.snoozedUntil).getTime() > now));
+  const snoozedItems = scopedItems.filter((t) => t.status === "open" && t.snoozedUntil && new Date(t.snoozedUntil).getTime() > now);
+  const closedItems = scopedItems.filter((t) => t.status === "closed");
   const overdue = openItems.filter(isOverdueTask);
 
   const searchedOpen = useMemo(() => {
@@ -279,9 +293,23 @@ export function MyTasksSection({
             {openItems.length > 0 && <span className="bk-count-badge">{openItems.length}</span>}
           </div>
           <div className="bk-subtitle">
-            Only your assigned tasks. Escalates to the next level after 2 days unresolved. Close to remove from the chain.
+            {showViewToggle
+              ? view === "mine"
+                ? "Only what's escalated or assigned directly to you. Escalates to the next level after 2 days unresolved."
+                : "Everything open across the org. Close to remove from the chain."
+              : "Only your assigned tasks. Escalates to the next level after 2 days unresolved. Close to remove from the chain."}
           </div>
         </div>
+        {showViewToggle && (
+          <div className="bk-filter-tabs" style={{ marginRight: 8 }}>
+            <button className={`bk-filter-tab${view === "mine" ? " active" : ""}`} onClick={() => setView("mine")}>
+              My action items {mineCount}
+            </button>
+            <button className={`bk-filter-tab${view === "team" ? " active" : ""}`} onClick={() => setView("team")}>
+              Team view
+            </button>
+          </div>
+        )}
         {canScan && (
           <button
             className="bk-btn-secondary"

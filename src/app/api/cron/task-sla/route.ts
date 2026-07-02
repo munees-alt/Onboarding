@@ -351,11 +351,11 @@ export async function GET(request: NextRequest) {
 
   // ── AML not added check ──
   //   For every client with status='onboarding' whose onboarding run was
-  //   created more than 10 days ago, check if a row exists in aml_records.
+  //   created more than 1 week ago, check if a row exists in aml_records.
   //   If there is NO row at all (client hasn't been pushed into the AML panel),
   //   surface an action item for the master admin + AM.
   let amlUnassigned = 0;
-  const AML_DAYS = 10;
+  const AML_DAYS = 7;
   const cutoff = new Date(now - AML_DAYS * DAY).toISOString();
 
   // Get all signed (onboarding) clients
