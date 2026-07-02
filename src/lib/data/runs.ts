@@ -11,6 +11,8 @@ export interface RunCardData {
   templateKey: string;
   amName: string | null;
   teamLeadName: string | null;
+  /** Full names of everyone on the run team (Team Lead, Seniors, Juniors, AM). Used for the "team member" filter. */
+  teamMembers: string[];
   progress: number;
   currentStage: number;
   currentStageName: string | null;
@@ -69,7 +71,7 @@ export async function getRunCards(
       ? supabase.from("team_members").select("id,full_name").in("id", amIds)
       : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
     supabase.from("run_stages").select("run_id,stage_no,name,status").in("run_id", ids),
-    supabase.from("run_team").select("run_id, team_members(full_name, role)").in("run_id", ids),
+    supabase.from("run_team").select("run_id, role_in_run, team_members(full_name, role)").in("run_id", ids),
   ]);
 
   const clientMap = Object.fromEntries((clients ?? []).map((c) => [c.id, c]));
@@ -79,11 +81,18 @@ export async function getRunCards(
     (byRun[s.run_id] ||= []).push(s);
   });
 
-  type RunTeamRow = { run_id: string; team_members: { full_name: string; role: string } | { full_name: string; role: string }[] | null };
+  type RunTeamRow = { run_id: string; role_in_run: string | null; team_members: { full_name: string; role: string } | { full_name: string; role: string }[] | null };
   const teamLeadByRun: Record<string, string> = {};
+  const teamMembersByRun: Record<string, string[]> = {};
   for (const r of (rt ?? []) as RunTeamRow[]) {
     const tm = Array.isArray(r.team_members) ? r.team_members[0] : r.team_members;
-    if (tm?.role === "team_lead") teamLeadByRun[r.run_id] = tm.full_name;
+    if (!tm?.full_name) continue;
+    if (tm.role === "team_lead") teamLeadByRun[r.run_id] = tm.full_name;
+    // Everyone on the run team except the onboarding partner (Munees is seeded on
+    // every run as a fixed default — not a filterable working assignee).
+    if (r.role_in_run === "onboarding_partner") continue;
+    const list = (teamMembersByRun[r.run_id] ||= []);
+    if (!list.includes(tm.full_name)) list.push(tm.full_name);
   }
 
   return runs.map((r) => {
@@ -100,6 +109,7 @@ export async function getRunCards(
       templateKey: r.template_key,
       amName: r.am_id ? aName[r.am_id] ?? null : null,
       teamLeadName: teamLeadByRun[r.id] ?? null,
+      teamMembers: teamMembersByRun[r.id] ?? [],
       progress: r.progress,
       currentStage: r.current_stage,
       currentStageName: cur?.name ?? null,

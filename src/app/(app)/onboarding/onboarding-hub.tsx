@@ -52,6 +52,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   const [fAm, setFAm] = useState<string>("all");
   const [fIndustry, setFIndustry] = useState<string>("all");
   const [fTeamLead, setFTeamLead] = useState<string>("all");
+  const [fTeamMember, setFTeamMember] = useState<string>("all");
   const [fMonth, setFMonth] = useState<string>("all"); // YYYY-MM
   const [fFrequency, setFFrequency] = useState<string>("all");
   const [leadAmDraft, setLeadAmDraft] = useState<Record<string, string>>({});
@@ -85,6 +86,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
     if (fAm !== "all" && r.amName !== fAm) return false;
     if (fIndustry !== "all" && r.industry !== fIndustry) return false;
     if (fTeamLead !== "all" && r.teamLeadName !== fTeamLead) return false;
+    if (fTeamMember !== "all" && !(r.teamMembers ?? []).includes(fTeamMember)) return false;
     if (fMonth !== "all" && (r.contractStartDate ?? "").slice(0, 7) !== fMonth) return false;
     if (fFrequency !== "all" && (r.reportFrequency ?? "monthly") !== fFrequency) return false;
     return true;
@@ -99,7 +101,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   // those simply hides them, same as an active run that doesn't match.
   const matchesLead = (l: LeadRow) => {
     if (fSearch.trim() && !l.name.toLowerCase().includes(fSearch.trim().toLowerCase())) return false;
-    if (fAm !== "all" || fTeamLead !== "all" || fMonth !== "all" || fFrequency !== "all") return false;
+    if (fAm !== "all" || fTeamLead !== "all" || fTeamMember !== "all" || fMonth !== "all" || fFrequency !== "all") return false;
     if (fIndustry !== "all" && l.industry !== fIndustry) return false;
     return true;
   };
@@ -110,10 +112,11 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
   const amOptions = [...new Map(scopeUnfiltered.filter((r) => r.amName).map((r) => [r.amName!, r.amName!])).values()].sort();
   const industryOptions = [...new Set([...scopeUnfiltered.map((r) => r.industry), ...openLeads.map((l) => l.industry)].filter(Boolean) as string[])].sort();
   const teamLeadOptions = [...new Map(scopeUnfiltered.filter((r) => r.teamLeadName).map((r) => [r.teamLeadName!, r.teamLeadName!])).values()].sort();
+  const teamMemberOptions = [...new Set(scopeUnfiltered.flatMap((r) => r.teamMembers ?? []))].sort();
   const monthOptions = [...new Set(scopeUnfiltered.map((r) => r.contractStartDate?.slice(0, 7)).filter(Boolean) as string[])].sort().reverse();
 
-  const filtersActive = !!fSearch.trim() || fAm !== "all" || fIndustry !== "all" || fTeamLead !== "all" || fMonth !== "all" || fFrequency !== "all";
-  const resetFilters = () => { setFSearch(""); setFAm("all"); setFIndustry("all"); setFTeamLead("all"); setFMonth("all"); setFFrequency("all"); };
+  const filtersActive = !!fSearch.trim() || fAm !== "all" || fIndustry !== "all" || fTeamLead !== "all" || fTeamMember !== "all" || fMonth !== "all" || fFrequency !== "all";
+  const resetFilters = () => { setFSearch(""); setFAm("all"); setFIndustry("all"); setFTeamLead("all"); setFTeamMember("all"); setFMonth("all"); setFFrequency("all"); };
 
   const statActive = activeRuns.length;
   const statAvg = activeRuns.length ? Math.round(activeRuns.reduce((n, r) => n + r.progress, 0) / activeRuns.length) : 0;
@@ -197,6 +200,7 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
           am={fAm} onAm={setFAm} amOptions={amOptions}
           industry={fIndustry} onIndustry={setFIndustry} industryOptions={industryOptions}
           teamLead={fTeamLead} onTeamLead={setFTeamLead} teamLeadOptions={teamLeadOptions}
+          teamMember={fTeamMember} onTeamMember={setFTeamMember} teamMemberOptions={teamMemberOptions}
           month={fMonth} onMonth={setFMonth} monthOptions={monthOptions}
           frequency={fFrequency} onFrequency={setFFrequency}
           filtersActive={filtersActive} onReset={resetFilters}
@@ -281,12 +285,13 @@ export function OnboardingHub({ runs: allRuns, templates, leads, ams = [], canDe
 }
 
 function KanbanFilterBar({
-  search, onSearch, am, onAm, amOptions, industry, onIndustry, industryOptions, teamLead, onTeamLead, teamLeadOptions, month, onMonth, monthOptions, frequency, onFrequency, filtersActive, onReset,
+  search, onSearch, am, onAm, amOptions, industry, onIndustry, industryOptions, teamLead, onTeamLead, teamLeadOptions, teamMember, onTeamMember, teamMemberOptions, month, onMonth, monthOptions, frequency, onFrequency, filtersActive, onReset,
 }: {
   search: string; onSearch: (s: string) => void;
   am: string; onAm: (s: string) => void; amOptions: string[];
   industry: string; onIndustry: (s: string) => void; industryOptions: string[];
   teamLead: string; onTeamLead: (s: string) => void; teamLeadOptions: string[];
+  teamMember: string; onTeamMember: (s: string) => void; teamMemberOptions: string[];
   month: string; onMonth: (s: string) => void; monthOptions: string[];
   frequency: string; onFrequency: (s: string) => void;
   filtersActive: boolean; onReset: () => void;
@@ -318,6 +323,12 @@ function KanbanFilterBar({
         <select value={teamLead} onChange={(e) => onTeamLead(e.target.value)} style={ctrl} title="Filter by Team Lead">
           <option value="all">All team leads</option>
           {teamLeadOptions.map((tl) => <option key={tl} value={tl}>{tl}</option>)}
+        </select>
+      )}
+      {teamMemberOptions.length > 0 && (
+        <select value={teamMember} onChange={(e) => onTeamMember(e.target.value)} style={ctrl} title="Filter by assigned team member">
+          <option value="all">All team members</option>
+          {teamMemberOptions.map((tm) => <option key={tm} value={tm}>{tm}</option>)}
         </select>
       )}
       {monthOptions.length > 0 && (
