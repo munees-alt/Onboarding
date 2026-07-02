@@ -564,6 +564,7 @@ function ClientGroup({
   const overdueCount = useMemo(() => group.items.filter(isOverdueTask).length, [group.items]);
   // Collapsed by default — the summary line below gives the gist; click to expand.
   const [open, setOpen] = useState(false);
+  const [showCloseModal, setShowCloseModal] = useState(false);
 
   // Up to 4 category lines shown on the collapsed card, each listing WHAT is
   // pending (the actual access systems / docs / tasks / compliance names).
@@ -602,9 +603,12 @@ function ClientGroup({
         overflow: "hidden",
       }}
     >
-      <button
+      <div
         className="bk-group-toggle"
+        role="button"
+        tabIndex={0}
         onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setOpen((v) => !v); }}
         style={{
           width: "100%",
           display: "block",
@@ -653,6 +657,14 @@ function ClientGroup({
           >
             {group.items.length}
           </span>
+          <button
+            className="bk-btn-secondary"
+            style={{ flexShrink: 0, padding: "3px 10px", fontSize: 11 }}
+            onClick={(e) => { e.stopPropagation(); setShowCloseModal(true); }}
+            title="Close (or close with a next action date) every open item for this client at once"
+          >
+            Close
+          </button>
         </div>
         {!open && categories.length > 0 && (
           <div style={{ marginTop: 6, paddingLeft: 24, display: "grid", gap: 3 }}>
@@ -666,7 +678,15 @@ function ClientGroup({
             ))}
           </div>
         )}
-      </button>
+      </div>
+      {showCloseModal && (
+        <GroupCloseModal
+          clientName={group.name}
+          categories={categories}
+          itemIds={group.items.map((t) => t.id)}
+          onClose={() => setShowCloseModal(false)}
+        />
+      )}
       {open && (
         <div className="bk-action-list" style={{ borderTop: "1px solid #f0efec" }}>
           {group.items.length > 1 && (
@@ -690,6 +710,113 @@ function ClientGroup({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// Quick-action popup off the collapsed client card: shows what's pending, then
+// Close (note) or Close with a next-action date, applied to every open item
+// for this client at once — no need to expand the card first.
+function GroupCloseModal({
+  clientName,
+  categories,
+  itemIds,
+  onClose,
+}: {
+  clientName: string;
+  categories: { key: string; label: string; color: string; details: string[] }[];
+  itemIds: string[];
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<"note" | "date">("note");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState("");
+  const [saving, startSaving] = useTransition();
+  const [flash, setFlash] = useState<string | null>(null);
+
+  const confirm = () => startSaving(async () => {
+    if (mode === "note") {
+      const res = await bulkCloseAdminTasks(itemIds, note);
+      if (res.ok) onClose(); else setFlash(res.error ?? "Failed.");
+      return;
+    }
+    if (!date) { setFlash("Pick a next action date."); return; }
+    const results = await Promise.all(itemIds.map((id) => requestCloseWithDate(id, date, note)));
+    const anyApproval = results.some((r) => r.mode === "approval");
+    const anyFailed = results.some((r) => !r.ok);
+    if (anyFailed) { setFlash("Some items failed — try again."); return; }
+    if (anyApproval) { setFlash("Sent for approval."); setTimeout(onClose, 1400); return; }
+    onClose();
+  });
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(28,25,23,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: "#fff", borderRadius: 12, maxWidth: 480, width: "100%", maxHeight: "90vh", overflow: "auto", padding: 22, boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+          <div style={{ fontWeight: 700, fontSize: 15.5, color: "#1c1917" }}>Close all — {clientName}</div>
+          <button onClick={onClose} className="bk-row-link">×</button>
+        </div>
+        <div style={{ fontSize: 11.5, color: "#78716c", marginBottom: 14 }}>
+          {itemIds.length} open item{itemIds.length === 1 ? "" : "s"} for this client will be closed.
+        </div>
+
+        {categories.length > 0 && (
+          <div style={{ background: "#fafaf9", border: "1px solid #f0efec", borderRadius: 8, padding: 12, marginBottom: 14, display: "grid", gap: 4 }}>
+            {categories.map((c) => (
+              <div key={c.key} style={{ display: "flex", gap: 6, alignItems: "baseline", fontSize: 12, minWidth: 0 }}>
+                <span style={{ color: c.color, fontWeight: 700, flexShrink: 0 }}>{c.label}:</span>
+                <span style={{ color: "#57534e" }}>{c.details.join(", ")}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+          <button
+            onClick={() => setMode("note")}
+            style={{ fontFamily: "inherit", cursor: "pointer", fontSize: 11.5, fontWeight: 700, padding: "5px 11px", borderRadius: 6, border: "1px solid #e7e5e4", background: mode === "note" ? "#1c1917" : "#fff", color: mode === "note" ? "#fff" : "#57534e" }}
+          >
+            Add note &amp; close
+          </button>
+          <button
+            onClick={() => setMode("date")}
+            style={{ fontFamily: "inherit", cursor: "pointer", fontSize: 11.5, fontWeight: 700, padding: "5px 11px", borderRadius: 6, border: "1px solid #e7e5e4", background: mode === "date" ? "#1c1917" : "#fff", color: mode === "date" ? "#fff" : "#57534e" }}
+          >
+            Close with next action date
+          </button>
+        </div>
+        {mode === "date" && (
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 11.5, color: "#57534e", display: "block", marginBottom: 3 }}>Next action date</label>
+            <input
+              type="date"
+              value={date}
+              min={new Date().toISOString().slice(0, 10)}
+              onChange={(e) => setDate(e.target.value)}
+              style={{ padding: "5px 9px", border: "1px solid #e7e5e4", borderRadius: 6, fontSize: 12.5, fontFamily: "inherit", width: "100%" }}
+            />
+          </div>
+        )}
+        <textarea
+          placeholder={mode === "date" ? "Reason / what happens next…" : "Closing note (optional)…"}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          style={{ width: "100%", minHeight: 60, padding: 9, border: "1px solid #e7e5e4", borderRadius: 6, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }}
+        />
+        {flash && <div style={{ fontSize: 11.5, color: "#dc2626", marginTop: 6 }}>{flash}</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <button className="bk-btn-primary" disabled={saving || (mode === "date" && !date)} onClick={confirm}>
+            {saving ? "Closing…" : mode === "date" ? `Close ${itemIds.length} with date` : `Close ${itemIds.length} item${itemIds.length === 1 ? "" : "s"}`}
+          </button>
+          <button className="bk-btn-secondary" style={{ borderColor: "#e7e5e4", color: "#57534e" }} onClick={onClose}>Cancel</button>
+        </div>
+      </div>
     </div>
   );
 }
