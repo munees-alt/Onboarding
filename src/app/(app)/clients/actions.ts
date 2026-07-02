@@ -13,7 +13,7 @@ import type { SessionInfo } from "@/lib/types";
 import { isMasterAdmin } from "@/lib/roles";
 import { buildClientCode } from "@/lib/client-code";
 import { sendGmailAs } from "@/lib/google";
-import { sendAssignmentEmail } from "@/lib/assignment-email";
+import { sendAssignmentEmail, sendAmlAssignmentEmail, sendAmlDocumentCreatedEmail } from "@/lib/assignment-email";
 import { queueEmail } from "@/lib/email";
 import {
   INTAKE_EMAIL_SUBJECT,
@@ -1999,7 +1999,7 @@ export async function auditAllClients(): Promise<{
 async function notifyAmlEvent(orgId: string, clientId: string, clientName: string, event: "created" | "document_created" | "shared_to_client") {
   const admin = createAdminClient();
   const { data: members } = await admin
-    .from("team_members").select("id,full_name,email,role").eq("org_id", orgId).eq("active", true);
+    .from("team_members").select("id,full_name,email,role,reports_to").eq("org_id", orgId).eq("active", true);
   const recips = (members ?? []).filter((m) =>
     m.email && (m.role === "admin" || m.role === "ops_head" || (m.full_name ?? "").toLowerCase().includes("krishna")));
 
@@ -2018,12 +2018,40 @@ async function notifyAmlEvent(orgId: string, clientId: string, clientName: strin
   }));
   if (notifRows.length) { try { await admin.from("notifications").insert(notifRows); } catch { /* notifications table optional */ } }
 
-  // Queued emails (no-op until SendGrid is enabled).
-  const seen = new Set<string>();
-  for (const r of recips) {
-    if (!r.email || seen.has(r.email)) continue;
-    seen.add(r.email);
-    await queueEmail({ orgId, kind: "team_update", to: r.email, toName: r.full_name, subject, html, text: line, clientId });
+  // Branded emails from munees@finanshels.com.
+  //  - created (assigned)  → To: Krishna (AML head), CC: his configured team
+  //  - document_created    → To: munees@finanshels.com
+  //  - shared_to_client    → existing generic notice to recips (unchanged, live)
+  if (event === "created" || event === "document_created") {
+    const krishna = (members ?? []).find((m) => m.email && (m.full_name ?? "").toLowerCase().includes("krishna"));
+    // Krishna's org-chart subtree = the configured AML team (CC list).
+    const teamEmails: string[] = [];
+    if (krishna) {
+      const seenIds = new Set<string>([krishna.id]);
+      const q = [krishna.id];
+      while (q.length) {
+        const p = q.shift()!;
+        for (const m of members ?? []) {
+          if (m.reports_to === p && !seenIds.has(m.id)) {
+            seenIds.add(m.id);
+            q.push(m.id);
+            if (m.email) teamEmails.push(m.email);
+          }
+        }
+      }
+    }
+    if (event === "created" && krishna?.email) {
+      await sendAmlAssignmentEmail({ orgId, headEmail: krishna.email, headName: krishna.full_name ?? "Krishna", clientName, ccEmails: teamEmails, clientId });
+    } else if (event === "document_created") {
+      await sendAmlDocumentCreatedEmail({ orgId, clientName, clientId });
+    }
+  } else {
+    const seen = new Set<string>();
+    for (const r of recips) {
+      if (!r.email || seen.has(r.email)) continue;
+      seen.add(r.email);
+      await queueEmail({ orgId, kind: "team_update", to: r.email, toName: r.full_name, subject, html, text: line, clientId });
+    }
   }
 }
 

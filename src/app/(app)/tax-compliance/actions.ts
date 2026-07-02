@@ -5,6 +5,8 @@ import { getSession } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { upsertConsolidatedComplianceTask } from "@/lib/compliance-tasks";
+import { findTaxHead } from "@/lib/capacity";
+import { sendTaxAssignmentEmail } from "@/lib/assignment-email";
 
 export type TaxStatus = "open_item" | "pending" | "awaiting" | "application_submitted" | "completed";
 export type TaxService = "ct_reg" | "vat_reg" | "ct_fil" | "vat_fil";
@@ -270,6 +272,31 @@ export async function assignTaxMembers(clientId: string, memberIds: string[]): P
       line: `${client.name} — assigned to you on Tax Compliance`,
       source: "tax_compliance_assignment",
     });
+  }
+
+  // Email each assignee (CC the tax head, e.g. Nafila) — best-effort, from munees@finanshels.com.
+  try {
+    const { data: tms } = await admin.from("team_members").select("id,full_name,email").in("id", memberIds);
+    const head = await findTaxHead(session.profile.org_id).catch(() => null);
+    let headEmail: string | null = null;
+    if (head?.id) {
+      const { data: h } = await admin.from("team_members").select("email").eq("id", head.id).maybeSingle();
+      headEmail = h?.email ?? null;
+    }
+    for (const tm of tms ?? []) {
+      if (tm.email) {
+        await sendTaxAssignmentEmail({
+          orgId: session.profile.org_id,
+          toEmail: tm.email,
+          toName: tm.full_name ?? "Team",
+          clientName: client.name,
+          ccEmails: headEmail && headEmail !== tm.email ? [headEmail] : undefined,
+          clientId,
+        });
+      }
+    }
+  } catch {
+    // best-effort — assignment must not fail on email
   }
 
   revalidatePath("/tax-compliance");

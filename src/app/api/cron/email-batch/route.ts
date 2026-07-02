@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
   const admin = createAdminClient();
   const { data: rows } = await admin
     .from("email_batch")
-    .select("id,to_email,to_name,subject,body_html,body_text")
+    .select("id,to_email,to_name,subject,body_html,body_text,from_email,from_name,cc_emails")
     .eq("status", "queued")
     .order("created_at", { ascending: true })
     .limit(50);

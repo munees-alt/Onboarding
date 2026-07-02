@@ -12,6 +12,7 @@ import { getTemplate, getAllTemplates } from "@/lib/templates-store";
 import { createRunFromTemplate } from "@/lib/runs";
 import { findTaxHead, findTaxTeamLead, suggestNextAm, findAlcHead, suggestNextAlc, suggestNextByRole, getAmCapacityList } from "@/lib/capacity";
 import { upsertConsolidatedComplianceTask } from "@/lib/compliance-tasks";
+import { sendTeamAssignmentEmail, sendModuleAssignmentEmail } from "@/lib/assignment-email";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const KIND_TO_TYPE: Record<string, string> = { ai: "ai", link: "link", doc: "form", check: "manual", person: "manual" };
@@ -377,6 +378,39 @@ export async function assignStepMembers(
         body: isHandover ? `You're the destination for the handover: "${stepTitle}". Open the run to see what's next.` : stepTitle,
       })),
     );
+  }
+
+  // Email the just-assigned team — Onboarding / Audit / Liquidation (best-effort).
+  // Each assignee gets one email naming the team lead + all assigned members.
+  if (members.length && !isHandover) {
+    try {
+      const key = run.template_key ?? "";
+      const moduleLabel = key.startsWith("audit") ? "Audit" : key.startsWith("liquidation") ? "Liquidation" : "Onboarding";
+      const { data: cl } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+      const clientName = cl?.name ?? "your client";
+      const { data: tms } = await supabase.from("team_members").select("id,full_name,email").in("id", members.map((m) => m.id));
+      const byId = new Map((tms ?? []).map((t) => [t.id, t]));
+      const teamLead = members.find((m) => (m.role || fallbackRole) === "team_lead")?.name ?? "";
+      const memberNames = members.map((m) => m.name);
+      for (const m of members) {
+        const tm = byId.get(m.id);
+        if (tm?.email) {
+          await sendTeamAssignmentEmail({
+            orgId: run.org_id,
+            toEmail: tm.email,
+            toName: tm.full_name ?? m.name,
+            clientName,
+            teamLead,
+            members: memberNames,
+            runId,
+            clientId: run.client_id,
+            moduleLabel,
+          });
+        }
+      }
+    } catch {
+      // best-effort — assignment must not fail on email
+    }
   }
 
   // Handover routing: when the AM picks the destination, pre-assign that
@@ -1210,6 +1244,24 @@ export async function escalateCatchup(
     title: "Catch-up accounting run created",
     body: `${amName}, a catch-up run was created for your team${seed.length ? ` with ${seed.length} task(s) pre-seeded` : ""}. Configure the board and assign the owners.`,
   });
+  // Email the assigned AM — best-effort.
+  try {
+    const { data: cl } = await supabase.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+    const { data: am } = await supabase.from("team_members").select("full_name,email").eq("id", amId).maybeSingle();
+    if (am?.email) {
+      await sendModuleAssignmentEmail({
+        orgId: run.org_id,
+        toEmail: am.email,
+        toName: am.full_name ?? amName,
+        clientName: cl?.name ?? "your client",
+        moduleLabel: "Catch-up Accounting",
+        runId: newRunId,
+        clientId: run.client_id,
+      });
+    }
+  } catch {
+    // best-effort
+  }
   await completeStep(runId, stepId);
   revalidatePath(`/onboarding/${runId}`);
   return { runId: newRunId };

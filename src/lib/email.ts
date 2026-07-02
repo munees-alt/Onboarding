@@ -19,6 +19,11 @@ export interface QueueEmailInput {
   clientId?: string | null;
   runId?: string | null;
   createdBy?: string | null;
+  /** Per-email sender override. Falls back to SENDGRID_FROM_EMAIL when unset. */
+  fromEmail?: string | null;
+  fromName?: string | null;
+  /** Optional CC recipients (e.g. AML head → CC configured team). */
+  cc?: string[] | null;
 }
 
 /** Creates a queued batch row. Never sends anything by itself. */
@@ -37,6 +42,9 @@ export async function queueEmail(input: QueueEmailInput): Promise<{ id: string }
       client_id: input.clientId ?? null,
       run_id: input.runId ?? null,
       created_by: input.createdBy ?? null,
+      from_email: input.fromEmail ?? null,
+      from_name: input.fromName ?? null,
+      cc_emails: input.cc && input.cc.length ? input.cc : null,
     })
     .select("id")
     .single();
@@ -46,6 +54,31 @@ export async function queueEmail(input: QueueEmailInput): Promise<{ id: string }
 
 export function emailSendingEnabled(): boolean {
   return !!process.env.SENDGRID_API_KEY && process.env.ENABLE_EMAIL_SENDING === "true";
+}
+
+/**
+ * Queue a row AND send it immediately when sending is enabled (prod), marking it
+ * sent so the daily batch cron won't re-send it. On local (disabled) it just
+ * queues. Used by assignment notifications, which shouldn't wait for the cron.
+ */
+export async function queueAndSend(input: QueueEmailInput): Promise<{ id: string; sent: boolean } | { error: string }> {
+  const q = await queueEmail(input);
+  if ("error" in q) return q;
+  if (!emailSendingEnabled()) return { id: q.id, sent: false };
+  const admin = createAdminClient();
+  const { data: row } = await admin
+    .from("email_batch")
+    .select("id,to_email,to_name,subject,body_html,body_text,from_email,from_name,cc_emails")
+    .eq("id", q.id)
+    .single();
+  if (!row) return { id: q.id, sent: false };
+  const res = await sendQueuedEmail(row);
+  if ("error" in res) {
+    await admin.from("email_batch").update({ status: "failed", error: res.error }).eq("id", q.id);
+    return { id: q.id, sent: false };
+  }
+  await admin.from("email_batch").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", q.id);
+  return { id: q.id, sent: true };
 }
 
 /**
@@ -60,10 +93,18 @@ export async function sendQueuedEmail(row: {
   subject: string;
   body_html: string;
   body_text: string | null;
+  from_email?: string | null;
+  from_name?: string | null;
+  cc_emails?: string[] | null;
 }): Promise<{ ok: true } | { error: string }> {
   if (!emailSendingEnabled()) return { error: "Email sending is disabled (set SENDGRID_API_KEY + ENABLE_EMAIL_SENDING=true)." };
-  const fromEmail = process.env.SENDGRID_FROM_EMAIL;
+  const fromEmail = row.from_email || process.env.SENDGRID_FROM_EMAIL;
   if (!fromEmail) return { error: "SENDGRID_FROM_EMAIL is not set." };
+
+  // CC minus the primary recipient (SendGrid rejects a duplicate address).
+  const cc = (row.cc_emails ?? []).filter((e) => e && e !== row.to_email);
+  const personalization: Record<string, unknown> = { to: [{ email: row.to_email, name: row.to_name ?? undefined }] };
+  if (cc.length) personalization.cc = cc.map((email) => ({ email }));
 
   const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
@@ -72,8 +113,8 @@ export async function sendQueuedEmail(row: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      personalizations: [{ to: [{ email: row.to_email, name: row.to_name ?? undefined }] }],
-      from: { email: fromEmail, name: process.env.SENDGRID_FROM_NAME || "Cadence" },
+      personalizations: [personalization],
+      from: { email: fromEmail, name: row.from_name || process.env.SENDGRID_FROM_NAME || "Cadence" },
       subject: row.subject,
       content: [
         ...(row.body_text ? [{ type: "text/plain", value: row.body_text }] : []),
