@@ -75,18 +75,20 @@ export default async function AmlPage() {
   const isHead = role === "admin" || role === "ops_head" || (krishnaRow != null && currentMemberId === krishnaRow.id);
 
   return (
-    <div style={{ padding: "22px 28px 0" }}>
-      <div className="bk-head">
-        <div className="bk-title-row">
-          <h1 className="bk-title">AML Compliance</h1>
-          <span className="bk-badge">Compliance team only</span>
-          {isMasterAdmin && (
-            <span className="bk-badge-admin"><span className="bk-dot" />Admin panel active</span>
-          )}
+    <div className="scroll">
+      <div style={{ padding: "22px 28px 24px" }}>
+        <div className="bk-head">
+          <div className="bk-title-row">
+            <h1 className="bk-title">AML Compliance</h1>
+            <span className="bk-badge">Compliance team only</span>
+            {isMasterAdmin && (
+              <span className="bk-badge-admin"><span className="bk-dot" />Admin panel active</span>
+            )}
+          </div>
         </div>
+        {error && <div className="alert-red">{error}</div>}
+        <AmlView clients={clients ?? []} canEdit={hasAccess} isAdmin={isMasterAdmin} isHead={isHead} amlTeam={amlTeam ?? []} />
       </div>
-      {error && <div className="alert-red">{error}</div>}
-      <AmlView clients={clients ?? []} canEdit={hasAccess} isAdmin={isMasterAdmin} isHead={isHead} amlTeam={amlTeam ?? []} />
     </div>
   );
 }

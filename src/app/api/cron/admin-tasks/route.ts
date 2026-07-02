@@ -298,14 +298,32 @@ export async function GET(request: NextRequest) {
     }
   };
 
-  // Fan a task out to (master admin, run AM) — deduped against the same key.
-  const fanOut = async (input: { org_id: string; kind: Kind; run_id: string; client_id: string | null; step_id?: string | null; title: string; body: string; am_id: string | null }) => {
-    const masterOwner = ownerByOrg.get(input.org_id);
-    if (masterOwner) {
-      await insertTask({ ...input, owner_id: masterOwner.id });
+  // Resolve the run's team member(s) (everyone on run_team except the AM/Team
+  // Lead) and its Team Lead, memoized per run. This is who first owns a
+  // client-data / task-pending item — Team Lead, AM, Ops Head, and Master
+  // Admin only see it if it goes unactioned (via the escalation chain below).
+  const runRosterCache = new Map<string, { members: string[]; teamLead: string | null }>();
+  const resolveRunRoster = async (runId: string): Promise<{ members: string[]; teamLead: string | null }> => {
+    if (runRosterCache.has(runId)) return runRosterCache.get(runId)!;
+    const { data: rows } = await admin.from("run_team").select("team_member_id,role_in_run").eq("run_id", runId);
+    const members: string[] = [];
+    let teamLead: string | null = null;
+    for (const r of rows ?? []) {
+      if (r.role_in_run === "team_lead") teamLead = r.team_member_id as string;
+      else if (r.role_in_run !== "am") members.push(r.team_member_id as string);
     }
-    if (input.am_id && input.am_id !== masterOwner?.id) {
-      await insertTask({ ...input, owner_id: input.am_id });
+    const roster = { members, teamLead };
+    runRosterCache.set(runId, roster);
+    return roster;
+  };
+
+  // Fan a task out to the run's team member(s) — the ones actually doing the
+  // work — falling back to the AM if no non-AM/Team-Lead member is on the run.
+  const fanOut = async (input: { org_id: string; kind: Kind; run_id: string; client_id: string | null; step_id?: string | null; title: string; body: string; am_id: string | null }) => {
+    const roster = await resolveRunRoster(input.run_id);
+    const targets = roster.members.length ? roster.members : (input.am_id ? [input.am_id] : []);
+    for (const ownerId of targets) {
+      await insertTask({ ...input, owner_id: ownerId });
     }
   };
 
@@ -547,9 +565,12 @@ export async function GET(request: NextRequest) {
     team_lead: 3, am: 4, ops_head: 5, admin: 6,
   };
 
-  function findNextOwner(ownerId: string, orgId: string, runId: string | null): { id: string; name: string } | null {
+  // Returns every next-in-chain target. Every step is a single hop EXCEPT
+  // AM → (Ops Head + Master Admin), which fans out to both at once rather
+  // than relaying through Ops Head first.
+  function findNextOwners(ownerId: string, orgId: string, runId: string | null): { id: string; name: string }[] {
     const owner = memberById.get(ownerId);
-    if (!owner) return null;
+    if (!owner) return [];
     const ownerRank = ROLE_RANK[owner.role] ?? 0;
     const orgMembers = membersByOrg.get(orgId) ?? [];
 
@@ -559,14 +580,15 @@ export async function GET(request: NextRequest) {
         const tlId = teamLeadsByRun.get(runId);
         if (tlId && tlId !== ownerId) {
           const tl = memberById.get(tlId);
-          if (tl) return { id: tl.id, name: tl.full_name };
+          if (tl) return [{ id: tl.id, name: tl.full_name }];
         }
         const run = runMetaById.get(runId);
         if (run?.am_id && run.am_id !== ownerId) {
           const am = memberById.get(run.am_id);
-          if (am) return { id: am.id, name: am.full_name };
+          if (am) return [{ id: am.id, name: am.full_name }];
         }
       }
+      return [];
     }
 
     // team lead → AM
@@ -574,23 +596,28 @@ export async function GET(request: NextRequest) {
       const run = runMetaById.get(runId);
       if (run?.am_id && run.am_id !== ownerId) {
         const am = memberById.get(run.am_id);
-        if (am) return { id: am.id, name: am.full_name };
+        if (am) return [{ id: am.id, name: am.full_name }];
       }
+      return [];
     }
 
-    // AM → ops_head
+    // AM → Ops Head + Master Admin, together, not sequentially.
     if (owner.role === "am") {
+      const targets: { id: string; name: string }[] = [];
       const ops = orgMembers.find((m) => m.role === "ops_head");
-      if (ops && ops.id !== ownerId) return { id: ops.id, name: ops.full_name };
+      if (ops && ops.id !== ownerId) targets.push({ id: ops.id, name: ops.full_name });
+      const master = ownerByOrg.get(orgId);
+      if (master && master.id !== ownerId && !targets.some((t) => t.id === master.id)) targets.push(master);
+      return targets;
     }
 
     // ops_head → master admin
     if (owner.role === "ops_head") {
       const master = ownerByOrg.get(orgId);
-      if (master && master.id !== ownerId) return master;
+      if (master && master.id !== ownerId) return [master];
     }
 
-    return null; // already at top of chain
+    return []; // already at top of chain
   }
 
   // Track escalations created this run to avoid double-creating for same target.
@@ -625,23 +652,31 @@ export async function GET(request: NextRequest) {
       continue;
     }
 
-    // Normal 2-day escalation to next person in chain.
-    const next = findNextOwner(task.owner_id, task.org_id, task.run_id);
-    if (!next) continue;
-    const esc = `${task.kind}::${task.run_id ?? ""}::${next.id}`;
-    if (escalatedThisRun.has(esc)) continue;
-    escalatedThisRun.add(esc);
+    // Compliance items are fanned out to Team Member + Team Lead + AM all at
+    // once (see task-sla cron) — don't relay between those three, that would
+    // just be noisy duplicate escalations of something everyone already has.
+    // Only the AM step still escalates onward (to Ops Head + Master Admin) if
+    // the AM themselves lets it sit.
+    if (task.kind === "compliance" && owner?.role !== "am") continue;
+
+    // Normal escalation to the next person/people in chain.
+    const nextOwners = findNextOwners(task.owner_id, task.org_id, task.run_id);
     const ownerName = memberById.get(task.owner_id)?.full_name ?? "Team";
-    await insertTask({
-      org_id: task.org_id,
-      owner_id: next.id,
-      kind: task.kind as Kind,
-      run_id: task.run_id ?? "",
-      client_id: task.client_id,
-      step_id: task.step_id,
-      title: `[Escalated] ${ownerName} – ${task.title.replace(/^\[.*?\]\s*/, "")}`,
-      body: `Unresolved for ${Math.floor(age / DAY)} days by ${ownerName}. Needs your attention.\n\n${task.body ?? ""}`,
-    });
+    for (const next of nextOwners) {
+      const esc = `${task.kind}::${task.run_id ?? ""}::${next.id}`;
+      if (escalatedThisRun.has(esc)) continue;
+      escalatedThisRun.add(esc);
+      await insertTask({
+        org_id: task.org_id,
+        owner_id: next.id,
+        kind: task.kind as Kind,
+        run_id: task.run_id ?? "",
+        client_id: task.client_id,
+        step_id: task.step_id,
+        title: `[Escalated] ${ownerName} – ${task.title.replace(/^\[.*?\]\s*/, "")}`,
+        body: `Unresolved for ${Math.floor(age / DAY)} days by ${ownerName}. Needs your attention.\n\n${task.body ?? ""}`,
+      });
+    }
   }
 
   // ── 7) Compliance deadline alert — 1 month before due date ──

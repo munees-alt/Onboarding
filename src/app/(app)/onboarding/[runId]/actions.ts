@@ -1047,33 +1047,30 @@ export async function escalateUrgentCompliance(
 }
 
 /**
- * A tracked compliance item is due → create a lightweight RENEWAL run (compliance-renewal
- * template: one pre-built task, no configuration) for the client's AM. It lands in their
- * My Work. Used both manually (button on a compliance row) and automatically (the cron).
+ * A tracked compliance item is due → add an action item (no run, no template) for the
+ * client's AM. It lands in their My Work. Used both manually (button on a compliance
+ * row) and automatically (the cron).
  */
-export async function createComplianceRenewalRun(
+export async function createComplianceRenewalTask(
   runId: string, item: { label?: string; type?: string; date?: string },
-): Promise<{ error?: string; runId?: string }> {
+): Promise<{ error?: string }> {
   const supabase = await createClient();
   const { data: run } = await supabase.from("onboarding_runs").select("client_id,org_id,am_id").eq("id", runId).maybeSingle();
   if (!run) return { error: "Run not found." };
+  if (!run.am_id) return { error: "This run has no AM assigned yet." };
   const label = (item.label || item.type || "Compliance item").trim();
-  const newRunId = await createRunFromTemplate(supabase, {
-    orgId: run.org_id, clientId: run.client_id, amId: run.am_id ?? null,
-    templateId: "compliance-renewal", targetCompletion: item.date ?? null,
+  await supabase.from("admin_tasks").insert({
+    org_id: run.org_id,
+    owner_id: run.am_id,
+    kind: "compliance",
+    client_id: run.client_id,
+    run_id: runId,
+    title: `Renewal due: ${label}`,
+    body: `${label}${item.date ? ` is due ${item.date}` : ""}. Renew it, upload the new copy to the client Drive folder, and update the expiry date.`,
   });
-  // Record what this renewal is for, so the run shows the specific document.
-  await supabase.from("run_items").insert({ run_id: newRunId, client_id: run.client_id, kind: "renewal_for", data: { label, type: item.type ?? null, date: item.date ?? null } });
-  if (run.am_id) {
-    await supabase.from("notifications").insert({
-      org_id: run.org_id, run_id: newRunId, recipient_id: run.am_id, kind: "escalation",
-      title: `Renewal due: ${label}`,
-      body: `${label}${item.date ? ` is due ${item.date}` : ""}. A renewal task was created in your My Work — renew it and update the file in Drive.`,
-    });
-  }
   revalidatePath(`/onboarding/${runId}`);
   revalidatePath("/my-work");
-  return { runId: newRunId };
+  return {};
 }
 
 /** Suggest the default ALC catch-up owner — Anju by default, else the least-loaded ALC team member. */

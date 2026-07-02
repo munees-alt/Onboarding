@@ -35,6 +35,7 @@ const KIND_LABEL: Record<string, string> = {
   task_escalation: "Task escalation",
   compliance: "Compliance",
   close_approval: "Approval",
+  onboarding_sla: "Onboarding SLA",
 };
 
 const KIND_COLOR: Record<string, string> = {
@@ -51,6 +52,7 @@ const KIND_COLOR: Record<string, string> = {
   task_escalation: "#dc2626",
   compliance: "#9333ea",
   close_approval: "#7e22ce",
+  onboarding_sla: "#b45309",
 };
 
 const DAY_MS = 86_400_000;

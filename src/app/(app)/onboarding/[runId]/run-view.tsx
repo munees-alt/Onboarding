@@ -9,7 +9,7 @@ import { ASSIGN_ROLES, type TemplateStep, type OnbTemplate } from "@/lib/onboard
 import { ACCESS_TYPES, AUTHORISED_USER_EMAIL, CREDENTIALS_SOP, accessTypeById, clientEmailSlug, type AccessItem, type AccessMode } from "@/lib/access-sops";
 import { fmtDate } from "@/lib/data/runs";
 import type { RunDetail } from "@/lib/data/run-detail";
-import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, forceCompleteStep, completeOnboarding, dispatchMagicLink, dispatchIntakeLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateUrgentComplianceServices, escalateCatchup, suggestCatchupAssignee, getCatchupGautham, setRunBlocked, suggestAssignee, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveExistingDriveLink, saveAccess, saveContractAnalysis, saveAccountingSoftware, createComplianceRenewalRun, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, listTemplatesLite, saveLinkedSops, createSalesUploadLink, revealAccessCredentials, suggestTaxAssignee, pushCoaToZoho, markDocReceivedOutside, markAccessReceivedOutside, addDocFollowupNote, addAccessFollowupNote, deleteRun, forceCompleteRun, getTaxAssignDefaults, saveTaxAssign, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
+import { completeStep, assignStepMembers, rollbackToStage, rollbackStep, forceCompleteStep, completeOnboarding, dispatchMagicLink, dispatchIntakeLink, setTaskStatus, toggleTaskVisible, saveDiagrams, saveRunItems, assignTriage, escalateUrgentCompliance, escalateUrgentComplianceServices, escalateCatchup, suggestCatchupAssignee, getCatchupGautham, setRunBlocked, suggestAssignee, postMessage, saveDocuments, saveIntakePrep, saveDrive, saveExistingDriveLink, saveAccess, saveContractAnalysis, saveAccountingSoftware, createComplianceRenewalTask, uploadContractFile, requestSecureMailbox, sendClientEmail, addTask, updateTask, deleteTask, nudgeTeam, saveBoardColumns, saveTaskStatuses, saveCallNotes, saveTaskSla, attachTaskFile, notifyClientOnTask, getDocumentUrl, requestDocReupload, uploadDocForClient, getBoardCols, saveBoardCols, listSops, listTemplatesLite, saveLinkedSops, createSalesUploadLink, revealAccessCredentials, suggestTaxAssignee, pushCoaToZoho, markDocReceivedOutside, markAccessReceivedOutside, addDocFollowupNote, addAccessFollowupNote, deleteRun, forceCompleteRun, getTaxAssignDefaults, saveTaxAssign, type DiagramInput, type DiagramNode, type RunItemInput, type IntakePrep, type BoardCol } from "./actions";
 import { loadSlackComposerOptions, listRunAttachableDocs, sendSlackSetupRequest } from "./slack-actions";
 import { runBankReconForCatchup, getBankReconResult, confirmBankReconReady, type BankReconResult } from "./bank-recon-actions";
 import { getPortalAccessCode } from "@/app/portal/[token]/actions";
@@ -2764,11 +2764,11 @@ function ItemsBuilderModal({
     if (r.items?.length) setRows(r.items.map((i) => ({ label: i.label, date: i.date, type: i.type, reminderDays: String(i.reminderDays ?? 30), reminderDate: reminderFromExpiry(i.date) })));
   };
   const aiRecurring = async () => { setAiBusy(true); setInfo(null); const r = await generateRecurringTasks(runId, pBrief); setAiBusy(false); if (r.error) setInfo(r.error); else if (r.items?.length) setRows(r.items.map((i) => ({ task: i.task, cadence: CADENCES.includes(i.cadence) ? i.cadence : "monthly", when: i.when }))); };
-  // Spin a tracked compliance item into a lightweight renewal run (one task, no config) in My Work.
+  // Spin a tracked compliance item into a renewal action item (no run, no template) in My Work.
   const makeRenewal = (row: Record<string, string>) => start(async () => {
     setInfo(null);
-    const r = await createComplianceRenewalRun(runId, { label: row.label, type: row.type, date: row.date });
-    setInfo(r.error ? r.error : `Renewal task created in My Work for the assigned AM${row.date ? ` (due ${row.date})` : ""}.`);
+    const r = await createComplianceRenewalTask(runId, { label: row.label, type: row.type, date: row.date });
+    setInfo(r.error ? r.error : `Renewal action item added to My Work for the assigned AM${row.date ? ` (due ${row.date})` : ""}.`);
   });
 
   const saveItems = (after?: "email") => start(async () => {

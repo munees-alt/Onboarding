@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createRunFromTemplate } from "@/lib/runs";
 import { upsertConsolidatedComplianceTask } from "@/lib/compliance-tasks";
 
 // Daily scan: for every run with task-board SLA reminders configured, notify the
@@ -65,11 +64,11 @@ export async function GET(request: NextRequest) {
 
   // ── Compliance calendar ──
   //   • 14-day heads-up notification to the AM (deduped via data.notified)
-  //   • On/after the due date → auto-create a lightweight RENEWAL run (one task, no config)
-  //     in the AM's My Work (deduped via data.renewalCreated)
+  //   • On/after the due date → add a renewal line to the AM's Compliance action
+  //     item (no run, no template — just a task), deduped via data.renewalCreated
   let complianceAlerts = 0;
   let complianceAdminTasks = 0;
-  let renewalRuns = 0;
+  let renewalTasks = 0;
   const { data: compRows } = await admin.from("run_items").select("id,run_id,data").eq("kind", "compliance");
   const infoByRun = new Map<string, { am: string | null; org: string; clientId: string; name: string; blocked: boolean } | null>();
   const resolve = async (runId: string) => {
@@ -110,6 +109,24 @@ export async function GET(request: NextRequest) {
     return id;
   };
 
+  // Resolve & memoise the run's team member(s) + Team Lead. Compliance items
+  // fan out to Team Member(s) + Team Lead + AM together — Ops Head / Master
+  // Admin only see it via the escalation chain if the AM lets it sit.
+  const runRosterCache = new Map<string, { members: string[]; teamLead: string | null }>();
+  const resolveRunRoster = async (runId: string): Promise<{ members: string[]; teamLead: string | null }> => {
+    if (runRosterCache.has(runId)) return runRosterCache.get(runId)!;
+    const { data: rows } = await admin.from("run_team").select("team_member_id,role_in_run").eq("run_id", runId);
+    const members: string[] = [];
+    let teamLead: string | null = null;
+    for (const r of rows ?? []) {
+      if (r.role_in_run === "team_lead") teamLead = r.team_member_id as string;
+      else if (r.role_in_run !== "am") members.push(r.team_member_id as string);
+    }
+    const roster = { members, teamLead };
+    runRosterCache.set(runId, roster);
+    return roster;
+  };
+
   for (const row of compRows ?? []) {
     const d = (row.data ?? {}) as { date?: string; label?: string; type?: string; notified?: boolean; renewalCreated?: boolean; reminderDays?: string | number };
     if (!d.date) continue;
@@ -136,13 +153,13 @@ export async function GET(request: NextRequest) {
         complianceAlerts++;
       }
 
-      // ALSO surface to Action Items (My Tasks) — fan out to master admin + run AM.
-      // Consolidated: append to the single open kind=compliance chip per owner;
-      // create the chip only when none exists.
+      // ALSO surface to Action Items (My Tasks) — fan out to Team Member(s) +
+      // Team Lead + AM together. Consolidated: append to the single open
+      // kind=compliance chip per (owner, client); create it only if none exists.
       const infoForAdmin = await resolve(row.run_id);
       if (infoForAdmin) {
-        const masterId = await resolveMaster(infoForAdmin.org);
-        const ownerIds = Array.from(new Set([masterId, infoForAdmin.am].filter((v): v is string => !!v)));
+        const roster = await resolveRunRoster(row.run_id);
+        const ownerIds = Array.from(new Set([...roster.members, roster.teamLead, infoForAdmin.am].filter((v): v is string => !!v)));
         const daysCeil = Math.ceil(daysToDue);
         const lineForChip = `${infoForAdmin.name} · ${label} — due ${d.date} (${daysCeil}d)`;
         for (const ownerId of ownerIds) {
@@ -159,36 +176,42 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 2) Due date reached → create the renewal task (once).
+    // 2) Due date reached → add a renewal line to the Compliance action item (once).
     if (daysToDue <= 0 && !d.renewalCreated) {
       const info = await resolve(row.run_id);
-      if (info?.blocked) continue; // don't spawn a renewal task while upstream is blocked
+      if (info?.blocked) continue; // don't nag while upstream is blocked
       if (info) {
-        const newRunId = await createRunFromTemplate(admin, {
-          orgId: info.org, clientId: info.clientId, amId: info.am ?? null,
-          templateId: "compliance-renewal", targetCompletion: d.date,
-        });
-        await admin.from("run_items").insert({ run_id: newRunId, client_id: info.clientId, kind: "renewal_for", data: { label, type: d.type ?? null, date: d.date } });
+        const daysOverdue = Math.floor(-daysToDue);
+        const roster = await resolveRunRoster(row.run_id);
+        const ownerIds = Array.from(new Set([...roster.members, roster.teamLead, info.am].filter((v): v is string => !!v)));
+        const lineForChip = `${info.name} · ${label} — overdue by ${daysOverdue}d, renew & update Drive/expiry`;
+        for (const ownerId of ownerIds) {
+          const res = await upsertConsolidatedComplianceTask(admin, {
+            orgId: info.org, ownerId, line: lineForChip, clientId: info.clientId, runId: row.run_id, source: "compliance_renewal",
+          });
+          if (res.mode === "created" || res.mode === "appended") renewalTasks++;
+        }
         if (info.am) {
           await admin.from("notifications").insert({
-            org_id: info.org, run_id: newRunId, recipient_id: info.am, kind: "escalation",
+            org_id: info.org, run_id: row.run_id, recipient_id: info.am, kind: "escalation",
             title: `Renewal due: ${label}`,
-            body: `${label} reached its due date (${d.date}). A renewal task was created in your My Work.`,
+            body: `${label} reached its due date (${d.date}). An action item was added to your My Work.`,
           });
         }
         await admin.from("run_items").update({ data: { ...d, renewalCreated: true } }).eq("id", row.id);
-        renewalRuns++;
       }
     }
   }
 
   // ── Onboarding stage SLA ──
-  //   For every active run, if the current stage's targetDays is set on the
-  //   template, compute days since stage started. Stage 1 starts at
+  //   For every active run, compute days since the current stage started
+  //   (the template's targetDays if set, else a flat 10-day fallback so every
+  //   stage is covered even without an explicit target). Stage 1 starts at
   //   run.started_at; stage N starts at the latest completed_at of any step in
-  //   the previous stage. If days-in-stage > targetDays, notify the AM once
-  //   per (run, stage), deduped via run_items kind 'stage_sla_notified'
-  //   sort=stage_no.
+  //   the previous stage. If days-in-stage > targetDays, notify the AM AND
+  //   create a Master Admin action item, once per (run, stage), deduped via
+  //   run_items kind 'stage_sla_notified' sort=stage_no.
+  const STAGE_SLA_FALLBACK_DAYS = 10;
   let stageBreaches = 0;
   const { getTemplate } = await import("@/lib/templates-store");
   const { data: activeRuns } = await admin
@@ -201,7 +224,8 @@ export async function GET(request: NextRequest) {
     if ((run as { blocked_reason?: string | null }).blocked_reason) continue;
     const tpl = await getTemplate(run.template_key);
     const stage = tpl?.stages[(run.current_stage as number) - 1];
-    if (!stage || !stage.targetDays) continue;
+    if (!stage) continue;
+    const targetDays = stage.targetDays ?? STAGE_SLA_FALLBACK_DAYS;
 
     let stageStart: number | null = null;
     if (run.current_stage === 1) {
@@ -223,7 +247,7 @@ export async function GET(request: NextRequest) {
     if (!stageStart) continue;
 
     const daysInStage = (now - stageStart) / DAY;
-    if (daysInStage <= stage.targetDays) continue;
+    if (daysInStage <= targetDays) continue;
 
     const { data: already } = await admin
       .from("run_items")
@@ -236,14 +260,27 @@ export async function GET(request: NextRequest) {
     if (already) continue;
 
     const { data: client } = await admin.from("clients").select("name").eq("id", run.client_id).maybeSingle();
+    const clientName = client?.name ?? "client";
     await admin.from("notifications").insert({
       org_id: run.org_id, run_id: run.id, recipient_id: run.am_id, kind: "escalation",
-      title: `Stage SLA breached · ${client?.name ?? "client"}`,
-      body: `Stage "${stage.name}" has been active ${Math.floor(daysInStage)}d (target ${stage.targetDays}d). Push it forward or update the target.`,
+      title: `Stage SLA breached · ${clientName}`,
+      body: `Stage "${stage.name}" has been active ${Math.floor(daysInStage)}d (target ${targetDays}d). Push it forward or update the target.`,
     });
+    const stageMasterId = await resolveMaster(run.org_id);
+    if (stageMasterId) {
+      await admin.from("admin_tasks").insert({
+        org_id: run.org_id,
+        owner_id: stageMasterId,
+        kind: "onboarding_sla",
+        run_id: run.id,
+        client_id: run.client_id,
+        title: `Onboarding SLA crossed · ${clientName}`,
+        body: `Stage "${stage.name}" has been active ${Math.floor(daysInStage)}d (target ${targetDays}d), owned by ${run.am_id === stageMasterId ? "you" : "the AM"}. Follow up.`,
+      });
+    }
     await admin.from("run_items").insert({
       run_id: run.id, client_id: run.client_id, kind: "stage_sla_notified",
-      data: { stageId: stage.id, stageNo: run.current_stage, daysInStage: Math.floor(daysInStage), targetDays: stage.targetDays, at: new Date().toISOString() },
+      data: { stageId: stage.id, stageNo: run.current_stage, daysInStage: Math.floor(daysInStage), targetDays, at: new Date().toISOString() },
       status: "notified", sort: run.current_stage as number,
     });
     stageBreaches++;
@@ -382,80 +419,11 @@ export async function GET(request: NextRequest) {
     amlUnassigned++;
   }
 
-  // ── Team task escalation ──
-  //   Action Item Configuration → TL: for every open admin_task whose owner is a
-  //   junior/associate/intern/senior that has been open longer than
-  //   `tl_escalation_days` (default 2), create an escalation admin_task for the
-  //   owner's manager (reports_to) — normally the Team Lead.
-  //   → AM: if the owner IS the team_lead, escalate to the run's AM after
-  //   `am_escalation_days` (default 1) instead.
-  //   Deduped via step_id = "escalation_<original_task_id>".
-  let escalationAlerts = 0;
-  const orgEscalDays = new Map<string, { tl: number; am: number }>();
-  const getEscalDays = async (orgId: string): Promise<{ tl: number; am: number }> => {
-    if (orgEscalDays.has(orgId)) return orgEscalDays.get(orgId)!;
-    const { data: cfg } = await admin.from("followup_config").select("tl_escalation_days,am_escalation_days").eq("org_id", orgId).maybeSingle();
-    const row = cfg as { tl_escalation_days?: number | null; am_escalation_days?: number | null } | null;
-    const d = { tl: row?.tl_escalation_days ?? 2, am: row?.am_escalation_days ?? 1 };
-    orgEscalDays.set(orgId, d);
-    return d;
-  };
+  // Team task escalation lives in one place only — the admin-tasks cron's
+  // chain-based escalation (Team Member → Team Lead → AM → Ops Head + Master
+  // Admin), which is already project-wide across every admin_task kind. A
+  // second reports_to-based escalator used to run here too and double-fired
+  // escalations for the same task; removed (2026-07-02).
 
-  const { data: openAdminTasks } = await admin
-    .from("admin_tasks")
-    .select("id,org_id,owner_id,kind,run_id,client_id,title,created_at")
-    .eq("status", "open")
-    .neq("kind", "task_escalation"); // don't re-escalate escalations
-
-  const { data: allMembersForEscal } = await admin
-    .from("team_members")
-    .select("id,role,reports_to,full_name")
-    .eq("active", true);
-  const memberMapEscal = new Map((allMembersForEscal ?? []).map((m) => [m.id as string, m as { id: string; role: string; reports_to: string | null; full_name: string }]));
-
-  for (const task of openAdminTasks ?? []) {
-    if (!task.owner_id || !task.org_id) continue;
-    const owner = memberMapEscal.get(task.owner_id as string);
-    if (!owner) continue;
-    // Only escalate operational roles — skip admin/ops_head (they're already at the top)
-    if (["admin", "ops_head", "am"].includes(owner.role)) continue;
-
-    const { tl: tlDays, am: amDays } = await getEscalDays(task.org_id as string);
-    const escalDays = owner.role === "team_lead" ? amDays : tlDays;
-    const cutoffEscal = new Date(now - escalDays * DAY).toISOString();
-    if ((task.created_at as string) >= cutoffEscal) continue; // not stale yet
-
-    const escalStepId = `escalation_${task.id}`;
-    const { data: alreadyEscalated } = await admin
-      .from("admin_tasks")
-      .select("id")
-      .eq("step_id", escalStepId)
-      .in("status", ["open", "closed"])
-      .maybeSingle();
-    if (alreadyEscalated) continue;
-
-    // Determine who to escalate to: owner's manager → run AM
-    let escalateTo: string | null = owner.reports_to ?? null;
-    if (!escalateTo && task.run_id) {
-      const { data: escalRun } = await admin.from("onboarding_runs").select("am_id").eq("id", task.run_id as string).maybeSingle();
-      escalateTo = escalRun?.am_id ?? null;
-    }
-    if (!escalateTo) continue;
-
-    const escalTarget = memberMapEscal.get(escalateTo);
-    const ageDays = Math.floor((now - new Date(task.created_at as string).getTime()) / DAY);
-    await admin.from("admin_tasks").insert({
-      org_id: task.org_id,
-      owner_id: escalateTo,
-      kind: "task_escalation",
-      run_id: task.run_id,
-      client_id: task.client_id,
-      step_id: escalStepId,
-      title: `Escalated: ${task.title}`,
-      body: `"${task.title}" was assigned to ${owner.full_name} and has not been actioned in ${ageDays} day(s) (threshold: ${escalDays}d). Escalated to ${escalTarget?.full_name ?? "you"}.`,
-    });
-    escalationAlerts++;
-  }
-
-  return NextResponse.json({ ok: true, notified, complianceAlerts, complianceAdminTasks, renewalRuns, stageBreaches, taskPendingAlerts, amlUnassigned, escalationAlerts, runs: slaRows.length });
+  return NextResponse.json({ ok: true, notified, complianceAlerts, complianceAdminTasks, renewalTasks, stageBreaches, taskPendingAlerts, amlUnassigned, runs: slaRows.length });
 }

@@ -3,9 +3,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Append a compliance item to the one open "Compliance" admin_task chip per
- * owner — or create the chip if it doesn't exist. This keeps a single
- * consolidated action-item card per person instead of spawning a fresh chip
- * per compliance event.
+ * (owner, client) — or create the chip if it doesn't exist. Scoping by client
+ * (not just owner) keeps one client's compliance lines from bleeding into
+ * another's card, and means every role fanned out for the same client shares
+ * the same run_id — so closeAdminTask's existing same-run+kind auto-close
+ * already cascades the close across all of them for free.
  *
  * Returns `appended` (line added to existing chip) or `created` (new chip).
  * Idempotent on identical lines — if the same line is already in the body it
@@ -26,12 +28,14 @@ export async function upsertConsolidatedComplianceTask(
   const trimmedLine = input.line.trim();
   if (!trimmedLine) return { ok: true, mode: "deduped", taskId: "" };
 
-  const { data: existing } = await admin
+  let query = admin
     .from("admin_tasks")
     .select("id,body,history,client_id,run_id")
     .eq("kind", "compliance")
     .eq("owner_id", input.ownerId)
-    .eq("status", "open")
+    .eq("status", "open");
+  query = input.clientId ? query.eq("client_id", input.clientId) : query.is("client_id", null);
+  const { data: existing } = await query
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();

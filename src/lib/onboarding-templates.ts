@@ -360,27 +360,6 @@ const URGENT_COMPLIANCE: OnbTemplate = {
   taskboard: [],
 };
 
-// Created when a tracked document (Trade Licence / VAT / CT …) hits its expiry/filing date.
-// Deliberately ONE pre-built task — no step configuration needed. Lands in the owner's My Work.
-const COMPLIANCE_RENEWAL: OnbTemplate = {
-  id: "compliance-renewal",
-  name: "Compliance Renewal",
-  tier: "Renewal",
-  teamLabel: "AM / assigned owner",
-  desc: "Auto-created when a tracked document (Trade Licence, VAT, Corporate Tax…) is due for renewal or filing. One simple task — no configuration.",
-  color: "amber",
-  live: true,
-  usedBy: 0,
-  stages: [
-    { id: "rn1", name: "Renew & update", desc: "Renew the document, file the new copy, update the expiry.", steps: [
-      { id: "rn1.1", title: "Renew & update the document", kind: "person", who: ["AM"], note: "This task was created automatically because a tracked document reached its due date. Renew it, upload the new copy to the client Drive folder, and update the expiry date.", act: { type: "checklist", btn: "Mark renewed", items: ["Renewal actioned with the authority / provider", "New document received", "Uploaded to the client Drive folder", "Expiry / next due date updated"] } },
-    ] },
-  ],
-  uploads: [],
-  intake: [],
-  taskboard: [],
-};
-
 // Run created when catch-up accounting is handed to a DIFFERENT team — that team's AM
 // configures the months and assigns owners.
 const CATCHUP_RUN: OnbTemplate = {
@@ -799,74 +778,6 @@ const FTA_AMENDMENT: OnbTemplate = complianceTemplate({
   includeClientRequest: true,
 });
 
-const AML_REVIEW: OnbTemplate = {
-  id: "aml-review",
-  name: "AML / UBO Review",
-  tier: "Compliance",
-  teamLabel: "Compliance team",
-  desc: "Anti-Money Laundering review workflow — verify required documents are received, dispatch AML signing form to client, confirm return, mark completed.",
-  color: "blue",
-  live: true,
-  usedBy: 0,
-  category: "Compliance",
-  stages: [
-    {
-      id: "aml1",
-      name: "Document Verification",
-      desc: "Confirm all four AML-required documents are present in Drive or portal.",
-      assignRole: "am",
-      steps: [
-        { id: "aml1.1", title: "Confirm Trade Licence received", kind: "check", who: ["AM"] },
-        { id: "aml1.2", title: "Confirm MOA / Articles of Association received", kind: "check", who: ["AM"] },
-        { id: "aml1.3", title: "Confirm EID / Passport of owners received", kind: "check", who: ["AM"] },
-        { id: "aml1.4", title: "Confirm Incorporation Certificate received", kind: "check", who: ["AM"] },
-      ],
-    },
-    {
-      id: "aml2",
-      name: "AML Form Dispatch",
-      desc: "Send the AML signing form link to the client and record the link.",
-      assignRole: "am",
-      steps: [
-        { id: "aml2.1", title: "Generate AML signing form link", kind: "person", who: ["AM"], note: "Paste the signing link in the AML Compliance page for this client." },
-        { id: "aml2.2", title: "Send AML signing link to client", kind: "person", who: ["AM"] },
-        { id: "aml2.3", title: "Confirm client has received the form", kind: "check", who: ["AM"] },
-      ],
-    },
-    {
-      id: "aml3",
-      name: "Signed Form Receipt",
-      desc: "Confirm the signed AML form is returned and uploaded.",
-      assignRole: "am",
-      steps: [
-        { id: "aml3.1", title: "Signed form received from client", kind: "check", who: ["AM"] },
-        { id: "aml3.2", title: "Upload signed form to Drive", kind: "doc", who: ["AM"] },
-        { id: "aml3.3", title: "Record completed signing link in AML page", kind: "person", who: ["AM"] },
-      ],
-    },
-    {
-      id: "aml4",
-      name: "AML Sign-Off",
-      desc: "Compliance team reviews and marks AML as completed.",
-      assignRole: "am",
-      steps: [
-        { id: "aml4.1", title: "Compliance team reviews signed form", kind: "person", who: ["AM"] },
-        { id: "aml4.2", title: "Mark AML status as Completed in AML Compliance page", kind: "person", who: ["AM"] },
-        { id: "aml4.3", title: "Notify client — AML compliance completed", kind: "person", who: ["AM"] },
-      ],
-    },
-  ],
-  intake: [],
-  uploads: [
-    { id: "u1", label: "Trade Licence", who: "AM" },
-    { id: "u2", label: "MOA / Articles of Association", who: "AM" },
-    { id: "u3", label: "EID / Passport of owners", who: "AM" },
-    { id: "u4", label: "Incorporation Certificate", who: "AM" },
-    { id: "u5", label: "Signed AML form", who: "AM" },
-  ],
-  taskboard: [],
-};
-
 // ── Audit workflow (Liquidation & Audit section) ─────────────────────────────
 // Stage-based workflow surfaced as a Kanban board (columns = stages) in the
 // Liquidation & Audit section. Cases are created from the "Cadence Audit and
@@ -1049,7 +960,7 @@ const COMPLIANCE_DOC_COLLECTION: OnbTemplate = {
   ],
 };
 
-export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, COMPLIANCE_RENEWAL, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT, AML_REVIEW, COMPLIANCE_DOC_COLLECTION, AUDIT_WORKFLOW, LIQUIDATION_WORKFLOW];
+export const ONB_TEMPLATES: OnbTemplate[] = [MEDIUM_ENTERPRISE, MEDIUM_TEAM, MICRO_TEAM, URGENT_COMPLIANCE, CATCHUP_RUN, MONTHLY_ACCOUNTING, CT_REGISTRATION, CT_FILING, VAT_REGISTRATION, VAT_FILING, FTA_AMENDMENT, COMPLIANCE_DOC_COLLECTION, AUDIT_WORKFLOW, LIQUIDATION_WORKFLOW];
 export const templateById = (id: string) => ONB_TEMPLATES.find((t) => t.id === id);
 
 // The two Liquidation & Audit case templates, keyed by their `flow`. The
@@ -1061,8 +972,14 @@ export const AUDIT_LIQUIDATION_TEMPLATE_IDS = ["audit-workflow", "liquidation-wo
 // (platform cleanup, 2026-07) — only Client Onboarding · Micro and Catch-up
 // Accounting remain browsable/pickable there. Nothing is deleted: these templates
 // still resolve via getTemplate()/templateById() for existing runs and for the
-// dedicated compliance-run / renewal / escalation flows that create runs from
-// them directly (those aren't gated by this list).
+// dedicated escalation flow (urgent-compliance) that creates runs from it
+// directly (that isn't gated by this list).
+//
+// "compliance-renewal" and "aml-review" are kept archived here even though the
+// code templates were removed (2026-07-02 — both now surface as plain action
+// items, never as a run/template): old rows may still exist in the DB-backed
+// onboarding_templates table (getAllTemplates() reads DB rows independently of
+// ONB_TEMPLATES), so this keeps them hidden regardless.
 export const ARCHIVED_TEMPLATE_IDS = new Set<string>([
   "medium-enterprise",
   "medium-team",
