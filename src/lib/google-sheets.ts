@@ -51,23 +51,26 @@ async function readRange(token: string, sheetId: string, a1: string): Promise<st
 }
 
 /** Map a sheet's row-array form to KeywordRule[]. Expects headers in row 0:
- *  keyword | code | account_name (order-insensitive; recognised aliases below). */
+ *  keyword | code | account_name | priority (order-insensitive; recognised aliases below). */
 function rowsToRules(rows: string[][]): KeywordRule[] {
   if (rows.length < 2) return [];
   const header = rows[0].map((h) => String(h ?? "").trim().toLowerCase());
   const kIdx = header.findIndex((h) => /keyword|term|pattern/.test(h));
   const cIdx = header.findIndex((h) => /^code$|coa.?code|account.?code/.test(h));
   const nIdx = header.findIndex((h) => /name|account|description/.test(h));
+  const pIdx = header.findIndex((h) => /priority/.test(h));
   if (kIdx < 0 || cIdx < 0) return [];
   const out: KeywordRule[] = [];
   for (const row of rows.slice(1)) {
     const keyword = String(row[kIdx] ?? "").trim();
     const code = String(row[cIdx] ?? "").trim();
     if (!keyword || !code) continue;
+    const priorityRaw = pIdx >= 0 ? Number(row[pIdx]) : NaN;
     out.push({
       keyword,
       code,
       account_name: nIdx >= 0 ? String(row[nIdx] ?? "").trim() : code,
+      priority: Number.isFinite(priorityRaw) ? priorityRaw : undefined,
     });
   }
   return out;

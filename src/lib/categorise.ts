@@ -24,6 +24,7 @@ export interface KeywordRule {
   keyword: string;           // matched against description (whole-word, case-insensitive)
   code: string;              // COA code e.g. "5100"
   account_name: string;      // human-readable account name
+  priority?: number;         // lower runs first; from the sheet's "Priority" column
 }
 
 export interface CoaSheetData {
@@ -86,8 +87,11 @@ const HARDCODED_UAE: HardcodedRule[] = [
   // 2c. VAT — refund direction
   { regex: /\bvat\s*refund\b/i,
     code: "1400", account_name: "VAT Receivable / Input Tax", label: "fta_vat_refund" },
-  // 3. Bank charges
-  { regex: /\b(bank\s*charge|service\s*charge|wire\s*fee|swift\s*fee|outward\s*remittance\s*fee)\b/i,
+  // 3. Bank charges (plural forms — "BANK CHARGES" is far more common on real
+  // statements than the singular "BANK CHARGE", which the un-pluralized regex
+  // below used to miss entirely because \b requires a boundary right after
+  // "charge", and "charges" has no boundary there).
+  { regex: /\b(bank\s*charges?|service\s*charges?|wire\s*fees?|swift\s*fees?|outward\s*remittance\s*fees?)\b/i,
     code: "5920", account_name: "Bank Charges", label: "bank_charges" },
   // 4. Interest income (only treat "interest credit/earned/income" as income;
   //    debit-side "interest" is loan interest and should fall to a sheet rule)
@@ -95,16 +99,33 @@ const HARDCODED_UAE: HardcodedRule[] = [
     code: "4910", account_name: "Interest Income", label: "interest_income" },
 ];
 
+// A sheet row is allowed to be either a plain phrase ("trade licence") OR a
+// fully-authored regex ("\b(dewa|addc|aadc|fewa|sewa|electricity|water|gas)\b"
+// — this is exactly how the canonical Universal tab is written). Detect the
+// regex case by looking for a backslash-escape or a group/alternation, which
+// a plain phrase would never contain.
+function looksLikeRegex(s: string): boolean {
+  return /\\[bBdDsSwW]/.test(s) || /[(|)]/.test(s);
+}
+
 // ── Whole-word keyword → regex compile (mirrors Python _keyword_to_regex) ──
-// Treats a multi-token keyword as a whole-word match where internal whitespace
-// is flexible: "trade licence" matches "Trade  Licence" but NOT "untraded".
+// Treats a multi-token PLAIN PHRASE as a whole-word match where internal
+// whitespace is flexible: "trade licence" matches "Trade  Licence" but NOT
+// "untraded". A sheet row already written as regex is compiled as-is instead
+// — escaping it here would turn "\b(dewa|...)\b" into a literal string match
+// that can never appear in a real bank line, silently breaking every rule
+// authored that way (this used to be exactly what happened).
 function compileKeyword(keyword: string): RegExp {
-  const escaped = keyword
-    .trim()
+  const trimmed = keyword.trim();
+  if (!trimmed) return /(?!)/; // never matches
+  if (looksLikeRegex(trimmed)) {
+    try { return new RegExp(trimmed, "i"); } catch { /* fall through to literal-phrase compile below */ }
+  }
+  const escaped = trimmed
     .split(/\s+/)
     .filter(Boolean)
     .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  if (!escaped.length) return /(?!)/; // never matches
+  if (!escaped.length) return /(?!)/;
   return new RegExp("\\b" + escaped.join("\\s+") + "\\b", "i");
 }
 
@@ -116,9 +137,16 @@ const compileCache = new WeakMap<KeywordRule[], CompiledRule[]>();
 function compileRules(rules: KeywordRule[]): CompiledRule[] {
   const hit = compileCache.get(rules);
   if (hit) return hit;
-  // Sort by keyword length desc so "trade licence renewal" beats "licence"
-  // (Python: _scan_rules sorts the same way).
-  const sorted = [...rules].sort((a, b) => b.keyword.length - a.keyword.length);
+  // Sheet rows with an explicit Priority run in ascending order (lower number
+  // first — e.g. Payroll=5 runs before Office Supplies/Sundry=20 "fallback").
+  // Rows without a priority (or equal priority) tie-break by keyword length
+  // desc, so "trade licence renewal" beats "licence" (Python parity).
+  const sorted = [...rules].sort((a, b) => {
+    const pa = a.priority ?? Infinity;
+    const pb = b.priority ?? Infinity;
+    if (pa !== pb) return pa - pb;
+    return b.keyword.length - a.keyword.length;
+  });
   const compiled: CompiledRule[] = sorted.map((r) => ({ ...r, rx: compileKeyword(r.keyword) }));
   compileCache.set(rules, compiled);
   return compiled;
