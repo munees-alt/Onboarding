@@ -544,9 +544,28 @@ export async function createGmailDraft(id: string, to: string, subject: string, 
   if (!body.trim()) return { error: "Email body is empty." };
   const sender = await getDriveCapableMemberId(g.orgId);
   if (!sender) return { error: "Connect a Google account first (My Connections) to create the draft." };
+
+  // Cc the run's assigned team (TL/AM/seniors/etc.) alongside the standing accounts@ address.
+  const supabaseForCc = await createClient();
+  const { data: rowForCc } = await supabaseForCc.from("weekly_client_updates").select("run_id").eq("id", id).eq("org_id", g.orgId).maybeSingle();
+  let teamEmails: string[] = [];
+  if (rowForCc?.run_id) {
+    const { data: runTeam } = await supabaseForCc
+      .from("run_team")
+      .select("team_members(email)")
+      .eq("run_id", rowForCc.run_id);
+    teamEmails = (runTeam ?? [])
+      .map((r) => {
+        const tm = r.team_members as { email: string | null } | { email: string | null }[] | null;
+        return Array.isArray(tm) ? tm[0]?.email : tm?.email;
+      })
+      .filter((e): e is string => !!e);
+  }
+  const cc = [...new Set([CC_ADDRESS, ...teamEmails])];
+
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;white-space:pre-wrap;">${body
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`;
-  const res = await createGmailDraftAs(sender, recipients.join(","), [CC_ADDRESS], subject, html, body);
+  const res = await createGmailDraftAs(sender, recipients.join(","), cc, subject, html, body);
   if (!res.ok) return { error: res.error ?? "Couldn't create the Gmail draft." };
   const supabase = await createClient();
   await supabase.from("weekly_client_updates").update({
